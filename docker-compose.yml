@@ -1,6 +1,6 @@
 # Two independent containers: no shared dependency, no depends_on, no inter-container
 # hostnames. Each can also be built/run/deployed on its own (docker build / docker run).
-# They only meet through public URLs: the frontend is built with the backend's URL, and
+# They only meet through public URLs: the frontend is built with the backend's URL (frontend/.env), and
 # the backend's FRONTEND_URL / API_BASE_URL env vars (CORS, OAuth redirects) point back.
 services:
   backend:
@@ -10,9 +10,6 @@ services:
       - "8000:8000"
 
   frontend:
-    build:
-      context: ./frontend
-      args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    build: ./frontend  # backend URL comes from frontend/.env (VITE_API_BASE_URL), baked in at build
     ports:
-      - "3000:3000"
+      - "80:80"
