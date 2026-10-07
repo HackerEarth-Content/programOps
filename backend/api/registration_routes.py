@@ -127,10 +127,18 @@ async def get_registrations(ticket_id: str, session: AsyncSession = Depends(get_
             )
         )
     ).scalar() or {}
+    poa = (
+        await session.execute(
+            select(ProgramDocument.details).where(
+                ProgramDocument.ticket_id == ticket_id, ProgramDocument.kind == "poa", ProgramDocument.status == "ok"
+            )
+        )
+    ).scalar() or {}
+    poa_start = date.fromisoformat(poa["window_start"]) if poa.get("window_start") else None
     linked = bool(cfg and cfg.redash_auto and cfg.redash_event_start)
     start = (cfg.redash_event_start if linked else None) or program.registration_start_date or (
         min((r.date for r in rows), default=None)
-    )
+    ) or poa_start  # last resort: the campaign window the POA itself states
     estimate = estimate_window(
         start,
         (cfg.redash_event_end if linked else None),
@@ -139,7 +147,10 @@ async def get_registrations(ticket_id: str, session: AsyncSession = Depends(get_
         sow.get("registration_target"),
     )
     estimate["start_source"] = (
-        "event" if linked else "hubspot" if program.registration_start_date else "first entry" if start else None
+        "event" if linked
+        else "hubspot" if program.registration_start_date
+        else "first entry" if rows
+        else "POA window" if start else None
     )
     return {
         "estimate": estimate,

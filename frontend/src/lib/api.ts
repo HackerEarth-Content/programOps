@@ -256,7 +256,7 @@ export type RegistrationEstimate = {
   weeks_min: number | null;
   weeks_max: number | null;
   target: number | null;
-  start_source: "event" | "hubspot" | "first entry" | null;
+  start_source: "event" | "hubspot" | "first entry" | "POA window" | null;
 };
 export type Registrations = {
   estimate: RegistrationEstimate;
