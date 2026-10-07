@@ -127,10 +127,18 @@ async def get_registrations(ticket_id: str, session: AsyncSession = Depends(get_
             )
         )
     ).scalar() or {}
+    poa = (
+        await session.execute(
+            select(ProgramDocument.details).where(
+                ProgramDocument.ticket_id == ticket_id, ProgramDocument.kind == "poa", ProgramDocument.status == "ok"
+            )
+        )
+    ).scalar() or {}
+    poa_start = date.fromisoformat(poa["window_start"]) if poa.get("window_start") else None
     linked = bool(cfg and cfg.redash_auto and cfg.redash_event_start)
     start = (cfg.redash_event_start if linked else None) or program.registration_start_date or (
         min((r.date for r in rows), default=None)
-    )
+    ) or poa_start  # last resort: the campaign window the POA itself states
     estimate = estimate_window(
         start,
         (cfg.redash_event_end if linked else None),
@@ -139,7 +147,10 @@ async def get_registrations(ticket_id: str, session: AsyncSession = Depends(get_
         sow.get("registration_target"),
     )
     estimate["start_source"] = (
-        "event" if linked else "hubspot" if program.registration_start_date else "first entry" if start else None
+        "event" if linked
+        else "hubspot" if program.registration_start_date
+        else "first entry" if rows
+        else "POA window" if start else None
     )
     return {
         "estimate": estimate,
@@ -204,6 +215,8 @@ async def add_entries(ticket_id: str, payload: EntriesIn, session: AsyncSession 
 async def _event(slug: str):
     try:
         return await redash_sync.fetch_event(slug)
+    except redash_sync.InvalidSlug as e:
+        raise HTTPException(422, str(e)) from e
     except redash.RedashError as e:
         raise HTTPException(502, str(e)) from e
 
@@ -234,7 +247,10 @@ async def put_redash(ticket_id: str, payload: RedashIn, session: AsyncSession = 
     await _program(session, ticket_id)
     cfg = await _settings(session, ticket_id)
     if payload.event_slug is not None:
-        cfg.redash_event_slug = payload.event_slug.strip() or None
+        try:
+            cfg.redash_event_slug = redash_sync.check_slug(payload.event_slug.strip()) if payload.event_slug.strip() else None
+        except redash_sync.InvalidSlug as e:
+            raise HTTPException(422, str(e)) from e
     if payload.auto:
         if not cfg.redash_event_slug:
             raise HTTPException(422, "Choose the event slug before switching to auto.")

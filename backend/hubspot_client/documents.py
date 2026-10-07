@@ -225,6 +225,11 @@ def sanitize_poa(poa: PoaDetails) -> PoaDetails:
 
 # ---- Sync ------------------------------------------------------------------
 
+# Stamped into every stored `details` (key "_v"). Bump it when extraction rules change so
+# documents extracted under the old rules are re-read once on the next sync, instead of
+# keeping their old (possibly invented) dates until the file is replaced in HubSpot.
+EXTRACTION_VERSION = 2
+
 # Failed extractions are retried on later syncs, but not forever (each retry
 # is a paid LLM call).
 MAX_ATTEMPTS = 5
@@ -259,8 +264,8 @@ async def sync_documents() -> int:
             await session.execute(select(Program.ticket_id, Program.raw_properties))
         ).all()
         existing = {
-            # schema_ok False = an "ok" SOW extracted before registration_target existed: redo once.
-            (t, k): (fid, status, attempts, status != "ok" or k != "sow" or "registration_target" in (details or {}))
+            # schema_ok False = an "ok" document extracted under older rules: redo once.
+            (t, k): (fid, status, attempts, status != "ok" or (details or {}).get("_v") == EXTRACTION_VERSION)
             for t, k, fid, status, attempts, details in (
                 await session.execute(
                     select(
@@ -317,7 +322,7 @@ async def _process(
                 extracted = sanitize_poa(extracted)
             else:
                 extracted = sanitize_sow(extracted)
-            details = extracted.model_dump(mode="json")
+            details = extracted.model_dump(mode="json") | {"_v": EXTRACTION_VERSION}
             attempts = 0
         except Exception as e:
             attempts += 1
