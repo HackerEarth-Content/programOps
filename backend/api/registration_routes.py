@@ -204,6 +204,8 @@ async def add_entries(ticket_id: str, payload: EntriesIn, session: AsyncSession 
 async def _event(slug: str):
     try:
         return await redash_sync.fetch_event(slug)
+    except redash_sync.InvalidSlug as e:
+        raise HTTPException(422, str(e)) from e
     except redash.RedashError as e:
         raise HTTPException(502, str(e)) from e
 
@@ -234,7 +236,10 @@ async def put_redash(ticket_id: str, payload: RedashIn, session: AsyncSession = 
     await _program(session, ticket_id)
     cfg = await _settings(session, ticket_id)
     if payload.event_slug is not None:
-        cfg.redash_event_slug = payload.event_slug.strip() or None
+        try:
+            cfg.redash_event_slug = redash_sync.check_slug(payload.event_slug.strip()) if payload.event_slug.strip() else None
+        except redash_sync.InvalidSlug as e:
+            raise HTTPException(422, str(e)) from e
     if payload.auto:
         if not cfg.redash_event_slug:
             raise HTTPException(422, "Choose the event slug before switching to auto.")

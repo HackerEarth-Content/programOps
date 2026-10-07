@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import date, datetime, timezone
 
 import structlog
@@ -35,9 +36,27 @@ def days_from_row(row: dict) -> dict[date, int]:
         raise redash.RedashError(f"Unexpected 'Registration Daily JSON' from Redash: {e.__class__.__name__}") from e
 
 
+# Query 6123 is a Redash *Python* query that substitutes `{{event_slug}}` straight into its
+# source (EVENT_SLUG = "{{event_slug}}"), so anything but a plain slug could run as code on
+# the Redash worker. Validate here -- every path (check, save, fetch, scheduler) goes through
+# fetch_event.
+_SLUG = re.compile(r"[A-Za-z0-9_-]{1,100}")
+
+
+class InvalidSlug(redash.RedashError):
+    pass
+
+
+def check_slug(slug: str) -> str:
+    if not _SLUG.fullmatch(slug or ""):
+        raise InvalidSlug("Event slug can only contain letters, numbers, hyphens and underscores.")
+    return slug
+
+
 async def fetch_event(slug: str) -> tuple[dict, dict[date, int]]:
     """(event info, {date: count}). Raises RedashError (user-safe message) if
     unconfigured, unreachable or the slug is unknown."""
+    check_slug(slug)
     if not settings.REDASH_REGISTRATIONS_QUERY_ID:
         raise redash.RedashError("Redash registrations query isn't configured (REDASH_REGISTRATIONS_QUERY_ID).")
     result = await redash.run_query(settings.REDASH_REGISTRATIONS_QUERY_ID, {"event_slug": slug})
@@ -179,6 +198,14 @@ def start_background() -> str:
 
 
 if __name__ == "__main__":
+    for ok in ("hackcellence-the-embark-edition", "agentic-banking-hackathon-2", "A_b-9"):
+        assert check_slug(ok) == ok
+    for bad in ('x"; import os; os.system("id") #', "a b", "a{{b}}", 'a"', "a\\", "a\n", "", "x" * 101, "a;b", "../x"):
+        try:
+            check_slug(bad)
+            raise SystemExit(f"accepted unsafe slug: {bad!r}")
+        except InvalidSlug:
+            pass
     assert days_from_row({"Registration Daily JSON": '[{"date": "2026-09-21", "count": 40}]'}) == {date(2026, 9, 21): 40}
     assert days_from_row({}) == {} and days_from_row({"Registration Daily JSON": ""}) == {}
     try:
