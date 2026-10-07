@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
 import structlog
@@ -59,7 +59,7 @@ class Report(BaseModel):
 class Milestone(BaseModel):
     task: str
     owner: str
-    start: date
+    start: date | None  # None when the document gives this milestone no date -- never guessed
     end: date | None
     open_ended: bool
 
@@ -94,12 +94,17 @@ class SowDetails(BaseModel):
     client_requirements: list[ClientRequirement]
     reports: list[Report]
     timeline: list[Milestone]
+    # The planned registration window, as stated (e.g. "2/3-week" -> 2 and 3) and the
+    # registration/participant target (e.g. "10,000+" -> 10000). None when not stated.
+    registration_window_weeks_min: int | None
+    registration_window_weeks_max: int | None
+    registration_target: int | None
     contacts: list[Contact]
     sla: list[Sla]
 
 
 class PoaActivity(BaseModel):
-    date: date
+    date: date | None  # None when the document gives this row no date -- never guessed
     week: str
     channel: Literal["Email", "Social", "Community", "Newsletter", "Partner"]
     activity: str
@@ -109,8 +114,8 @@ class PoaActivity(BaseModel):
 
 class PoaDetails(BaseModel):
     title: str
-    window_start: date
-    window_end: date
+    window_start: date | None
+    window_end: date | None
     activities: list[PoaActivity]
 
 
@@ -124,7 +129,13 @@ _PROMPTS = {
         "fee_amount_inr is the total fee as a plain number in INR without taxes "
         "(null if not stated in INR); `fee` is the fee as written; `timeline` is the "
         "dated milestone table (owner = responsible party, end only for ranges, "
-        "open_ended true for 'onwards' items); `commitments` are 3-4 SHORT headline "
+        "open_ended true for 'onwards' items). Milestone dates: use ONLY a date the "
+        "document states for that milestone -- never the order date or any other date "
+        "as a stand-in; when a stage has no date, set start to null and open_ended false. "
+        "registration_window_weeks_min/max: the registration window length in weeks as "
+        "stated ('2/3-week' -> 2 and 3, '3-week' -> 3 and 3), null if not stated; "
+        "registration_target: the targeted number of registrations/participants as a plain "
+        "integer ('10,000+' -> 10000), null if not stated; `commitments` are 3-4 SHORT headline "
         "figures for summary cards (value at most ~12 characters, like '4,000+', '2', "
         "'1 / week', '4 months'; label 1-3 words like 'Registrations', 'Rounds', 'Term') "
         "-- never sentences or paragraphs; `side` in contacts is the company "
@@ -137,8 +148,12 @@ _PROMPTS = {
         "channel is decided by which column holds the activity name (Email activity -> "
         "Email, Social media -> Social, Partner network -> Partner; use Community / "
         "Newsletter when the activity is a community promotion / newsletter feature); "
-        "week is the row's week label (e.g. 'Week 1'); window_start/window_end come from "
-        "the campaign window."
+        "week is the row's week label (e.g. 'Week 1', empty string if none); "
+        "window_start/window_end come from the campaign window. NEVER guess or infer a "
+        "date: if a row has no date in the document, set its date to null; if the "
+        "document gives no complete day-month-year (or an unambiguous year) for a row, "
+        "use null rather than assuming a year or a default such as 1 January; if the "
+        "campaign window is not stated, set window_start/window_end to null."
     ),
 }
 
@@ -176,6 +191,38 @@ async def extract_details(kind: str, pdf: bytes) -> BaseModel:
     raise ValueError(f"extraction failed schema validation: {last_error}")
 
 
+def sanitize_sow(sow: SowDetails) -> SowDetails:
+    """Keep the registration window/target only when they're plausible."""
+    lo, hi = sow.registration_window_weeks_min, sow.registration_window_weeks_max
+    if lo is None or hi is None or not 1 <= lo <= hi <= 12:
+        sow.registration_window_weeks_min = sow.registration_window_weeks_max = None
+    if sow.registration_target is not None and sow.registration_target <= 0:
+        sow.registration_target = None
+    return sow
+
+
+def sanitize_poa(poa: PoaDetails) -> PoaDetails:
+    """Belt and braces against the model inventing dates. A date the document states is
+    kept as-is; one more than 30 days outside the stated campaign window is treated as
+    invented (e.g. a default 1 Jan) and nulled. With no window, the yardstick is 120 days
+    around the median of the document's own dates."""
+    dated = sorted(a.date for a in poa.activities if a.date)
+    if poa.window_start and poa.window_end:
+        lo, hi = poa.window_start - timedelta(days=30), poa.window_end + timedelta(days=30)
+    elif dated:
+        median = dated[len(dated) // 2]
+        lo, hi = median - timedelta(days=120), median + timedelta(days=120)
+    else:
+        return poa
+    dropped = 0
+    for a in poa.activities:
+        if a.date and not lo <= a.date <= hi:
+            a.date, dropped = None, dropped + 1
+    if dropped:
+        logger.warning("poa_dates_dropped", count=dropped, window=(str(lo), str(hi)))
+    return poa
+
+
 # ---- Sync ------------------------------------------------------------------
 
 # Failed extractions are retried on later syncs, but not forever (each retry
@@ -189,14 +236,14 @@ def _first_file_id(raw: str | None) -> str | None:
     return ids[0] if ids else None
 
 
-def needs_processing(file_id: str, current: tuple[str, str, int] | None) -> bool:
-    """current = (stored hubspot_file_id, status, attempts) or None if no row.
+def needs_processing(file_id: str, current: tuple | None) -> bool:
+    """current = (stored hubspot_file_id, status, attempts[, schema_ok]) or None if no row.
     Process when there's no row, the file was replaced, or the last extraction
     failed and retries remain."""
     if current is None:
         return True
-    stored_file_id, status, attempts = current
-    if stored_file_id != file_id:
+    stored_file_id, status, attempts, *rest = current
+    if stored_file_id != file_id or (rest and not rest[0]):  # file replaced, or extracted by an older schema
         return True
     return status != "ok" and attempts < MAX_ATTEMPTS
 
@@ -212,8 +259,9 @@ async def sync_documents() -> int:
             await session.execute(select(Program.ticket_id, Program.raw_properties))
         ).all()
         existing = {
-            (t, k): (fid, status, attempts)
-            for t, k, fid, status, attempts in (
+            # schema_ok False = an "ok" SOW extracted before registration_target existed: redo once.
+            (t, k): (fid, status, attempts, status != "ok" or k != "sow" or "registration_target" in (details or {}))
+            for t, k, fid, status, attempts, details in (
                 await session.execute(
                     select(
                         ProgramDocument.ticket_id,
@@ -221,6 +269,7 @@ async def sync_documents() -> int:
                         ProgramDocument.hubspot_file_id,
                         ProgramDocument.status,
                         ProgramDocument.attempts,
+                        ProgramDocument.details,
                     )
                 )
             ).all()
@@ -263,7 +312,12 @@ async def _process(
     error: str | None = None
     if extension == "pdf":
         try:
-            details = (await extract_details(kind, content)).model_dump(mode="json")
+            extracted = await extract_details(kind, content)
+            if kind == "poa":
+                extracted = sanitize_poa(extracted)
+            else:
+                extracted = sanitize_sow(extracted)
+            details = extracted.model_dump(mode="json")
             attempts = 0
         except Exception as e:
             attempts += 1
@@ -361,4 +415,17 @@ if __name__ == "__main__":
     assert not needs_processing("1", ("1", "ok", 0))  # up to date
     assert needs_processing("1", ("1", "failed", MAX_ATTEMPTS - 1))  # retries left
     assert not needs_processing("1", ("1", "failed", MAX_ATTEMPTS))  # gave up
+    assert needs_processing("1", ("1", "ok", 0, False))  # extracted by an older schema
+    assert not needs_processing("1", ("1", "ok", 0, True))
+    _sow = SowDetails.model_construct(registration_window_weeks_min=3, registration_window_weeks_max=2, registration_target=-5)
+    _sow = sanitize_sow(_sow)
+    assert _sow.registration_window_weeks_min is None and _sow.registration_target is None
+    _act = lambda d: PoaActivity(date=d, week="", channel="Email", activity="a", objective="", description="")
+    poa = PoaDetails(title="x", window_start=None, window_end=None,
+                     activities=[_act(date(2026, m, d)) for m, d in [(1, 1), (6, 28), (7, 1), (7, 5)]] + [_act(None)])
+    assert [a.date for a in sanitize_poa(poa).activities] == [None, date(2026, 6, 28), date(2026, 7, 1), date(2026, 7, 5), None]  # lone Jan 1 dropped
+    poa = PoaDetails(title="x", window_start=date(2026, 6, 27), window_end=date(2026, 7, 15), activities=[_act(date(2026, 1, 1))])
+    assert sanitize_poa(poa).activities[0].date is None  # months outside the stated window
+    poa = PoaDetails(title="x", window_start=date(2026, 6, 27), window_end=date(2026, 7, 15), activities=[_act(date(2026, 7, 20)), _act(date(2026, 6, 20))])
+    assert [a.date for a in sanitize_poa(poa).activities] == [date(2026, 7, 20), date(2026, 6, 20)]  # stated dates just outside the window are kept
     print("ok")

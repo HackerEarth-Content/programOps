@@ -633,6 +633,7 @@ export function Dashboard() {
                 <TableHead>Stage</TableHead>
                 <TableHead>Account manager / CSM</TableHead>
                 <TableHead>Last activity</TableHead>
+                <TableHead className="text-right">Registrations</TableHead>
                 <TableHead className="text-right">Value</TableHead>
               </TableRow>
             </TableHeader>
@@ -673,6 +674,9 @@ export function Dashboard() {
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {formatDate(program.last_modified_at)}
+                  </TableCell>
+                  <TableCell className="text-right font-mono">
+                    {program.registrations?.toLocaleString() ?? "—"}
                   </TableCell>
                   <TableCell className="text-right font-mono font-semibold">
                     {formatMoney(program.expected_deal_size)}

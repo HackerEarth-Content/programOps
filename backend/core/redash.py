@@ -17,7 +17,7 @@ class RedashError(Exception):
 
 
 async def run_query(query_id: str, parameters: dict[str, Any] | None = None,
-                    poll_interval: float = 2, max_wait: float = 300) -> dict[str, Any]:
+                    poll_interval: float = 2, max_wait: float = 300, max_age: int = 0) -> dict[str, Any]:
     """Params use the query's parameter names, without the `p_` browser-URL prefix."""
     if not settings.REDASH_API_KEY:
         raise RedashError("Redash isn't configured (REDASH_API_KEY is not set).")
@@ -28,7 +28,7 @@ async def run_query(query_id: str, parameters: dict[str, Any] | None = None,
             timeout=httpx.Timeout(15.0, read=60.0),
         ) as c:
             r = await c.post(f"/api/queries/{query_id}/results",
-                             json={"parameters": parameters or {}, "max_age": 0})
+                             json={"parameters": parameters or {}, "max_age": max_age})
             if r.status_code != 200:
                 raise RedashError(f"Redash rejected query {query_id} ({r.status_code}): {r.text[:200]}")
             data = r.json()

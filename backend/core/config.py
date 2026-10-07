@@ -22,9 +22,9 @@ class Settings(BaseSettings):
     # Redash (VPN-only). Empty key = auto registrations unavailable (manual still works).
     REDASH_API_KEY: str = ""
     REDASH_BASE_URL: str = "https://he-metrics.hackerearth.com"
-    # The one saved query that returns daily registrations for an event; it takes an
-    # "Event Slug" parameter and returns date, registrations, relevant (+ role).
-    REDASH_REGISTRATIONS_QUERY_ID: str = ""
+    # Saved queries: per-event details incl. the daily registration split, and the active-events list.
+    REDASH_REGISTRATIONS_QUERY_ID: str = "6123"  # per-event details + daily registrations (param `event_slug`)
+    REDASH_EVENTS_QUERY_ID: str = "6142"  # active events, for the slug picker
 
     # HubSpot search API allows up to 200 results per page
     PROGRAM_PAGE_SIZE: int = 200

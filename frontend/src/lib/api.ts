@@ -25,6 +25,7 @@ export type Program = {
   blackops_account_name: string | null;
   company_name: string | null;
   expected_deal_size: number | null;
+  registrations?: number | null; // total registrations so far (list endpoint only)
   owner_name: string | null;
   account_manager_name: string | null;
   csm_name: string | null;
@@ -39,6 +40,7 @@ export type ChecklistStatus = {
   subject: string;
   stage: Stage;
   completed_items: string[];
+  derived_items: string[]; // done because of an uploaded document, not a HubSpot tick
   pending_items: string[];
 };
 export type CampaignTypeCount = { campaign_type: string; count: number };
@@ -128,20 +130,15 @@ export async function logout(): Promise<void> {
 
 type SyncStatus = { running: boolean; error: string | null };
 
-// Starts a background sync and resolves when it finishes (the backend answers
-// 202 immediately; a sync can take a minute when documents are processed).
-export async function syncPrograms(): Promise<void> {
-  const start = await fetch(`${API_BASE_URL}/programs/sync`, {
-    method: "POST",
-    credentials: "include",
-  });
+async function runSync(path: string): Promise<void> {
+  const start = await fetch(`${API_BASE_URL}${path}`, { method: "POST", credentials: "include" });
   if (!start.ok) throw new Error(`Sync failed: ${start.status}`);
   const { status } = (await start.json()) as { status: "started" | "already_running" | "cooldown" };
   if (status === "cooldown") return; // one just finished -- the data is already fresh
 
   for (let attempt = 0; attempt < 150; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
-    const current = await apiFetch<SyncStatus>("/programs/sync/status");
+    const current = await apiFetch<SyncStatus>(`${path}/status`);
     if (!current.running) {
       if (current.error) throw new Error(current.error);
       return;
@@ -149,6 +146,11 @@ export async function syncPrograms(): Promise<void> {
   }
   throw new Error("Sync is taking longer than expected -- it will finish in the background.");
 }
+
+// HubSpot tickets (auto every 10 min) and Redash registrations (auto every 6 h): both can be
+// forced from the header. The backend answers 202 immediately; these poll until it finishes.
+export const syncPrograms = () => runSync("/programs/sync");
+export const syncRegistrations = () => runSync("/programs/redash/sync");
 
 export const programsQueryOptions = queryOptions({
   queryKey: ["programs"],
@@ -222,7 +224,7 @@ export type RegistrationEntry = {
   date: string;
   role: string;
   registrations: number;
-  relevant: number;
+  relevant: number | null; // null = unknown (Redash-sourced days carry registrations only)
   extra: Record<string, string>;
 };
 export type SlackSettings = {
@@ -230,9 +232,34 @@ export type SlackSettings = {
   channel_name: string | null;
   notify: boolean;
 };
-export type RedashSettings = { auto: boolean; event_slug: string | null; configured: boolean };
-export type RedashCheck = { rows: number; registrations: number; from: string; to: string };
+export type RedashSettings = {
+  auto: boolean;
+  event_slug: string | null;
+  event_name: string | null;
+  configured: boolean;
+};
+export type RedashEvent = {
+  slug: string;
+  name: string | null;
+  type: string | null;
+  company: string | null;
+  start?: string | null;
+  end?: string | null;
+  live: boolean;
+};
+export type RedashCheck = { event: RedashEvent };
+export type RegistrationEstimate = {
+  start: string | null;
+  end: string | null; // real event end when known, else start + the SOW's stated weeks
+  end_min: string | null;
+  end_is_actual: boolean;
+  weeks_min: number | null;
+  weeks_max: number | null;
+  target: number | null;
+  start_source: "event" | "hubspot" | "first entry" | null;
+};
 export type Registrations = {
+  estimate: RegistrationEstimate;
   roles: string[];
   fields: string[];
   entries: RegistrationEntry[];

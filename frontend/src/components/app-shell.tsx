@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import logoUrl from "@/assets/hackerearth_logo_light.png";
-import { currentUserQueryOptions, logout, programsQueryOptions, syncPrograms, type UserRole } from "@/lib/api";
+import { currentUserQueryOptions, logout, programsQueryOptions, syncPrograms, syncRegistrations, type UserRole } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -59,6 +59,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const sync = useMutation({
     mutationFn: syncPrograms,
+    onSuccess: () => queryClient.invalidateQueries(),
+  });
+  const reloadRegistrations = useMutation({
+    mutationFn: syncRegistrations,
     onSuccess: () => queryClient.invalidateQueries(),
   });
   const { data: currentUser } = useQuery(currentUserQueryOptions);
@@ -251,7 +255,20 @@ export function AppShell({ children }: { children: ReactNode }) {
             <DropdownMenuContent align="end">
               <DropdownMenuItem disabled={sync.isPending} onSelect={() => sync.mutate()}>
                 <RefreshCw className={cn("size-4", sync.isPending && "animate-spin")} />
-                {sync.isPending ? "Syncing..." : sync.isError ? "Sync failed - retry" : "Sync now"}
+                {sync.isPending ? "Syncing..." : sync.isError ? "Sync failed - retry" : "Sync HubSpot now"}
+                <span className="ml-2 text-[10px] text-muted-foreground">auto every 10 min</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={reloadRegistrations.isPending}
+                onSelect={() => reloadRegistrations.mutate()}
+              >
+                <RefreshCw className={cn("size-4", reloadRegistrations.isPending && "animate-spin")} />
+                {reloadRegistrations.isPending
+                  ? "Reloading registrations..."
+                  : reloadRegistrations.isError
+                    ? "Reload failed - retry"
+                    : "Reload registrations now"}
+                <span className="ml-2 text-[10px] text-muted-foreground">auto every 6 h</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

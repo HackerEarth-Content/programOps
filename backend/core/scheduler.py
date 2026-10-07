@@ -17,6 +17,7 @@ import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from core.redash_sync import REFRESH_HOURS, run_all as redash_run_all
 from hubspot_client import pipeline
 
 logger = structlog.get_logger(__name__)
@@ -42,6 +43,10 @@ def start_scheduler() -> AsyncIOScheduler:
         ),  # run immediately on startup, not after the first interval
         max_instances=1,  # don't overlap if a sync ever runs long
         coalesce=True,  # if we fall behind, run once on catch-up, not once per missed interval
+    )
+    scheduler.add_job(
+        redash_run_all, IntervalTrigger(hours=REFRESH_HOURS), id="redash_registrations_sync",
+        max_instances=1, coalesce=True,
     )
     scheduler.start()
     return scheduler

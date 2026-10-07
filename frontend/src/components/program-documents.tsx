@@ -32,6 +32,7 @@ import {
   type ProgramDocument,
   type SowDetails,
 } from "@/lib/program-documents";
+import { registrationsQueryOptions, type RegistrationEstimate } from "@/lib/api";
 import { ProgramRegistrations } from "@/components/program-registrations";
 import { cn } from "@/lib/utils";
 
@@ -69,6 +70,7 @@ const channelTone: Record<PoaChannel, string> = {
 
 export function ProgramDocuments({ ticketId, isHiring = false }: { ticketId: string; isHiring?: boolean }) {
   const documentsQuery = useQuery(programDocumentsQueryOptions(ticketId));
+  const registrationsQuery = useQuery(registrationsQueryOptions(ticketId));
   const [today, setToday] = useState("");
   // Client-only: server render has no notion of the viewer's local date.
   useEffect(() => setToday(toKey(new Date())), []);
@@ -87,6 +89,7 @@ export function ProgramDocuments({ ticketId, isHiring = false }: { ticketId: str
   }
 
   const { sow, poa } = documentsQuery.data;
+  const estimate = registrationsQuery.data?.estimate;
   const sowDetails = sow?.details ?? null;
   const poaDetails = poa?.details ?? null;
 
@@ -134,7 +137,7 @@ export function ProgramDocuments({ ticketId, isHiring = false }: { ticketId: str
           )}
           {poaDetails && (
             <TabsContent value="poa" className="mt-4">
-              <PoaView poa={poaDetails} today={today} />
+              <PoaView poa={poaDetails} today={today} estimate={estimate} />
             </TabsContent>
           )}
           <TabsContent value="registrations" className="mt-4">
@@ -257,21 +260,26 @@ function SowView({ sow, today }: { sow: SowDetails; today: string }) {
             <CalendarClock className="size-4 text-primary" />
             Delivery timeline
           </h3>
+          {sow.timeline.some((m) => !m.start) && (
+            <p className="text-xs text-muted-foreground">
+              The SOW gives no dates for some stages; they run in this order.
+            </p>
+          )}
         </div>
         <ol className="space-y-2">
-          {sow.timeline.map((m) => {
-            const end = m.end && m.end !== m.start ? m.end : null;
+          {sow.timeline.map((m, i) => {
+            const end = m.start && m.end && m.end !== m.start ? m.end : null;
             return (
               <li
-                key={`${m.start}|${m.task}`}
+                key={`${i}|${m.task}`}
                 className={cn(
                   "flex flex-wrap items-center gap-3 rounded-md border border-border p-3 transition",
-                  today && isToday(today, m.start, end) && "doc-glow",
+                  today && m.start && isToday(today, m.start, end) && "doc-glow",
                 )}
               >
                 <span className="w-28 shrink-0 font-mono text-xs">
-                  {fmt(m.start)}
-                  {end ? ` – ${fmt(end)}` : m.open_ended ? " →" : ""}
+                  {m.start ? fmt(m.start) : <span className="text-muted-foreground">Date TBC</span>}
+                  {m.start && (end ? ` – ${fmt(end)}` : m.open_ended ? " →" : "")}
                 </span>
                 <span className="min-w-0 flex-1 text-sm font-medium">{m.task}</span>
                 <Badge variant="outline" className="text-[10px]">
@@ -404,9 +412,35 @@ function SowView({ sow, today }: { sow: SowDetails; today: string }) {
   );
 }
 
-function PoaView({ poa, today }: { poa: PoaDetails; today: string }) {
-  const todays = poa.activities.filter((a) => a.date === today);
-  const next = poa.activities.find((a) => a.date > today);
+const addDays = (iso: string, n: number) => {
+  const d = parse(iso);
+  d.setDate(d.getDate() + n);
+  return toKey(d);
+};
+
+// "Week N" of an undated plan -> estimated dates, from the event start (clipped to its end).
+function estimatedRange(week: string, est: RegistrationEstimate | undefined) {
+  const n = Number(/(\d+)/.exec(week)?.[1]);
+  if (!est?.start || !n) return null;
+  const from = addDays(est.start, 7 * (n - 1));
+  if (est.end && from > est.end) return null;
+  const to = addDays(from, 6);
+  return { from, to: est.end && to > est.end ? est.end : to };
+}
+
+function PoaView({
+  poa,
+  today,
+  estimate,
+}: {
+  poa: PoaDetails;
+  today: string;
+  estimate: RegistrationEstimate | undefined;
+}) {
+  const dated = poa.activities.filter((a): a is PoaActivity & { date: string } => !!a.date);
+  const undated = poa.activities.length - dated.length;
+  const todays = dated.filter((a) => a.date === today);
+  const next = dated.find((a) => a.date > today);
   const weeks = useMemo(() => Array.from(new Set(poa.activities.map((a) => a.week))), [poa]);
 
   return (
@@ -417,7 +451,9 @@ function PoaView({ poa, today }: { poa: PoaDetails; today: string }) {
             Campaign window
           </p>
           <p className="mt-1 text-sm font-medium">
-            {fmt(poa.window_start)} → {fmt(poa.window_end)}
+            {poa.window_start && poa.window_end
+              ? `${fmt(poa.window_start)} → ${fmt(poa.window_end)}`
+              : "Not specified in the document"}
           </p>
         </div>
         <div>
@@ -437,6 +473,14 @@ function PoaView({ poa, today }: { poa: PoaDetails; today: string }) {
           </p>
         </div>
       </div>
+      {undated > 0 && (
+        <p className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
+          {undated} {undated === 1 ? "activity has" : "activities have"} no date in the document.
+          {estimate?.start
+            ? ` Their weeks are estimated from the registration start (${fmt(estimate.start)}${estimate.start_source ? `, ${estimate.start_source}` : ""}).`
+            : ` Shown as "Date TBC" until the registration start is known.`}
+        </p>
+      )}
       <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
         {(Object.keys(channelIcon) as PoaChannel[]).map((c) => {
           const I = channelIcon[c];
@@ -463,19 +507,45 @@ function PoaView({ poa, today }: { poa: PoaDetails; today: string }) {
                   const I = channelIcon[a.channel];
                   return (
                     <div
-                      key={`${a.date}|${a.activity}`}
+                      key={`${a.date ?? "tbc"}|${a.activity}`}
                       className={cn(
                         "flex gap-4 rounded-lg border border-border bg-card/60 p-4 transition",
-                        today && isToday(today, a.date, null) && "doc-glow",
+                        today && a.date && isToday(today, a.date, null) && "doc-glow",
                       )}
                     >
-                      <div className="w-14 shrink-0 text-center">
-                        <p className="font-mono text-lg font-semibold leading-none">
-                          {a.date.slice(8)}
-                        </p>
-                        <p className="text-[10px] uppercase text-muted-foreground">
-                          {new Intl.DateTimeFormat("en", { month: "short" }).format(parse(a.date))}
-                        </p>
+                      <div className="w-16 shrink-0 text-center">
+                        {a.date ? (
+                          <>
+                            <p className="font-mono text-lg font-semibold leading-none">
+                              {a.date.slice(8)}
+                            </p>
+                            <p className="text-[10px] uppercase text-muted-foreground">
+                              {new Intl.DateTimeFormat("en", { month: "short" }).format(parse(a.date))}
+                            </p>
+                          </>
+                        ) : (
+                          (() => {
+                            const r = estimatedRange(a.week, estimate);
+                            return r ? (
+                              <>
+                                <p className="text-[10px] font-semibold uppercase text-muted-foreground">
+                                  Est.
+                                </p>
+                                <p className="font-mono text-[11px] leading-tight">
+                                  {fmt(r.from)}
+                                  <br />– {fmt(r.to)}
+                                </p>
+                                {today >= r.from && today <= r.to && (
+                                  <Badge className="mt-1 px-1 py-0 text-[9px]">This week</Badge>
+                                )}
+                              </>
+                            ) : (
+                              <p className="text-[10px] font-semibold uppercase text-muted-foreground">
+                                Date TBC
+                              </p>
+                            );
+                          })()
+                        )}
                       </div>
                       <span
                         className={cn(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import redash, slack
+from core import redash, redash_sync, slack
 from core.config import settings
 from core.database import get_session
 from core.orm import Program, ProgramDocument, ProgramRegistration, ProgramRegistrationSettings
@@ -87,13 +87,31 @@ def _redash_view(s: ProgramRegistrationSettings | None) -> dict:
     return {
         "auto": bool(s and s.redash_auto),
         "event_slug": s.redash_event_slug if s else None,
+        "event_name": s.redash_event_title if s else None,
         "configured": bool(settings.REDASH_API_KEY and settings.REDASH_REGISTRATIONS_QUERY_ID),
+    }
+
+
+def estimate_window(
+    start: date | None, end: date | None, weeks_min: int | None, weeks_max: int | None, target: int | None
+) -> dict:
+    """The expected registration window. `end` is the real event end when known
+    (Redash), otherwise start + the SOW's stated weeks; `end_min` is the optimistic end."""
+    end_est = end or (start + timedelta(weeks=weeks_max) if start and weeks_max else None)
+    return {
+        "start": start,
+        "end": end_est,
+        "end_min": start + timedelta(weeks=weeks_min) if start and weeks_min else None,
+        "end_is_actual": bool(end),
+        "weeks_min": weeks_min,
+        "weeks_max": weeks_max,
+        "target": target,
     }
 
 
 @router.get("/registrations")
 async def get_registrations(ticket_id: str, session: AsyncSession = Depends(get_session)):
-    await _program(session, ticket_id)
+    program = await _program(session, ticket_id)
     cfg = await session.get(ProgramRegistrationSettings, ticket_id)
     rows = (
         await session.execute(
@@ -102,7 +120,29 @@ async def get_registrations(ticket_id: str, session: AsyncSession = Depends(get_
             .order_by(ProgramRegistration.date.desc(), ProgramRegistration.role)
         )
     ).scalars().all()
+    sow = (
+        await session.execute(
+            select(ProgramDocument.details).where(
+                ProgramDocument.ticket_id == ticket_id, ProgramDocument.kind == "sow", ProgramDocument.status == "ok"
+            )
+        )
+    ).scalar() or {}
+    linked = bool(cfg and cfg.redash_auto and cfg.redash_event_start)
+    start = (cfg.redash_event_start if linked else None) or program.registration_start_date or (
+        min((r.date for r in rows), default=None)
+    )
+    estimate = estimate_window(
+        start,
+        (cfg.redash_event_end if linked else None),
+        sow.get("registration_window_weeks_min"),
+        sow.get("registration_window_weeks_max"),
+        sow.get("registration_target"),
+    )
+    estimate["start_source"] = (
+        "event" if linked else "hubspot" if program.registration_start_date else "first entry" if start else None
+    )
     return {
+        "estimate": estimate,
         "roles": cfg.roles if cfg else [],
         "fields": cfg.fields if cfg else [],
         "entries": [
@@ -153,7 +193,7 @@ async def add_entries(ticket_id: str, payload: EntriesIn, session: AsyncSession 
 
     result = {"saved": len(rows), "slack": {"sent": False, "error": None}}
     if cfg.notify_slack and cfg.slack_channel_id:
-        text = await _summary(session, program, list(rows.values()))
+        text = await _summary(session, program, [e.model_dump() | {"role": r} for (_, r), e in rows.items()])
         ok, err = await slack.post_message(cfg.slack_channel_id, text)
         result["slack"] = {"sent": ok, "error": None if ok else err}
         if not ok:
@@ -161,27 +201,31 @@ async def add_entries(ticket_id: str, payload: EntriesIn, session: AsyncSession 
     return result
 
 
-async def _fetch_entries(slug: str) -> list[EntryIn]:
-    if not settings.REDASH_REGISTRATIONS_QUERY_ID:
-        raise HTTPException(503, "Redash registrations query isn't configured (REDASH_REGISTRATIONS_QUERY_ID).")
+async def _event(slug: str):
     try:
-        result = await redash.run_query(settings.REDASH_REGISTRATIONS_QUERY_ID, {"Event Slug": slug})
+        return await redash_sync.fetch_event(slug)
     except redash.RedashError as e:
         raise HTTPException(502, str(e)) from e
-    return rows_to_entries(result["rows"])
+
+
+@router.get("/registrations/redash/events")
+async def redash_events(ticket_id: str):
+    """Active HackerEarth events (hackathons + hiring challenges) for the slug picker."""
+    try:
+        return await redash_sync.active_events()
+    except redash.RedashError as e:
+        raise HTTPException(502, str(e)) from e
 
 
 @router.post("/registrations/redash/check")
 async def check_redash(ticket_id: str, payload: RedashIn, session: AsyncSession = Depends(get_session)):
-    """Confirm a slug: what the query returns for it, without saving anything."""
+    """Confirm a slug: what Redash returns for it, without saving anything."""
     await _program(session, ticket_id)
     slug = (payload.event_slug or "").strip()
     if not slug:
-        raise HTTPException(422, "Enter the event slug.")
-    entries = await _fetch_entries(slug)
-    days = sorted(e.date for e in entries)
-    return {"rows": len(entries), "registrations": sum(e.registrations for e in entries),
-            "from": days[0], "to": days[-1]}
+        raise HTTPException(422, "Choose or enter the event slug.")
+    info, _ = await _event(slug)
+    return {"event": info}  # dates/counts come only after the user confirms this is the right event
 
 
 @router.put("/registrations/redash")
@@ -193,42 +237,33 @@ async def put_redash(ticket_id: str, payload: RedashIn, session: AsyncSession = 
         cfg.redash_event_slug = payload.event_slug.strip() or None
     if payload.auto:
         if not cfg.redash_event_slug:
-            raise HTTPException(422, "Enter the event slug before switching to auto.")
-        await _fetch_entries(cfg.redash_event_slug)  # raises if Redash is down or returns nothing usable
+            raise HTTPException(422, "Choose the event slug before switching to auto.")
+        info, _ = await _event(cfg.redash_event_slug)  # raises if Redash is down or the slug is unknown
+        cfg.redash_event_title = info["name"]
+        cfg.redash_event_start, cfg.redash_event_end = redash_sync.event_dates(info)
     if payload.auto is not None:
         cfg.redash_auto = payload.auto
     await session.commit()
     return _redash_view(cfg)
 
 
-def rows_to_entries(rows: list[dict]) -> list[EntryIn]:
-    """Redash rows -> entries. Columns (case-insensitive): date, registrations, relevant, role (optional)."""
-    out = []
-    for i, raw in enumerate(rows, 1):
-        r = {k.strip().lower(): v for k, v in raw.items()}
-        missing = [k for k in ("date", "registrations", "relevant") if r.get(k) in (None, "")]
-        if missing:
-            raise HTTPException(422, f"Query row {i} is missing column(s): {', '.join(missing)}. "
-                                     "The query must return date, registrations, relevant (and optionally role).")
-        try:
-            out.append(EntryIn(date=str(r["date"])[:10], role=str(r.get("role") or ""),
-                               registrations=int(r["registrations"]), relevant=int(r["relevant"])))
-        except ValueError as e:
-            raise HTTPException(422, f"Query row {i}: {e}") from e
-    if not out:
-        raise HTTPException(422, "The query returned no rows.")
-    return out
-
-
 @router.post("/registrations/redash/run")
 async def run_redash(ticket_id: str, session: AsyncSession = Depends(get_session)):
-    """Fetch the event's rows and save them exactly like a manual add (incl. the Slack summary)."""
-    await _program(session, ticket_id)
+    """Fetch the event's daily counts and save new/changed days. Slack gets one summary
+    of just those days (when Notify Slack is on), never the whole history."""
+    program = await _program(session, ticket_id)
     cfg = await session.get(ProgramRegistrationSettings, ticket_id)
     if not cfg or not cfg.redash_event_slug:
         raise HTTPException(400, "No event slug set for this program.")
-    entries = await _fetch_entries(cfg.redash_event_slug)
-    return await add_entries(ticket_id, EntriesIn(entries=entries[:2000]), session)
+    info, days = await _event(cfg.redash_event_slug)
+    cfg.redash_event_title = info["name"]
+    cfg.redash_event_start, cfg.redash_event_end = redash_sync.event_dates(info)
+    changed = await redash_sync.apply_days(session, ticket_id, days)
+    result = {"saved": len(changed), "slack": {"sent": False, "error": None}}
+    if changed and cfg.notify_slack and cfg.slack_channel_id:
+        ok, err = await slack.post_message(cfg.slack_channel_id, await _summary(session, program, changed))
+        result["slack"] = {"sent": ok, "error": None if ok else err}
+    return result
 
 
 @router.delete("/registrations/{entry_id}", status_code=204)
@@ -303,7 +338,9 @@ def format_summary(label: str, rows: list[dict], total: int, activities: dict[da
         if len(days) > 1:
             lines += ["", f"*{d:%a, %d %b %Y}*"]
         for r in day:
-            parts = [f"{r['registrations']:,} registrations", f"{r['relevant']:,} relevant"]
+            parts = [f"{r['registrations']:,} registrations"]
+            if r["relevant"] is not None:  # unknown for Redash-sourced days
+                parts.append(f"{r['relevant']:,} relevant")
             lines.append(f"- {r['role'] + ': ' if r['role'] else ''}" + " | ".join(parts))
         if len(day) > 1:
             lines.append(f"Day total: *{sum(r['registrations'] for r in day):,}*")
@@ -313,10 +350,9 @@ def format_summary(label: str, rows: list[dict], total: int, activities: dict[da
     return "\n".join(lines)
 
 
-async def _summary(session: AsyncSession, program: Program, saved: list[EntryIn]) -> str:
+async def _summary(session: AsyncSession, program: Program, rows: list[dict]) -> str:
     """Message for `saved`, whether or not it's persisted yet: the total is the
     stored rows not being replaced plus the saved ones."""
-    rows = [e.model_dump() | {"role": e.role.strip()} for e in saved]
     keys = {(r["date"], r["role"]) for r in rows}
     stored = (
         await session.execute(
@@ -336,7 +372,8 @@ async def _summary(session: AsyncSession, program: Program, saved: list[EntryIn]
     ).scalar()
     activities: dict[date, list[str]] = defaultdict(list)
     for a in (poa or {}).get("activities", []):
-        activities[date.fromisoformat(a["date"])].append(f"{a['activity']} ({a['channel']})")
+        if a.get("date"):  # undated rows can't be tied to a day
+            activities[date.fromisoformat(a["date"])].append(f"{a['activity']} ({a['channel']})")
     return format_summary(_label(program), rows, total, activities)
 
 
@@ -346,12 +383,16 @@ async def preview_message(ticket_id: str, payload: EntriesIn, session: AsyncSess
     program = await _program(session, ticket_id)
     cfg = await session.get(ProgramRegistrationSettings, ticket_id)
     return {
-        "text": await _summary(session, program, payload.entries),
+        "text": await _summary(session, program, [e.model_dump() | {"role": e.role.strip()} for e in payload.entries]),
         "channel_name": cfg.slack_channel_name if cfg else None,
     }
 
 
 if __name__ == "__main__":
+    e = estimate_window(date(2026, 9, 21), None, 2, 3, 10000)
+    assert e["end"] == date(2026, 10, 12) and e["end_min"] == date(2026, 10, 5) and not e["end_is_actual"]
+    assert estimate_window(date(2026, 9, 21), date(2026, 10, 8), 2, 3, None)["end"] == date(2026, 10, 8)
+    assert estimate_window(None, None, 2, 3, 5)["end"] is None
     text = format_summary(
         "TalentForge",
         [
