@@ -205,6 +205,9 @@ export function ProgramDetail({ ticketId }: { ticketId: string }) {
                         <Check className="size-3" />
                       </span>
                       {item}
+                      {checklist.derived_items.includes(item) && (
+                        <span className="text-xs text-muted-foreground">(from uploaded SOW)</span>
+                      )}
                     </div>
                   ))
                 ) : (

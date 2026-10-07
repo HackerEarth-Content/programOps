@@ -4,6 +4,7 @@ import {
   Bar,
   CartesianGrid,
   ComposedChart,
+  ReferenceLine,
   ResponsiveContainer,
   Scatter,
   Tooltip,
@@ -26,6 +27,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  apiFetch,
   checkRedash,
   deleteRegistration,
   lookupSlackChannel,
@@ -38,6 +40,8 @@ import {
   saveSlack,
   testSlack,
   type RegistrationEntry,
+  type RedashEvent,
+  type RegistrationEstimate,
   type Registrations,
   type SaveResult,
 } from "@/lib/api";
@@ -67,7 +71,7 @@ export function ProgramRegistrations({
   const [roleFilter, setRoleFilter] = useState("all");
   const activityByDate = useMemo(() => {
     const m = new Map<string, PoaActivity[]>();
-    activities.forEach((a) => m.set(a.date, [...(m.get(a.date) ?? []), a]));
+    activities.forEach((a) => { if (a.date) m.set(a.date, [...(m.get(a.date) ?? []), a]); });
     return m;
   }, [activities]);
 
@@ -81,7 +85,7 @@ export function ProgramRegistrations({
     entries.forEach((e) => {
       const d = m.get(e.date) ?? { date: e.date, registrations: 0, relevant: 0 };
       d.registrations += e.registrations;
-      d.relevant += e.relevant;
+      d.relevant += e.relevant ?? 0;
       m.set(e.date, d);
     });
     activityByDate.forEach((_, date) => {
@@ -108,8 +112,10 @@ export function ProgramRegistrations({
     return <p className="text-sm text-muted-foreground">Couldn't load registrations.</p>;
 
   const total = entries.reduce((s, e) => s + e.registrations, 0);
-  const relevant = entries.reduce((s, e) => s + e.relevant, 0);
+  const relevant = entries.reduce((s, e) => s + (e.relevant ?? 0), 0);
+  const relevantKnown = entries.some((e) => e.relevant != null);
   const days = new Set(entries.map((e) => e.date)).size;
+  const { pace } = windowStats(data.estimate);
   const peak = daily.reduce(
     (a, b) => (b.registrations > a.registrations ? b : a),
     daily[0] ?? { registrations: 0, label: "-" },
@@ -120,12 +126,14 @@ export function ProgramRegistrations({
       <SlackChannelBox ticketId={ticketId} data={data} />
       <RedashBox ticketId={ticketId} data={data} />
 
+      <EstimatePanel data={data} actual={data.entries.reduce((s, e) => s + e.registrations, 0)} />
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Total registrations" value={total.toLocaleString()} />
         <Stat
           label="Relevant registrations"
-          value={relevant.toLocaleString()}
-          hint={total ? `${Math.round((relevant / total) * 100)}% of total` : undefined}
+          value={relevantKnown ? relevant.toLocaleString() : "—"}
+          hint={relevantKnown && total ? `${Math.round((relevant / total) * 100)}% of total` : undefined}
         />
         <Stat label="Peak day" value={peak.registrations.toLocaleString()} hint={peak.label} />
         <Stat
@@ -192,6 +200,14 @@ export function ProgramRegistrations({
                   axisLine={false}
                   tickLine={false}
                 />
+                {pace != null && (
+                  <ReferenceLine
+                    y={pace}
+                    stroke="var(--color-muted-foreground)"
+                    strokeDasharray="5 4"
+                    label={{ value: "Expected / day", position: "insideTopRight", fontSize: 10, fill: "var(--color-muted-foreground)" }}
+                  />
+                )}
                 <Tooltip
                   cursor={{ fill: "var(--color-secondary)", opacity: 0.5 }}
                   content={<ChartTip />}
@@ -376,23 +392,29 @@ function RedashBox({ ticketId, data }: { ticketId: string; data: Registrations }
   const [slug, setSlug] = useState(event_slug ?? "");
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const s = slug.trim();
+  // Active HackerEarth events (Redash) feed the picker; typing a slug still works if the list can't load.
+  const events = useQuery({
+    queryKey: ["redash-events"],
+    queryFn: () => apiFetch<RedashEvent[]>(`/programs/${ticketId}/registrations/redash/events`),
+    enabled: configured && !auto,
+    staleTime: 10 * 60_000,
+    retry: false,
+  });
+  const picked = events.data?.find((e) => e.slug === s);
   const fail = (e: unknown) => setNotice({ ok: false, text: errMsg(e) });
 
   // Confirm = look the slug up in Redash first; auto is only switched on after it returns data.
   const check = useMutation({
     mutationFn: () => checkRedash(ticketId, s),
-    onSuccess: (r) =>
-      setNotice({
-        ok: true,
-        text: `Found ${r.rows} ${r.rows === 1 ? "row" : "rows"} (${fmt(r.from)} to ${fmt(r.to)}), ${r.registrations.toLocaleString()} registrations. Confirm to use auto.`,
-      }),
+    onSuccess: () => setNotice(null),
     onError: fail,
   });
   const save = useMutation({
     mutationFn: (v: { auto: boolean; event_slug?: string }) => saveRedash(ticketId, v),
-    onSuccess: () => {
+    onSuccess: (_, v) => {
       setNotice(null);
       void refresh();
+      if (v.auto) run.mutate(); // event confirmed: now pull its dates
     },
     onError: fail,
   });
@@ -433,7 +455,7 @@ function RedashBox({ ticketId, data }: { ticketId: string; data: Registrations }
       {auto ? (
         <div className="flex flex-wrap items-center gap-2">
           <span className="rounded-md bg-success/10 px-2.5 py-1 font-mono text-sm text-success">
-            {event_slug}
+            {data.redash.event_name ? `${data.redash.event_name} · ${event_slug}` : event_slug}
           </span>
           <Button size="sm" disabled={run.isPending} onClick={() => run.mutate()}>
             {run.isPending ? "Fetching…" : "Fetch from Redash"}
@@ -459,9 +481,17 @@ function RedashBox({ ticketId, data }: { ticketId: string; data: Registrations }
               check.reset();
               setNotice(null);
             }}
-            placeholder="Event slug, to fetch registrations automatically"
-            className="h-8 w-80 font-mono text-sm"
+            placeholder="Pick an active event or type its slug"
+            list={`events-${ticketId}`}
+            className="h-8 w-96 font-mono text-sm"
           />
+          <datalist id={`events-${ticketId}`}>
+            {(events.data ?? []).map((e) => (
+              <option key={e.slug} value={e.slug}>
+                {`${e.name ?? e.slug} · ${e.type ?? "Event"}${e.live ? " · live" : ""}`}
+              </option>
+            ))}
+          </datalist>
           <Button
             size="sm"
             variant="outline"
@@ -471,14 +501,44 @@ function RedashBox({ ticketId, data }: { ticketId: string; data: Registrations }
             {check.isPending ? "Checking…" : "Check"}
           </Button>
           {check.isSuccess && (
-            <Button
-              size="sm"
-              type="button"
-              disabled={save.isPending}
-              onClick={() => save.mutate({ auto: true, event_slug: s })}
-            >
-              Confirm and use auto
-            </Button>
+            <div className="flex basis-full flex-wrap items-center gap-3 rounded-lg border border-border bg-secondary/40 p-3">
+              <div className="text-sm">
+                <p className="text-[10px] font-semibold uppercase text-muted-foreground">
+                  Is this the right event?
+                </p>
+                <p className="font-semibold">{check.data.event.name}</p>
+                <p className="text-xs text-muted-foreground">
+                  {[
+                    check.data.event.company,
+                    check.data.event.type,
+                    check.data.event.live ? "Live" : "Not live",
+                    check.data.event.start && check.data.event.end
+                      ? `${check.data.event.start.slice(0, 10)} to ${check.data.event.end.slice(0, 10)}`
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </p>
+              </div>
+              <Button
+                size="sm"
+                type="button"
+                disabled={save.isPending}
+                onClick={() => save.mutate({ auto: true, event_slug: s })}
+              >
+                {save.isPending ? "Saving…" : "Yes, use this event"}
+              </Button>
+            </div>
+          )}
+          {picked && (
+            <span className="text-xs text-muted-foreground">
+              {picked.name} · {picked.company}
+            </span>
+          )}
+          {events.isError && !notice && (
+            <span className="text-xs text-muted-foreground">
+              Couldn't load active events (VPN?). You can still type the slug.
+            </span>
           )}
           {notice && (
             <span className={cn("text-xs", notice.ok ? "text-success" : "text-destructive")}>
@@ -486,6 +546,99 @@ function RedashBox({ ticketId, data }: { ticketId: string; data: Registrations }
             </span>
           )}
         </form>
+      )}
+    </div>
+  );
+}
+
+// ---- Estimated registration timeline (from the SOW) -----------------------------
+
+const dayMs = 86_400_000;
+const isoMs = (iso: string) => new Date(`${iso}T00:00:00`).getTime();
+
+// Window length, how far into it we are, and the even pace the SOW target implies.
+function windowStats(est: RegistrationEstimate, nowMs = Date.now()) {
+  if (!est.start || !est.end) return { length: null, elapsed: null, pace: null as number | null };
+  const length = Math.round((isoMs(est.end) - isoMs(est.start)) / dayMs) + 1;
+  const elapsed = Math.min(length, Math.max(0, Math.floor((nowMs - isoMs(est.start)) / dayMs) + 1));
+  return { length, elapsed, pace: est.target ? Math.round(est.target / length) : null };
+}
+
+function EstimatePanel({ data, actual }: { data: Registrations; actual: number }) {
+  const est = data.estimate;
+  const { length, elapsed, pace } = windowStats(est);
+  const weeks =
+    est.weeks_min && est.weeks_max
+      ? est.weeks_min === est.weeks_max
+        ? `${est.weeks_min}-week`
+        : `${est.weeks_min}/${est.weeks_max}-week`
+      : null;
+  if (!est.start && !est.target && !weeks) {
+    return (
+      <div className="workspace-panel p-4 text-sm text-muted-foreground">
+        No estimated registration timeline yet: the SOW doesn't state a registration window or target.
+      </div>
+    );
+  }
+  const expectedByToday = est.target && length && elapsed != null ? Math.round((est.target * elapsed) / length) : null;
+  const gap = expectedByToday ? Math.round(((actual - expectedByToday) / expectedByToday) * 100) : null;
+  const pct = est.target ? Math.min(100, Math.round((actual / est.target) * 100)) : null;
+  return (
+    <div className="workspace-panel space-y-3 p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="font-semibold">Estimated registration timeline</h3>
+        <span className="text-xs text-muted-foreground">
+          {weeks ? `SOW: ${weeks} registration window` : "SOW: no window stated"}
+          {est.target ? `, target ${est.target.toLocaleString()}+` : ""}
+        </span>
+      </div>
+      {est.start ? (
+        <p className="text-sm">
+          Opens <span className="font-semibold">{fmt(est.start)}</span>
+          {est.end && (
+            <>
+              {" "}
+              {est.end_is_actual ? "· closes" : "· expected to close"}{" "}
+              <span className="font-semibold">
+                {!est.end_is_actual && est.end_min && est.end_min !== est.end
+                  ? `${fmt(est.end_min)} – ${fmt(est.end)}`
+                  : fmt(est.end)}
+              </span>
+            </>
+          )}
+          <span className="text-xs text-muted-foreground">
+            {" "}
+            (start from {est.start_source === "event" ? "the HackerEarth event" : est.start_source})
+            {!est.end_is_actual && est.end ? " · estimated" : ""}
+          </span>
+        </p>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          Start date unknown: link the HackerEarth event or add the first day's count to anchor the timeline.
+        </p>
+      )}
+      {pct != null && est.target && (
+        <div>
+          <div className="mb-1 flex justify-between text-xs text-muted-foreground">
+            <span>
+              {actual.toLocaleString()} of {est.target.toLocaleString()}
+            </span>
+            <span>
+              {pct}%
+              {gap != null && expectedByToday
+                ? ` · expected ~${expectedByToday.toLocaleString()} by today (${gap >= 0 ? "+" : ""}${gap}%)`
+                : ""}
+            </span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-secondary">
+            <div className="h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />
+          </div>
+          {pace != null && length && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Even pace: ~{pace.toLocaleString()} registrations/day over {length} days.
+            </p>
+          )}
+        </div>
       )}
     </div>
   );
@@ -909,7 +1062,7 @@ function EntryEditor({
                 <td className="p-2 font-mono text-xs">{fmt(e.date)}</td>
                 {isHiring && <td className="p-2">{e.role || "-"}</td>}
                 <td className="p-2 text-right font-mono">{e.registrations}</td>
-                <td className="p-2 text-right font-mono">{e.relevant}</td>
+                <td className="p-2 text-right font-mono">{e.relevant ?? "—"}</td>
                 {fields.map((f) => (
                   <td key={f} className="p-2 text-muted-foreground">
                     {e.extra[f] || "-"}

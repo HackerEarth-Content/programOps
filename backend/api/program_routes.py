@@ -20,10 +20,12 @@ from core.config import settings
 from core.orm import (
     Program,
     ProgramDocument,
+    ProgramRegistration,
     ProgramNote,
     ProgramStageHistory,
 )
 from core.users import current_active_user
+from core import redash_sync
 from hubspot_client import pipeline
 from hubspot_client.client import get_user_names
 from hubspot_client.stage_checklist import (
@@ -52,6 +54,19 @@ async def sync_now():
 @router.get("/sync/status")
 async def sync_status():
     return pipeline.state
+
+
+SOW_ITEMS = ("SOW Shared", "SOW Signed")  # Pre Sales checklist items an uploaded SOW satisfies
+@router.post("/redash/sync", status_code=202)
+async def redash_sync_now():
+    """Reload registrations for every program in auto mode right now (override of the
+    6-hourly job). Poll GET /programs/redash/sync/status."""
+    return {"status": redash_sync.start_background()}
+
+
+@router.get("/redash/sync/status")
+async def redash_sync_status():
+    return redash_sync.state
 
 
 _STAGE_KEY_BY_LABEL = {v["label"]: k for k, v in PROGRAM_STAGES.items()}
@@ -91,7 +106,13 @@ async def list_programs(session: AsyncSession = Depends(get_session)):
         )
         .order_by(Program.last_modified_at.desc())
     )
-    return [_serialize(p) for p in rows.scalars().all()]
+    totals = dict(
+        (await session.execute(
+            select(ProgramRegistration.ticket_id, func.sum(ProgramRegistration.registrations))
+            .group_by(ProgramRegistration.ticket_id)
+        )).all()
+    )
+    return [{**_serialize(p), "registrations": totals.get(p.ticket_id)} for p in rows.scalars().all()]
 
 
 @router.get("/{ticket_id}")
@@ -216,6 +237,9 @@ async def checklist_status(session: AsyncSession = Depends(get_session)):
             Program.post_campaign_status,
         )
     )
+    has_sow = set(
+        (await session.execute(select(ProgramDocument.ticket_id).where(ProgramDocument.kind == "sow"))).scalars()
+    )
     results = []
     for ticket_id, subject, stage_label, pre_sales, onboarding, ongoing, post_campaign in rows.all():
         stage_key = _STAGE_KEY_BY_LABEL.get(stage_label)
@@ -225,12 +249,17 @@ async def checklist_status(session: AsyncSession = Depends(get_session)):
             "ongoing": ongoing,
             "post_campaign": post_campaign,
         }.get(stage_key, [])
+        # An uploaded SOW is evidence it was shared and signed, even when nobody
+        # ticked the HubSpot checkboxes -- count those items as done (flagged as derived).
+        derived = [i for i in SOW_ITEMS if stage_key == "pre_sales" and ticket_id in has_sow and i not in selected]
+        selected = [*selected, *derived]
         results.append(
             {
                 "ticket_id": ticket_id,
                 "subject": subject,
                 "stage": stage_label,
                 "completed_items": selected,
+                "derived_items": derived,
                 "pending_items": pending_items(stage_key, selected) if stage_key else [],
             }
         )
@@ -364,12 +393,12 @@ def due_items(kind: str, details: dict, on: str) -> list[dict]:
         return [
             {"title": m["task"], "date": m["start"], "owner": m["owner"]}
             for m in details.get("timeline", [])
-            if m["start"] <= on <= (m.get("end") or m["start"])
+            if m.get("start") and m["start"] <= on <= (m.get("end") or m["start"])
         ]
     return [
         {"title": a["activity"], "date": a["date"], "owner": a["channel"]}
         for a in details.get("activities", [])
-        if a["date"] == on
+        if a.get("date") == on
     ]
 
 

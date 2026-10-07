@@ -261,6 +261,9 @@ class ProgramRegistrationSettings(Base):
     # Auto mode: counts come from the Redash registrations query for this event slug.
     redash_auto: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     redash_event_slug: Mapped[str | None]
+    redash_event_title: Mapped[str | None]  # confirmed event name, shown in auto mode
+    redash_event_start: Mapped[date | None] = mapped_column(Date)  # event window, from Redash;
+    redash_event_end: Mapped[date | None] = mapped_column(Date)  # anchors the estimated timeline
 
 
 class ProgramRegistration(Base):
@@ -279,5 +282,6 @@ class ProgramRegistration(Base):
     date: Mapped[date] = mapped_column(Date)
     role: Mapped[str] = mapped_column(default="", server_default="")
     registrations: Mapped[int]
-    relevant: Mapped[int] = mapped_column(default=0, server_default="0")
+    # NULL = unknown (Redash gives registrations only); manual entries always set it.
+    relevant: Mapped[int | None]
     extra: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))

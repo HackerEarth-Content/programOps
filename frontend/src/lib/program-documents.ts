@@ -12,13 +12,13 @@ export type DocFile = {
 export type Milestone = {
   task: string;
   owner: string;
-  start: string;
+  start: string | null; // null = the SOW gives this stage no date
   end: string | null;
   open_ended: boolean;
 };
 export type PoaChannel = "Email" | "Social" | "Community" | "Newsletter" | "Partner";
 export type PoaActivity = {
-  date: string;
+  date: string | null; // null = the document gave no date (never guessed)
   week: string;
   channel: PoaChannel;
   activity: string;
@@ -43,14 +43,17 @@ export type SowDetails = {
   client_requirements: { item: string; details: string }[];
   reports: { type: string; frequency: string }[];
   timeline: Milestone[];
+  registration_window_weeks_min: number | null;
+  registration_window_weeks_max: number | null;
+  registration_target: number | null;
   contacts: { name: string; role: string; contact: string; side: string }[];
   sla: { audience: string; hours: string; response: string }[];
 };
 
 export type PoaDetails = {
   title: string;
-  window_start: string;
-  window_end: string;
+  window_start: string | null;
+  window_end: string | null;
   activities: PoaActivity[];
 };
 
