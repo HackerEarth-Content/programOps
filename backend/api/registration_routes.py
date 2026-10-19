@@ -16,7 +16,7 @@ from core import redash, redash_sync, slack
 from core.config import settings
 from core.database import get_session
 from core.orm import Program, ProgramDocument, ProgramRegistration, ProgramRegistrationSettings
-from core.users import current_active_user
+from core.users import current_active_user, require_editor
 
 logger = structlog.get_logger(__name__)
 
@@ -167,7 +167,7 @@ async def get_registrations(ticket_id: str, session: AsyncSession = Depends(get_
     }
 
 
-@router.put("/registrations/config")
+@router.put("/registrations/config", dependencies=[Depends(require_editor)])
 async def put_config(ticket_id: str, payload: ConfigIn, session: AsyncSession = Depends(get_session)):
     await _program(session, ticket_id)
     cfg = await _settings(session, ticket_id)
@@ -177,7 +177,7 @@ async def put_config(ticket_id: str, payload: ConfigIn, session: AsyncSession = 
     return {"roles": cfg.roles, "fields": cfg.fields}
 
 
-@router.post("/registrations")
+@router.post("/registrations", dependencies=[Depends(require_editor)])
 async def add_entries(ticket_id: str, payload: EntriesIn, session: AsyncSession = Depends(get_session)):
     """Upsert day counts (same date+role replaces). One Slack summary per call,
     so a CSV import is a single message. Slack trouble never fails the save."""
@@ -230,7 +230,7 @@ async def redash_events(ticket_id: str):
         raise HTTPException(502, str(e)) from e
 
 
-@router.post("/registrations/redash/check")
+@router.post("/registrations/redash/check", dependencies=[Depends(require_editor)])
 async def check_redash(ticket_id: str, payload: RedashIn, session: AsyncSession = Depends(get_session)):
     """Confirm a slug: what Redash returns for it, without saving anything."""
     await _program(session, ticket_id)
@@ -241,7 +241,7 @@ async def check_redash(ticket_id: str, payload: RedashIn, session: AsyncSession 
     return {"event": info}  # dates/counts come only after the user confirms this is the right event
 
 
-@router.put("/registrations/redash")
+@router.put("/registrations/redash", dependencies=[Depends(require_editor)])
 async def put_redash(ticket_id: str, payload: RedashIn, session: AsyncSession = Depends(get_session)):
     """Set the slug and/or switch mode. Switching to auto re-checks the slug against Redash."""
     await _program(session, ticket_id)
@@ -263,7 +263,7 @@ async def put_redash(ticket_id: str, payload: RedashIn, session: AsyncSession = 
     return _redash_view(cfg)
 
 
-@router.post("/registrations/redash/run")
+@router.post("/registrations/redash/run", dependencies=[Depends(require_editor)])
 async def run_redash(ticket_id: str, session: AsyncSession = Depends(get_session)):
     """Fetch the event's daily counts and save new/changed days. Slack gets one summary
     of just those days (when Notify Slack is on), never the whole history."""
@@ -282,7 +282,7 @@ async def run_redash(ticket_id: str, session: AsyncSession = Depends(get_session
     return result
 
 
-@router.delete("/registrations/{entry_id}", status_code=204)
+@router.delete("/registrations/{entry_id}", status_code=204, dependencies=[Depends(require_editor)])
 async def delete_entry(ticket_id: str, entry_id: int, session: AsyncSession = Depends(get_session)):
     row = await session.get(ProgramRegistration, entry_id)
     if row is None or row.ticket_id != ticket_id:
@@ -300,7 +300,7 @@ async def lookup_channel(ticket_id: str, channel_id: str):
     return {"channel_id": channel_id.strip(), "channel_name": value}
 
 
-@router.put("/slack")
+@router.put("/slack", dependencies=[Depends(require_editor)])
 async def put_slack(ticket_id: str, payload: SlackIn, session: AsyncSession = Depends(get_session)):
     await _program(session, ticket_id)
     cfg = await _settings(session, ticket_id)
@@ -319,7 +319,7 @@ async def put_slack(ticket_id: str, payload: SlackIn, session: AsyncSession = De
     return _slack_view(cfg)
 
 
-@router.post("/slack/test")
+@router.post("/slack/test", dependencies=[Depends(require_editor)])
 async def test_slack(ticket_id: str, session: AsyncSession = Depends(get_session)):
     program = await _program(session, ticket_id)
     cfg = await session.get(ProgramRegistrationSettings, ticket_id)
@@ -393,7 +393,7 @@ async def _summary(session: AsyncSession, program: Program, rows: list[dict]) ->
     return format_summary(_label(program), rows, total, activities)
 
 
-@router.post("/registrations/preview")
+@router.post("/registrations/preview", dependencies=[Depends(require_editor)])
 async def preview_message(ticket_id: str, payload: EntriesIn, session: AsyncSession = Depends(get_session)):
     """The exact Slack text that saving these entries would post."""
     program = await _program(session, ticket_id)

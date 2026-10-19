@@ -33,6 +33,7 @@ import {
   historyQueryOptions,
   notesQueryOptions,
   programQueryOptions,
+  useCanEdit,
 } from "@/lib/api";
 import { formatDate, formatDateTime, formatMoney, orUnassigned, orUnset } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -61,6 +62,7 @@ export function ProgramDetail({ ticketId }: { ticketId: string }) {
     () =>
       (typeof window !== "undefined" && window.localStorage.getItem(AUTHOR_NAME_STORAGE_KEY)) || "",
   );
+  const canEdit = useCanEdit();
   const addNote = useMutation({
     mutationFn: () => createNote(ticketId, noteBody.trim(), authorName.trim()),
     onSuccess: () => {
@@ -117,7 +119,7 @@ export function ProgramDetail({ ticketId }: { ticketId: string }) {
   const stageIndex = STAGES.indexOf(program.stage);
 
   return (
-    <div className="page-enter space-y-8">
+    <div className="space-y-8">
       <Link
         to="/"
         className="inline-flex items-center gap-2 text-sm text-muted-foreground transition hover:text-foreground"
@@ -343,17 +345,17 @@ export function ProgramDetail({ ticketId }: { ticketId: string }) {
                 <p className="section-kicker">Internal</p>
                 <h2 className="font-display text-xl font-semibold">Notes</h2>
               </div>
-              <button
+              {canEdit && <button
                 type="button"
                 aria-label={composerOpen ? "Close note composer" : "Add a note"}
                 onClick={() => setComposerOpen((open) => !open)}
                 className="rounded-md p-1.5 text-primary transition-colors hover:bg-primary/10"
               >
                 <MessageSquareText className="size-5" />
-              </button>
+              </button>}
             </div>
 
-            {composerOpen && (
+            {canEdit && composerOpen && (
               <form
                 onSubmit={(event) => {
                   event.preventDefault();
@@ -415,7 +417,7 @@ export function ProgramDetail({ ticketId }: { ticketId: string }) {
         </aside>
       </section>
 
-      <ProgramDocuments ticketId={program.ticket_id} isHiring={program.campaign_type === HIRING_CAMPAIGN_TYPE} />
+      <ProgramDocuments ticketId={program.ticket_id} isHiring={program.campaign_type === HIRING_CAMPAIGN_TYPE} redashEnabled={!program.platform_details?.includes("Non-HE Platform")} />
     </div>
   );
 }

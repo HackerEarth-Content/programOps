@@ -24,7 +24,7 @@ from core.orm import (
     ProgramNote,
     ProgramStageHistory,
 )
-from core.users import current_active_user
+from core.users import current_active_user, require_editor
 from core import redash_sync
 from hubspot_client import pipeline
 from hubspot_client.client import get_user_names
@@ -43,7 +43,7 @@ router = APIRouter(
     prefix="/programs", tags=["programs"], dependencies=[Depends(current_active_user)]
 )
 
-@router.post("/sync", status_code=202)
+@router.post("/sync", status_code=202, dependencies=[Depends(require_editor)])
 async def sync_now():
     """Start a HubSpot sync in the background (the same one the scheduler
     runs). Returns immediately -- poll GET /programs/sync/status for progress.
@@ -57,7 +57,7 @@ async def sync_status():
 
 
 SOW_ITEMS = ("SOW Shared", "SOW Signed")  # Pre Sales checklist items an uploaded SOW satisfies
-@router.post("/redash/sync", status_code=202)
+@router.post("/redash/sync", status_code=202, dependencies=[Depends(require_editor)])
 async def redash_sync_now():
     """Reload registrations for every program in auto mode right now (override of the
     6-hourly job). Poll GET /programs/redash/sync/status."""
@@ -170,7 +170,7 @@ class CreateNoteRequest(BaseModel):
     author_name: str = Field(min_length=1)
 
 
-@router.post("/{ticket_id}/notes", status_code=201)
+@router.post("/{ticket_id}/notes", status_code=201, dependencies=[Depends(require_editor)])
 async def create_program_note(
     ticket_id: str, payload: CreateNoteRequest, session: AsyncSession = Depends(get_session)
 ):

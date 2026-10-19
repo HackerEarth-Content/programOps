@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 from fastapi_users import BaseUserManager, FastAPIUsers
 from fastapi.responses import RedirectResponse
 from fastapi_users.authentication import (
@@ -40,6 +40,12 @@ class UserManager(BaseUserManager[User, str]):
 
     def parse_id(self, value: Any) -> str:
         return str(value)
+
+    async def on_before_update(self, user, update_dict, request=None):
+        # Role is chosen once at first login; afterwards only the DB can change it,
+        # otherwise a view-only user could PATCH themselves into an editor.
+        if "role" in update_dict and user.role is not None:
+            raise HTTPException(status_code=403, detail="Role can't be changed")
 
     async def oauth_callback(
         self,
@@ -130,3 +136,12 @@ fastapi_users = FastAPIUsers[User, str](get_user_manager, [auth_backend])
 
 current_active_user = fastapi_users.current_user(active=True)
 current_active_user_optional = fastapi_users.current_user(optional=True, active=True)
+
+
+EDITOR_ROLES = ("manager", "csm")
+
+
+async def require_editor(user: User = Depends(current_active_user)) -> User:
+    if user.role not in EDITOR_ROLES:
+        raise HTTPException(status_code=403, detail="View-only access")
+    return user

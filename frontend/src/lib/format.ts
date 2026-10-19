@@ -1,4 +1,4 @@
-const UNSET = "-";
+const UNSET = "—";
 const IST_TIME_ZONE = "Asia/Kolkata";
 
 // Backend timestamps come back naive (no "Z"/offset suffix) but are always

@@ -269,7 +269,7 @@ export function Dashboard() {
   }
 
   return (
-    <div className="page-enter space-y-8">
+    <div className="space-y-8">
       <section className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
         <div>
           <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase text-primary">
@@ -344,7 +344,7 @@ export function Dashboard() {
                 style={{ animationDelay: `${index * 80}ms` }}
               >
                 <span className="flex items-baseline justify-between px-1">
-                  <strong className="font-display text-2xl">{item.count}</strong>
+                  <strong className="font-mono text-2xl tabular-nums">{item.count}</strong>
                   <span className="text-xs text-muted-foreground">
                     {formatCompactMoney(item.value)}
                   </span>
@@ -490,7 +490,7 @@ export function Dashboard() {
                 </PieChart>
               </ResponsiveContainer>
               <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                <span className="font-display text-3xl font-semibold">{scopedPrograms.length}</span>
+                <span className="font-mono text-3xl font-semibold tabular-nums">{scopedPrograms.length}</span>
                 <span className="text-[10px] uppercase text-muted-foreground">Programs</span>
               </div>
             </div>
@@ -740,7 +740,7 @@ function Kpi({
         </span>
         {warning && <Clock3 className="size-4 text-warning" />}
       </div>
-      <div className="mt-6 font-display text-4xl font-semibold tracking-normal">{value}</div>
+      <div className="mt-6 font-mono text-4xl font-semibold tabular-nums">{value}</div>
       <p className="mt-1 text-sm font-medium">{label}</p>
       <p className="mt-1 text-xs text-muted-foreground">{note}</p>
       <span

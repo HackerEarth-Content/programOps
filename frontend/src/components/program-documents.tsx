@@ -68,7 +68,7 @@ const channelTone: Record<PoaChannel, string> = {
   Partner: "text-destructive bg-destructive/10",
 };
 
-export function ProgramDocuments({ ticketId, isHiring = false }: { ticketId: string; isHiring?: boolean }) {
+export function ProgramDocuments({ ticketId, isHiring = false, redashEnabled = true }: { ticketId: string; isHiring?: boolean; redashEnabled?: boolean }) {
   const documentsQuery = useQuery(programDocumentsQueryOptions(ticketId));
   const registrationsQuery = useQuery(registrationsQueryOptions(ticketId));
   const [today, setToday] = useState("");
@@ -141,7 +141,7 @@ export function ProgramDocuments({ ticketId, isHiring = false }: { ticketId: str
             </TabsContent>
           )}
           <TabsContent value="registrations" className="mt-4">
-            <ProgramRegistrations ticketId={ticketId} isHiring={isHiring} activities={poaDetails?.activities ?? []} />
+            <ProgramRegistrations ticketId={ticketId} isHiring={isHiring} activities={poaDetails?.activities ?? []} redashEnabled={redashEnabled} />
           </TabsContent>
         </Tabs>
     </section>

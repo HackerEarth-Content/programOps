@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import logoUrl from "@/assets/hackerearth_logo_light.png";
-import { currentUserQueryOptions, logout, programsQueryOptions, syncPrograms, syncRegistrations, type UserRole } from "@/lib/api";
+import { currentUserQueryOptions, logout, programsQueryOptions, syncPrograms, syncRegistrations, useCanEdit, type UserRole } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -66,6 +66,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     onSuccess: () => queryClient.invalidateQueries(),
   });
   const { data: currentUser } = useQuery(currentUserQueryOptions);
+  const canEdit = useCanEdit();
   const logoutMutation = useMutation({
     mutationFn: logout,
     onSuccess: () => {
@@ -116,7 +117,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="relative min-h-screen bg-background text-foreground">
-      <header className="sticky top-0 z-50 border-b border-border/70 bg-background/80 backdrop-blur-xl">
+      <header className="sticky top-0 z-50 border-b border-border/70 bg-background">
         <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-4 px-4 sm:px-6 lg:px-8">
           <Link
             to="/"
@@ -253,7 +254,10 @@ export function AppShell({ children }: { children: ReactNode }) {
               <ChevronDown className="size-3" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem disabled={sync.isPending} onSelect={() => sync.mutate()}>
+              {!canEdit && (
+                <DropdownMenuItem disabled>View-only access · auto-syncs</DropdownMenuItem>
+              )}
+              {canEdit && <><DropdownMenuItem disabled={sync.isPending} onSelect={() => sync.mutate()}>
                 <RefreshCw className={cn("size-4", sync.isPending && "animate-spin")} />
                 {sync.isPending ? "Syncing..." : sync.isError ? "Sync failed - retry" : "Sync HubSpot now"}
                 <span className="ml-2 text-[10px] text-muted-foreground">auto every 10 min</span>
@@ -269,7 +273,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                     ? "Reload failed - retry"
                     : "Reload registrations now"}
                 <span className="ml-2 text-[10px] text-muted-foreground">auto every 6 h</span>
-              </DropdownMenuItem>
+              </DropdownMenuItem></>}
             </DropdownMenuContent>
           </DropdownMenu>
           <Button

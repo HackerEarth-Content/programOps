@@ -6,7 +6,6 @@ import {
   ComposedChart,
   ReferenceLine,
   ResponsiveContainer,
-  Scatter,
   Tooltip,
   XAxis,
   YAxis,
@@ -47,6 +46,7 @@ import {
 } from "@/lib/api";
 import type { PoaActivity } from "@/lib/program-documents";
 import { cn } from "@/lib/utils";
+import { useCanEdit } from "@/lib/api";
 
 const fmt = (iso: string) =>
   new Intl.DateTimeFormat("en", { day: "2-digit", month: "short" }).format(
@@ -62,12 +62,15 @@ export function ProgramRegistrations({
   ticketId,
   isHiring,
   activities,
+  redashEnabled = true,
 }: {
   ticketId: string;
   isHiring: boolean;
   activities: PoaActivity[];
+  redashEnabled?: boolean;
 }) {
   const query = useQuery(registrationsQueryOptions(ticketId));
+  const canEdit = useCanEdit();
   const [roleFilter, setRoleFilter] = useState("all");
   const activityByDate = useMemo(() => {
     const m = new Map<string, PoaActivity[]>();
@@ -88,16 +91,11 @@ export function ProgramRegistrations({
       d.relevant += e.relevant ?? 0;
       m.set(e.date, d);
     });
-    activityByDate.forEach((_, date) => {
-      if (!m.has(date)) m.set(date, { date, registrations: 0, relevant: 0 });
-    });
     const rows = [...m.values()].sort((a, b) => a.date.localeCompare(b.date));
-    const max = Math.max(1, ...rows.map((r) => r.registrations));
     return rows.map((r) => ({
       ...r,
       label: fmt(r.date),
       rest: Math.max(0, r.registrations - r.relevant),
-      marker: activityByDate.has(r.date) ? max * 1.1 : null,
       acts: activityByDate.get(r.date) ?? [],
     }));
   }, [entries, activityByDate]);
@@ -123,8 +121,8 @@ export function ProgramRegistrations({
 
   return (
     <div className="space-y-4">
-      <SlackChannelBox ticketId={ticketId} data={data} />
-      <RedashBox ticketId={ticketId} data={data} />
+      {canEdit && <SlackChannelBox ticketId={ticketId} data={data} />}
+      {canEdit && redashEnabled && <RedashBox ticketId={ticketId} data={data} />}
 
       <EstimatePanel data={data} actual={data.entries.reduce((s, e) => s + e.registrations, 0)} />
 
@@ -148,12 +146,7 @@ export function ProgramRegistrations({
           <div>
             <h3 className="font-semibold">Registrations per day</h3>
             <p className="flex items-center gap-2 text-xs text-muted-foreground">
-              <span
-                className="inline-block size-2.5 rounded-full"
-                style={{ background: "var(--color-warning)" }}
-              />
-              Dot = marketing activity that day (hover for details)
-              <span className="ml-2 inline-block size-2.5 rounded-sm bg-primary" />
+              <span className="inline-block size-2.5 rounded-sm bg-primary" />
               Relevant
               <span className="inline-block size-2.5 rounded-sm bg-primary/25" />
               Other registrations
@@ -229,20 +222,6 @@ export function ProgramRegistrations({
                   maxBarSize={28}
                   animationDuration={700}
                 />
-                <Scatter
-                  dataKey="marker"
-                  fill="var(--color-warning)"
-                  shape={(p: { cx?: number; cy?: number }) => (
-                    <circle
-                      cx={p.cx}
-                      cy={p.cy}
-                      r={6}
-                      fill="var(--color-warning)"
-                      stroke="var(--color-card)"
-                      strokeWidth={2}
-                    />
-                  )}
-                />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
@@ -253,7 +232,9 @@ export function ProgramRegistrations({
         )}
       </div>
 
-      {!data.redash.auto && <EntryEditor ticketId={ticketId} data={data} isHiring={isHiring} />}
+      {(!canEdit || !redashEnabled || !data.redash.auto) && (
+        <EntryEditor ticketId={ticketId} data={data} isHiring={isHiring} readOnly={!canEdit} />
+      )}
     </div>
   );
 }
@@ -696,10 +677,12 @@ function EntryEditor({
   ticketId,
   data,
   isHiring,
+  readOnly,
 }: {
   ticketId: string;
   data: Registrations;
   isHiring: boolean;
+  readOnly: boolean;
 }) {
   const qc = useQueryClient();
   const refresh = () => qc.invalidateQueries({ queryKey: ["programs", ticketId, "registrations"] });
@@ -821,6 +804,7 @@ function EntryEditor({
 
   return (
     <div className="workspace-panel p-5">
+      {!readOnly && (<>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="font-semibold">Update registrations</h3>
@@ -1039,6 +1023,7 @@ function EntryEditor({
           <pre className="whitespace-pre-wrap font-sans text-sm">{preview}</pre>
         </div>
       )}
+      </>)}
 
       <div className="mt-4 max-h-72 overflow-auto rounded-lg border border-border">
         <table className="w-full text-sm">
@@ -1053,7 +1038,7 @@ function EntryEditor({
                   {f}
                 </th>
               ))}
-              <th className="w-8" />
+              {!readOnly && <th className="w-8" />}
             </tr>
           </thead>
           <tbody>
@@ -1068,11 +1053,13 @@ function EntryEditor({
                     {e.extra[f] || "-"}
                   </td>
                 ))}
-                <td className="p-2">
-                  <button type="button" aria-label="Delete row" onClick={() => remove.mutate(e.id)}>
-                    <Trash2 className="size-3.5 text-muted-foreground hover:text-destructive" />
-                  </button>
-                </td>
+                {!readOnly && (
+                  <td className="p-2">
+                    <button type="button" aria-label="Delete row" onClick={() => remove.mutate(e.id)}>
+                      <Trash2 className="size-3.5 text-muted-foreground hover:text-destructive" />
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>

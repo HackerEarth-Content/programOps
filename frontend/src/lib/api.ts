@@ -1,4 +1,4 @@
-import { queryOptions } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 
 export const API_BASE_URL = import.meta.env["VITE_API_BASE_URL"] ?? "http://localhost:8000";
 // Frontend navigates here directly (not fetch) so the backend's CSRF cookie
@@ -112,6 +112,12 @@ export const currentUserQueryOptions = queryOptions({
   queryKey: ["auth", "me"],
   queryFn: fetchCurrentUser,
 });
+
+// Mirrors the backend's require_editor: only managers and CSMs may change data.
+export function useCanEdit(): boolean {
+  const { data } = useQuery(currentUserQueryOptions);
+  return data?.role === "manager" || data?.role === "csm";
+}
 
 export async function updateUserRole(role: UserRole): Promise<CurrentUser> {
   const response = await fetch(`${API_BASE_URL}/users/me`, {
