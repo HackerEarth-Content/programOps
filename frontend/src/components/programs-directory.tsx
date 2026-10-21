@@ -15,6 +15,7 @@ import {
   PageHeader,
   Segmented,
   Skeleton,
+  TabBar,
   toneBg,
   toneText,
   type Tone,
@@ -28,7 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { programsQueryOptions, STAGES, type Program } from "@/lib/api";
+import { HIRING_CAMPAIGN_TYPE, programsQueryOptions, STAGES, type Program } from "@/lib/api";
 import { HEALTH_REASONS, type Health } from "@/lib/ops-api";
 import { portfolioFullQuery, type Portfolio, type PortfolioProgram } from "@/lib/portfolio-api";
 import type { ProgramTab } from "@/lib/program-tabs";
@@ -39,6 +40,7 @@ import { systemStatusQuery } from "@/lib/system-api";
 type Row = { program: Program; card: PortfolioProgram | undefined };
 type View = "cards" | "matrix";
 type Sort = "urgency" | "registrations" | "name";
+type Kind = "all" | "hackathon" | "hiring";
 
 const HEALTH_TONE: Record<Health, Tone> = {
   good: "good",
@@ -57,6 +59,14 @@ const idx = (n: number) => ({ "--i": n }) as CSSProperties;
 const nameOf = (r: Row) => r.card?.name ?? r.program.display_name;
 const clientOf = (r: Row) => r.card?.client ?? r.program.company_name;
 const stageOf = (r: Row) => r.program.stage;
+const kindOf = (r: Row): Kind | "other" =>
+  r.program.campaign_type === "Hackathon"
+    ? "hackathon"
+    : r.program.campaign_type === HIRING_CAMPAIGN_TYPE
+      ? "hiring"
+      : "other";
+const isLive = (r: Row) => stageOf(r) === "Ongoing"; // ponytail: live = Ongoing stage; Redash "Is Live" is the precise upgrade
+const isOpen = (r: Row) => stageOf(r) !== "Closed";
 const regsOf = (r: Row) => r.card?.registrations ?? r.program.registrations ?? 0;
 const rank = (r: Row) => (r.card ? HEALTH_RANK[r.card.health] : 3);
 const pct = (r: Row) => (r.card?.target ? (regsOf(r) / r.card.target) * 100 : 0);
@@ -73,12 +83,23 @@ function readView(): View {
 
 function exportCsv(rows: Row[]) {
   const q = (v: string | number | null | undefined) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const head = ["Name", "Ticket", "Client", "Stage", "CSM", "Registrations", "Target", "Health"];
+  const head = [
+    "Name",
+    "Ticket",
+    "Client",
+    "Type",
+    "Stage",
+    "CSM",
+    "Registrations",
+    "Target",
+    "Health",
+  ];
   const lines = rows.map((r) =>
     [
       nameOf(r),
       r.program.ticket_id,
       clientOf(r),
+      r.program.campaign_type,
       stageOf(r),
       r.program.csm_name,
       regsOf(r),
@@ -121,12 +142,14 @@ function HealthChip({ card }: { card: PortfolioProgram | undefined }) {
   return <HealthPill health={card.health} />;
 }
 
-function Kpis({ data }: { data: Portfolio }) {
+function Kpis({ data, rows, onKind }: { data: Portfolio; rows: Row[]; onKind: (k: Kind) => void }) {
+  const live = rows.filter(isLive);
+  const liveBy = (k: Kind) => live.filter((r) => kindOf(r) === k).length;
   const { health, action_items: ai } = data;
   const total = data.active_programs || 1;
   const stages = STAGES.filter((s) => data.stage_distribution[s]);
   return (
-    <div className="reveal grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="reveal grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       <Card interactive className="rise p-[18px]" style={idx(0)}>
         <MonoLabel>Active portfolio</MonoLabel>
         <div className="mt-2 t-data-lg">
@@ -154,6 +177,30 @@ function Kpis({ data }: { data: Portfolio }) {
         </div>
       </Card>
       <Card interactive className="rise p-[18px]" style={idx(1)}>
+        <MonoLabel>Live programs</MonoLabel>
+        <div className="mt-2 t-data-lg">
+          <Num value={live.length} /> live
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          {(
+            [
+              ["hackathon", "Hackathons"],
+              ["hiring", "Hiring challenges"],
+            ] as const
+          ).map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => onKind(k)}
+              className="rounded-[8px] bg-raised px-3 py-2 text-left hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span className="block t-data-lg">{liveBy(k)}</span>
+              <span className="block text-[13px] text-ink-2">{label}</span>
+            </button>
+          ))}
+        </div>
+      </Card>
+      <Card interactive className="rise p-[18px]" style={idx(2)}>
         <MonoLabel>Programs on target</MonoLabel>
         <div className="mt-2 flex items-baseline gap-1.5">
           <span className="t-data-lg">
@@ -178,30 +225,33 @@ function Kpis({ data }: { data: Portfolio }) {
             : `${data.registrations_total.toLocaleString("en-US")} registrations across ${data.active_programs} active programs`}
         </div>
       </Card>
-      <Card interactive className="rise p-[18px]" style={idx(2)}>
+      <Card interactive className="rise p-[18px] xl:col-span-2" style={idx(3)}>
         <div className="flex justify-between">
           <MonoLabel>Pipeline stage distribution</MonoLabel>
           <span className="t-data-sm text-muted-foreground">{data.active_programs} total</span>
         </div>
-        <div className="mt-4 flex h-11 gap-1">
+        <div className="mt-4 flex gap-1">
           {stages.map((s, i) => (
             <div
               key={s}
               title={`${s}: ${data.stage_distribution[s]}`}
-              className="bar-grow flex min-w-9 items-center justify-center rounded-[6px] bg-accent-bg text-[16px] font-semibold text-primary"
-              style={{ flexGrow: data.stage_distribution[s] ?? 0, ...idx(i) }}
+              className="flex min-w-20 flex-col gap-1.5"
+              style={{ flexGrow: data.stage_distribution[s] ?? 0 }}
             >
-              {data.stage_distribution[s]}
+              <div
+                className="bar-grow flex h-11 items-center justify-center rounded-[6px] bg-accent-bg text-[16px] font-semibold text-primary"
+                style={idx(i)}
+              >
+                {data.stage_distribution[s]}
+              </div>
+              <span className="truncate text-center text-[13px] text-secondary-foreground">
+                {s}
+              </span>
             </div>
           ))}
         </div>
-        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[14px] text-secondary-foreground">
-          {stages.map((s) => (
-            <span key={s}>{s}</span>
-          ))}
-        </div>
       </Card>
-      <Card interactive className="rise p-[18px]" style={idx(3)}>
+      <Card interactive className="rise p-[18px]" style={idx(4)}>
         <div className="flex justify-between">
           <MonoLabel>Escalations</MonoLabel>
           {ai.control_breaches > 0 && <Chip tone="critical">Triage required</Chip>}
@@ -399,6 +449,8 @@ export function ProgramsDirectory() {
   const [health, setHealth] = usePersistentState("programops.directory.health", "all");
   const [csm, setCsm] = usePersistentState("programops.directory.csm", "all");
   const [stage, setStage] = usePersistentState("programops.directory.stage", "all");
+  const [kindValue, setKind] = usePersistentState("programops.directory.kind", "all");
+  const kind = (["hackathon", "hiring"].includes(kindValue) ? kindValue : "all") as Kind;
   const [sortValue, setSort] = usePersistentState("programops.directory.sort", "urgency");
   const sort = (
     ["urgency", "registrations", "name"].includes(sortValue) ? sortValue : "urgency"
@@ -420,23 +472,31 @@ export function ProgramsDirectory() {
       card: cards.get(program.ticket_id),
     }));
   }, [programs.data, portfolio.data]);
+  // The type tab scopes everything below it; Closed programs only show under the Closed stage pill.
+  const inKind = useMemo(
+    () => (kind === "all" ? rows : rows.filter((r) => kindOf(r) === kind)),
+    [rows, kind],
+  );
+  const kindCount = (k: Kind) =>
+    rows.filter((r) => isOpen(r) && (k === "all" || kindOf(r) === k)).length;
   const csms = useMemo(
-    () => [...new Set(rows.map((r) => r.program.csm_name).filter((c): c is string => !!c))].sort(),
-    [rows],
+    () =>
+      [...new Set(inKind.map((r) => r.program.csm_name).filter((c): c is string => !!c))].sort(),
+    [inKind],
   );
   const stageCounts = useMemo(
-    () => Object.fromEntries(STAGES.map((s) => [s, rows.filter((r) => stageOf(r) === s).length])),
-    [rows],
+    () => Object.fromEntries(STAGES.map((s) => [s, inKind.filter((r) => stageOf(r) === s).length])),
+    [inKind],
   );
-
+  const healthFilter = ["good", "warning", "critical"].includes(health) ? health : "all";
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return rows
+    return inKind
       .filter(
         (r) =>
-          (stage === "all" || stageOf(r) === stage) &&
+          (stage === "all" ? isOpen(r) : stageOf(r) === stage) &&
           (csm === "all" || r.program.csm_name === csm) &&
-          (health === "all" || (health === "closed" ? !r.card : r.card?.health === health)),
+          (healthFilter === "all" || r.card?.health === healthFilter),
       )
       .filter(
         (r) =>
@@ -453,7 +513,7 @@ export function ProgramsDirectory() {
               ? rank(a) - rank(b)
               : 0) || nameOf(a).localeCompare(nameOf(b)),
       );
-  }, [rows, q, stage, csm, health, sort]);
+  }, [inKind, q, stage, csm, healthFilter, sort]);
 
   const loading = programs.isPending || portfolio.isPending;
   const error = programs.error ?? portfolio.error;
@@ -504,7 +564,21 @@ export function ProgramsDirectory() {
         </>
       ) : (
         <>
-          {portfolio.data && <Kpis data={portfolio.data} />}
+          {portfolio.data && <Kpis data={portfolio.data} rows={rows} onKind={setKind} />}
+          <TabBar
+            label="Program type"
+            active={kind}
+            items={(
+              [
+                ["all", "All programs"],
+                ["hackathon", "Hackathons"],
+                ["hiring", "Hiring challenges"],
+              ] as const
+            ).map(([id, label]) => ({ id, label: `${label} · ${kindCount(id)}` }))}
+            renderLink={(t, props) => (
+              <button type="button" onClick={() => setKind(t.id)} {...props} />
+            )}
+          />
           <Card className="flex flex-col gap-3 p-3">
             <div className="flex flex-wrap items-center gap-2">
               <div className="relative min-w-[220px] flex-1">
@@ -517,7 +591,7 @@ export function ProgramsDirectory() {
                   onChange={(e) => setQ(e.target.value)}
                 />
               </div>
-              <Select value={health} onValueChange={setHealth}>
+              <Select value={healthFilter} onValueChange={setHealth}>
                 <SelectTrigger aria-label="Health" className="w-[150px]">
                   <SelectValue />
                 </SelectTrigger>
@@ -526,7 +600,6 @@ export function ProgramsDirectory() {
                   <SelectItem value="good">Good</SelectItem>
                   <SelectItem value="warning">Warning</SelectItem>
                   <SelectItem value="critical">Critical</SelectItem>
-                  <SelectItem value="closed">Closed</SelectItem>
                 </SelectContent>
               </Select>
               <Select value={csm} onValueChange={setCsm}>
@@ -580,7 +653,7 @@ export function ProgramsDirectory() {
             <div className="flex flex-wrap items-center gap-1.5">
               <MonoLabel className="mr-1">Stages</MonoLabel>
               {[
-                { id: "all", label: "All", n: rows.length },
+                { id: "all", label: "All", n: inKind.filter(isOpen).length },
                 ...STAGES.map((s) => ({
                   id: s as string,
                   label: s as string,
@@ -611,7 +684,7 @@ export function ProgramsDirectory() {
           )}
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border px-4 py-2.5 t-data-sm text-muted-foreground">
             <span>
-              Showing {shown.length} of {rows.length} programs
+              Showing {shown.length} of {inKind.length} programs
             </span>
           </div>
         </>

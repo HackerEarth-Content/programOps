@@ -142,7 +142,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <img
               src="/favicon.png"
               alt=""
-              className="size-[30px] rounded-[8px] bg-surface object-contain ring-1 ring-border"
+              className="size-[30px] rounded-[8px] bg-white object-contain ring-1 ring-border dark:ring-white/40"
             />
             <span className="text-[15px] font-semibold">ProgramOps</span>
           </Link>

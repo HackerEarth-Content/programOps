@@ -272,7 +272,8 @@ async def test_marketing_can_nudge_the_csm_once_an_hour(client_for, make_user, m
     await link_slack(db)
     csm = await make_user("csm@example.com", [Role.CSM], name="Priya S.")
     csm_client = await client_for(csm)
-    await csm_client.put("/programs/t1/assignments", json=[{"user_id": csm.id, "role": "csm"}])
+    admin = await client_for(await make_user("admin@example.com", [Role.SUPER_ADMIN]))
+    await admin.put("/programs/t1/assignments", json=[{"user_id": csm.id, "role": "csm"}])
     activity = await live_activity(csm_client, db)
     marketing = await client_for(await make_user("m@example.com", [Role.MARKETING], name="Neha K."))
     first = await marketing.post(f"/programs/t1/activities/{activity['id']}/nudge")
@@ -288,7 +289,8 @@ async def test_one_nudge_covers_everything_waiting_instead_of_one_message_per_ac
     await link_slack(db)
     csm = await make_user("csm@example.com", [Role.CSM], name="Priya S.")
     csm_client = await client_for(csm)
-    await csm_client.put("/programs/t1/assignments", json=[{"user_id": csm.id, "role": "csm"}])
+    admin = await client_for(await make_user("admin@example.com", [Role.SUPER_ADMIN]))
+    await admin.put("/programs/t1/assignments", json=[{"user_id": csm.id, "role": "csm"}])
     async with db() as session:
         session.add_all(
             ProgramActivity(ticket_id="t1", code=f"W1-ACT-0{i}", source="poa", channel="Email", title=f"Mail {i}", status="not_started")

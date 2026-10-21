@@ -403,9 +403,9 @@ async def put_assignments(
     ticket_id: str,
     body: list[AssignmentIn],
     session: AsyncSession = Depends(get_session),
-    access: Access = Depends(require_permission(Permission.INTEGRATIONS_LINK)),
+    access: Access = Depends(require_permission(Permission.USERS_MANAGE)),
 ) -> list[AssignmentOut]:
-    """Replace who works this program. Drives "my programs" in the queues."""
+    """Replace who works this program (super admin). Adds to the HubSpot CSM match in "my programs" in the queues."""
     for user_id in {a.user_id for a in body}:
         if await session.get(User, user_id) is None:
             raise DomainError("user_not_found", "One of those people isn't a portal user.", 422)

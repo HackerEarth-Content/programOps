@@ -82,12 +82,13 @@ async def test_mine_shows_only_programs_assigned_to_me_as_csm(client_for, make_u
     await make_program("t1")
     await make_program("t2")
     client, user = await csm(client_for, make_user)
+    admin = await client_for(await make_user("admin@example.com", [Role.SUPER_ADMIN]))
     await busy_program(client, db)
     assert (await client.get("/queues/csm")).json()["items"] == []  # default scope is mine, and nothing is assigned
-    await client.put("/programs/t1/assignments", json=[{"user_id": user.id, "role": "csm"}])
+    await admin.put("/programs/t1/assignments", json=[{"user_id": user.id, "role": "csm"}])
     mine = (await client.get("/queues/csm")).json()["items"]
     assert mine and {i["ticket_id"] for i in mine} == {"t1"}
-    as_marketing = await client.put("/programs/t2/assignments", json=[{"user_id": user.id, "role": "marketing"}])
+    as_marketing = await admin.put("/programs/t2/assignments", json=[{"user_id": user.id, "role": "marketing"}])
     assert as_marketing.status_code == 200
     assert {i["ticket_id"] for i in (await client.get("/queues/csm")).json()["items"]} == {"t1"}  # only CSM assignments count
 

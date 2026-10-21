@@ -369,9 +369,10 @@ async def test_a_skipped_closure_phase_does_not_hold_the_program_open(client_for
 # ---- assignments ---------------------------------------------------------------------
 
 
-async def test_a_csm_assigns_people_and_the_list_replaces_the_old_one(client_for, make_user, make_program):
+async def test_a_super_admin_assigns_people_and_the_list_replaces_the_old_one(client_for, make_user, make_program):
     await make_program("t1")
-    client, csm = await csm_client(client_for, make_user)
+    _, csm = await csm_client(client_for, make_user)
+    client = await client_for(await make_user("admin@example.com", [Role.SUPER_ADMIN]))
     marketer = await make_user("m@example.com", [Role.MARKETING], name="Neha K.")
     put = await client.put("/programs/t1/assignments", json=[{"user_id": csm.id, "role": "csm"}, {"user_id": marketer.id, "role": "marketing"}])
     assert [(a["name"], a["role"]) for a in put.json()] == [("Priya S.", "csm"), ("Neha K.", "marketing")]
@@ -379,11 +380,13 @@ async def test_a_csm_assigns_people_and_the_list_replaces_the_old_one(client_for
     assert [a["name"] for a in replaced.json()] == ["Priya S."]
 
 
-async def test_assigning_an_unknown_user_is_refused_and_marketing_cannot_assign(client_for, make_user, make_program):
+async def test_assigning_an_unknown_user_is_refused_and_only_a_super_admin_can_assign(client_for, make_user, make_program):
     await make_program("t1")
-    client, _ = await csm_client(client_for, make_user)
+    csm, _ = await csm_client(client_for, make_user)
+    client = await client_for(await make_user("admin@example.com", [Role.SUPER_ADMIN]))
     unknown = await client.put("/programs/t1/assignments", json=[{"user_id": "nobody", "role": "csm"}])
     assert (unknown.status_code, unknown.json()["code"]) == (422, "user_not_found")
+    assert (await csm.put("/programs/t1/assignments", json=[])).status_code == 403
     marketing = await client_for(await make_user("m@example.com", [Role.MARKETING]))
     assert (await marketing.put("/programs/t1/assignments", json=[])).status_code == 403
     assert (await marketing.get("/programs/t1/assignments")).status_code == 200

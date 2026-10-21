@@ -30,14 +30,23 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  apiFetch,
   checklistStatusQueryOptions,
   createNote,
   historyQueryOptions,
   notesQueryOptions,
   peopleByName,
   registrationsQueryOptions,
+  sendJson,
   STAGES,
   useCan,
   type Program,
@@ -52,6 +61,7 @@ import {
   orUnassigned,
 } from "@/lib/format";
 import { describeHistory } from "@/lib/history";
+import { assignmentsQuery, type Assignment } from "@/lib/marketing-api";
 import { needsQuery, reportQuery, roundsQuery, updatesQuery, type Round } from "@/lib/ops-api";
 import { programDocumentsQueryOptions } from "@/lib/program-documents";
 import { parseTab } from "@/lib/program-tabs";
@@ -585,6 +595,10 @@ function Brief({ ticketId, program }: { ticketId: string; program: Program }) {
   const est = regs?.estimate;
   const people = peopleByName(program);
   const [linking, setLinking] = useState(false);
+  const [assigning, setAssigning] = useState(false);
+  const canAssign = useCan("users.manage");
+  const assigned = useQuery(assignmentsQuery(ticketId)).data ?? [];
+  const [copied, setCopied] = useState(false);
   const rows: { k: string; v: ReactNode }[] = [
     {
       k: "Client",
@@ -598,7 +612,7 @@ function Brief({ ticketId, program }: { ticketId: string; program: Program }) {
             onClick={() => setLinking(true)}
             className="text-primary hover:underline"
           >
-            Link {sowClient}
+            How to link {sowClient}
           </button>
         </span>
       ) : (
@@ -622,14 +636,31 @@ function Brief({ ticketId, program }: { ticketId: string; program: Program }) {
       : []),
     {
       k: "People",
-      v:
-        people.length === 0
-          ? "Unassigned"
-          : people.map((p) => (
-              <span key={p.name} className="block">
-                {p.name} <span className="text-ink-3">· {p.roles.join(", ")}</span>
-              </span>
-            )),
+      v: (
+        <>
+          {people.length === 0 && assigned.length === 0 && "Unassigned"}
+          {people.map((p) => (
+            <span key={p.name} className="block">
+              {p.name} <span className="text-ink-3">· {p.roles.join(", ")} · HubSpot</span>
+            </span>
+          ))}
+          {assigned.map((a) => (
+            <span key={`${a.user_id}-${a.role}`} className="block">
+              {a.name}{" "}
+              <span className="text-ink-3">· {ROLE_NAME[a.role] ?? a.role} · assigned</span>
+            </span>
+          ))}
+          {canAssign && (
+            <button
+              type="button"
+              onClick={() => setAssigning(true)}
+              className="mt-1 text-primary hover:underline"
+            >
+              Assign people
+            </button>
+          )}
+        </>
+      ),
     },
     { k: "Created", v: formatDate(program.created_at) },
   ];
@@ -649,19 +680,22 @@ function Brief({ ticketId, program }: { ticketId: string; program: Program }) {
       <Dialog open={linking} onOpenChange={setLinking}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Link {sowClient}</DialogTitle>
+            <DialogTitle>Link {sowClient} in HubSpot</DialogTitle>
             <DialogDescription>
-              This ticket has no company in HubSpot, so ProgramOps can't show a client yet. The SOW
-              names <strong>{sowClient}</strong>. Associate that company with the ticket in HubSpot
-              and it will appear here on the next sync.
+              ProgramOps reads the client from HubSpot and can't link it from here. The SOW names{" "}
+              <strong>{sowClient}</strong>. In HubSpot, open ticket {program.ticket_id}, associate
+              that company, then press Sync in the top bar. The client appears here after the sync.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => void navigator.clipboard?.writeText(sowClient ?? "")}
+              onClick={() => {
+                void navigator.clipboard?.writeText(sowClient ?? "");
+                setCopied(true);
+              }}
             >
-              Copy name
+              {copied ? "Copied" : "Copy name"}
             </Button>
             <Button variant="outline" onClick={() => setLinking(false)}>
               Close
@@ -669,7 +703,125 @@ function Brief({ ticketId, program }: { ticketId: string; program: Program }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {assigning && (
+        <AssignDialog ticketId={ticketId} current={assigned} onClose={() => setAssigning(false)} />
+      )}
     </Section>
+  );
+}
+
+const ROLE_NAME: Record<string, string> = {
+  csm: "CSM",
+  marketing: "Marketing",
+  account_manager: "Account manager",
+};
+
+type PortalUser = { id: string; name: string | null; email: string; is_active: boolean };
+
+/** Super admin: who works this program. The HubSpot CSM still matches on email; these are added on top. */
+function AssignDialog({
+  ticketId,
+  current,
+  onClose,
+}: {
+  ticketId: string;
+  current: Assignment[];
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const users = useQuery({
+    queryKey: ["admin", "users", "picker"],
+    queryFn: () => apiFetch<PortalUser[]>("/admin/users"),
+  }).data;
+  const [draft, setDraft] = useState(current.map((a) => ({ user_id: a.user_id, role: a.role })));
+  const [userId, setUserId] = useState("");
+  const [role, setRole] = useState("csm");
+  const label = (id: string) => {
+    const u = users?.find((x) => x.id === id);
+    return u ? (u.name ?? u.email) : (current.find((a) => a.user_id === id)?.name ?? id);
+  };
+  const add = () => {
+    if (userId && !draft.some((d) => d.user_id === userId && d.role === role))
+      setDraft([...draft, { user_id: userId, role }]);
+    setUserId("");
+  };
+  const save = useMutation({
+    mutationFn: () => sendJson<Assignment[]>("PUT", `/programs/${ticketId}/assignments`, draft),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["programs", ticketId, "assignments"] });
+      void queryClient.invalidateQueries({ queryKey: ["queues"] });
+      onClose();
+    },
+  });
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Assign people</DialogTitle>
+          <DialogDescription>
+            Assigned people see this program in their queue, on top of the CSM named in HubSpot.
+          </DialogDescription>
+        </DialogHeader>
+        <ul className="space-y-1.5 text-[13px]">
+          {draft.length === 0 && <li className="text-ink-2">Nobody assigned here yet.</li>}
+          {draft.map((d) => (
+            <li key={`${d.user_id}-${d.role}`} className="flex items-center justify-between gap-2">
+              <span>
+                {label(d.user_id)} <span className="text-ink-3">· {ROLE_NAME[d.role]}</span>
+              </span>
+              <button
+                type="button"
+                aria-label={`Remove ${label(d.user_id)}`}
+                onClick={() => setDraft(draft.filter((x) => x !== d))}
+                className="text-ink-2 hover:text-foreground"
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+        <div className="flex flex-wrap gap-2">
+          <Select value={userId} onValueChange={setUserId}>
+            <SelectTrigger aria-label="Person" className="min-w-[180px] flex-1">
+              <SelectValue placeholder="Pick a person" />
+            </SelectTrigger>
+            <SelectContent>
+              {(users ?? [])
+                .filter((u) => u.is_active)
+                .map((u) => (
+                  <SelectItem key={u.id} value={u.id}>
+                    {u.name ?? u.email}
+                  </SelectItem>
+                ))}
+            </SelectContent>
+          </Select>
+          <Select value={role} onValueChange={setRole}>
+            <SelectTrigger aria-label="Role" className="w-[160px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(ROLE_NAME).map(([id, name]) => (
+                <SelectItem key={id} value={id}>
+                  {name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button variant="outline" disabled={!userId} onClick={add}>
+            Add
+          </Button>
+        </div>
+        {save.isError && <p className="text-[13px] text-danger">Couldn't save. Try again.</p>}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button disabled={save.isPending} onClick={() => save.mutate()}>
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -2,7 +2,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouterState } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
-import logoUrl from "@/assets/hackerearth_logo_light.png";
 import { Button } from "@/components/ui/button";
 import {
   GOOGLE_LOGIN_URL,
@@ -27,9 +26,11 @@ function CenteredScreen({ children }: { children: ReactNode }) {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center gap-3 text-center">
-          <span className="flex size-12 items-center justify-center overflow-hidden rounded-xl bg-brand-panel ring-1 ring-border">
-            <img src={logoUrl} alt="HackerEarth" className="brand-logo size-7 object-contain" />
-          </span>
+          <img
+            src="/favicon.png"
+            alt="HackerEarth"
+            className="size-12 rounded-xl bg-white object-contain ring-1 ring-border dark:ring-white/40"
+          />
           <span className="font-display text-lg font-semibold text-foreground">ProgramOps</span>
         </div>
         {children}

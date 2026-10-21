@@ -167,8 +167,6 @@
   ::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
 }
 
-.brand-logo { filter: none; }
-
 /* ---- type roles: 28 / 20 / 16 / 14 / 13 / 12, weights 400 / 500 / 600 ------------------- */
 @utility t-headline-lg { font-size: 28px; line-height: 34px; font-weight: 600; letter-spacing: -0.01em; }
 @utility t-headline-md { font-size: 20px; line-height: 26px; font-weight: 600; letter-spacing: -0.01em; }

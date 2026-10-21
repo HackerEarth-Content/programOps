@@ -1,5 +1,6 @@
 // The ProgramOps primitives. Every screen is composed from these so spacing, type and tone stay
 // consistent (Stitch DESIGN.md: flat, 1px lines, Inter for prose, JetBrains Mono for data).
+import { Check } from "lucide-react";
 import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { formatDay, formatWhen } from "@/lib/format";
 import { groupLog, splitList, type LogEvent } from "@/lib/history";
@@ -470,34 +471,43 @@ export const STAGE_LABELS = [
   "Closed",
 ] as const;
 
-/** Six equal segments: done = accent tint, current = accent with a bold label, upcoming = raised. */
+/** Six equal segments: done = green with a check, current = accent with a bold label, upcoming = raised. */
 export function StageBar({ current }: { current: number }) {
   return (
     <ol aria-label="Lifecycle stage" className="grid grid-cols-6 gap-1.5">
-      {STAGE_LABELS.map((label, i) => (
-        <li
-          key={label}
-          aria-current={i === current ? "step" : undefined}
-          className="min-w-0 space-y-1.5"
-        >
-          <div
-            className={cn(
-              "h-1.5 rounded-full",
-              i < current ? "bg-accent-bg" : i === current ? "bg-primary" : "bg-raised",
+      {STAGE_LABELS.map((label, i) => {
+        const done = i < current;
+        const now = i === current;
+        return (
+          <li key={label} aria-current={now ? "step" : undefined} className="min-w-0 space-y-1.5">
+            <div
+              className={cn(
+                "h-1.5 rounded-full",
+                done ? "bg-ok" : now ? "bg-primary" : "bg-raised",
+              )}
+            />
+            <p
+              className={cn(
+                "flex items-center gap-1 truncate text-[13px]",
+                now ? "font-semibold text-foreground" : done ? "text-foreground" : "text-ink-2",
+              )}
+            >
+              {done && <Check aria-hidden className="size-3.5 shrink-0 text-ok" />}
+              <span className="truncate">{label}</span>
+            </p>
+            {(done || now) && (
+              <span
+                className={cn(
+                  "inline-block rounded-full px-1.5 py-px text-[11px] font-medium uppercase tracking-wide",
+                  done ? "bg-ok-bg text-ok" : "bg-accent-bg text-primary",
+                )}
+              >
+                {done ? "Done" : "Now"}
+              </span>
             )}
-          />
-          <p
-            className={cn(
-              "truncate text-[13px]",
-              i === current ? "font-semibold text-foreground" : "text-ink-2",
-            )}
-          >
-            {label}
-            {i !== current && i < current && <span className="ml-1 text-ink-3">done</span>}
-            {i === current && <span className="ml-1 font-normal text-ink-3">now</span>}
-          </p>
-        </li>
-      ))}
+          </li>
+        );
+      })}
     </ol>
   );
 }
