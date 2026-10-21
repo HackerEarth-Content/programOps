@@ -3,6 +3,7 @@ campaign/event breakdowns over core.orm.Program."""
 
 from __future__ import annotations
 
+import time
 import uuid
 from urllib.parse import quote
 from collections import Counter
@@ -15,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer, load_only
 
+from core.access import Access, require_permission
 from core.database import get_session
 from core.config import settings
 from core.orm import (
@@ -24,8 +26,8 @@ from core.orm import (
     ProgramNote,
     ProgramStageHistory,
 )
-from core.users import current_active_user, require_editor
-from core import redash_sync
+from core.permissions import Permission
+from core import audit, redash_sync
 from hubspot_client import pipeline
 from hubspot_client.client import get_user_names
 from hubspot_client.stage_checklist import (
@@ -40,10 +42,12 @@ from hubspot_client.weekly_brief import generate_weekly_brief
 # Every route here requires a signed-in user -- router-level dependency
 # gates the whole surface in one place instead of repeating it per route.
 router = APIRouter(
-    prefix="/programs", tags=["programs"], dependencies=[Depends(current_active_user)]
+    prefix="/programs",
+    tags=["programs"],
+    dependencies=[Depends(require_permission(Permission.PROGRAM_VIEW))],
 )
 
-@router.post("/sync", status_code=202, dependencies=[Depends(require_editor)])
+@router.post("/sync", status_code=202, dependencies=[Depends(require_permission(Permission.INTEGRATIONS_LINK))])
 async def sync_now():
     """Start a HubSpot sync in the background (the same one the scheduler
     runs). Returns immediately -- poll GET /programs/sync/status for progress.
@@ -57,7 +61,7 @@ async def sync_status():
 
 
 SOW_ITEMS = ("SOW Shared", "SOW Signed")  # Pre Sales checklist items an uploaded SOW satisfies
-@router.post("/redash/sync", status_code=202, dependencies=[Depends(require_editor)])
+@router.post("/redash/sync", status_code=202, dependencies=[Depends(require_permission(Permission.INTEGRATIONS_LINK))])
 async def redash_sync_now():
     """Reload registrations for every program in auto mode right now (override of the
     6-hourly job). Poll GET /programs/redash/sync/status."""
@@ -166,19 +170,18 @@ async def get_program_notes(ticket_id: str, session: AsyncSession = Depends(get_
 
 
 class CreateNoteRequest(BaseModel):
-    body: str = Field(min_length=1)
-    author_name: str = Field(min_length=1)
+    body: str = Field(min_length=1)  # the author is always the signed-in user, never taken from the body
 
 
-@router.post("/{ticket_id}/notes", status_code=201, dependencies=[Depends(require_editor)])
+@router.post("/{ticket_id}/notes", status_code=201)
 async def create_program_note(
-    ticket_id: str, payload: CreateNoteRequest, session: AsyncSession = Depends(get_session)
+    ticket_id: str,
+    payload: CreateNoteRequest,
+    session: AsyncSession = Depends(get_session),
+    access: Access = Depends(require_permission(Permission.COMMENT_ADD)),
 ):
     """Add a note directly in ProgramOps -- local only, not written back to
-    HubSpot (see hubspot_client/weekly_brief.py's docstring pattern: this is
-    a deliberate scope decision, not an oversight -- write-through would need
-    a verified HubSpot notes-write scope and a real login system for author
-    attribution, neither of which exist yet)."""
+    HubSpot (write-back needs a HubSpot token scope that isn't set yet)."""
     program = await session.get(Program, ticket_id)
     if program is None:
         raise HTTPException(status_code=404, detail="Program not found")
@@ -188,11 +191,16 @@ async def create_program_note(
         ticket_id=ticket_id,
         body=payload.body.strip(),
         author_user_id=None,
-        author_name=payload.author_name.strip(),
+        author_name=access.user.name or access.user.email,
+        author_id=access.user.id,
         source="programops",
         created_at=datetime.now(timezone.utc),
     )
     session.add(note)
+    audit.record(
+        session, access.user, entity="note", entity_id=note.note_id, ticket_id=ticket_id,
+        action="note_added", new={"length": len(note.body)},
+    )
     await session.commit()
     return _serialize_note(note)
 
@@ -205,6 +213,9 @@ def _serialize_note(n: ProgramNote, user_names: dict[int, str] | None = None) ->
         "author_name": n.author_name
         or (user_names or {}).get(n.author_user_id),  # HubSpot notes: resolved user name
         "source": n.source,
+        "kind": n.kind,
+        "health": n.health,
+        "blockers": n.blockers,
         "created_at": n.created_at,
     }
 
@@ -266,17 +277,23 @@ async def checklist_status(session: AsyncSession = Depends(get_session)):
     return results
 
 
-@router.get("/analytics/weekly-brief")
-async def weekly_brief(days: int = Query(7, ge=1, le=90), session: AsyncSession = Depends(get_session)):
-    """AI-generated executive summary of program activity over the last
-    `days` days (stage/checklist changes + internal notes), per hackathon.
+_BRIEF_TTL_SECONDS = 30 * 60
+_brief_cache: dict[int, tuple[float, dict]] = {}  # ponytail: per process; a shared cache if the API ever runs several workers
 
-    Generated fresh on every call -- not cached. Each call costs OpenAI
-    tokens; if this gets called often (e.g. every dashboard load), add
-    caching (e.g. a small DB table keyed by ISO week) before that becomes a
-    real cost, rather than pre-building it now against unconfirmed usage.
-    """
-    return await generate_weekly_brief(session, days=days)
+
+@router.get("/analytics/weekly-brief")
+async def weekly_brief(
+    days: int = Query(7, ge=1, le=90), refresh: bool = False, session: AsyncSession = Depends(get_session)
+):
+    """AI-generated executive summary of program activity over the last `days` days (stage/checklist changes plus
+    internal notes), per program. Each generation costs OpenAI tokens, so the result is kept for 30 minutes;
+    `refresh=true` generates a new one."""
+    hit = _brief_cache.get(days)
+    if hit and not refresh and time.monotonic() - hit[0] < _BRIEF_TTL_SECONDS:
+        return hit[1]
+    result = await generate_weekly_brief(session, days=days)
+    _brief_cache[days] = (time.monotonic(), result)
+    return result
 
 
 @router.get("/analytics/campaign-types")
@@ -314,6 +331,8 @@ def _serialize(p: Program) -> dict:
         "stage": p.stage_label,
         "campaign_type": p.campaign_type,
         "event_name": p.event_name or p.other_event_name,
+        "display_name": p.display_name,
+        "untitled": p.is_untitled,
         "platform_details": p.platform_details,
         "blackops_account_name": p.blackops_account_name,
         "company_name": p.company_name,

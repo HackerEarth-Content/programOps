@@ -15,8 +15,11 @@ from datetime import datetime, timezone
 
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from core import channel_sync, reminders, slack_outbox
+from core.database import db_manager
 from core.redash_sync import REFRESH_HOURS, run_all as redash_run_all
 from hubspot_client import pipeline
 
@@ -30,6 +33,14 @@ async def _sync_once() -> None:
     """run_tracked never raises; APScheduler just needs the log line."""
     result = await pipeline.run_tracked()
     logger.info("program_sync_complete" if "error" not in result else "program_sync_errored", **result)
+
+
+async def _queue_reminders() -> None:
+    await reminders.run(db_manager.session_factory())
+
+
+async def _send_outbox() -> None:
+    await slack_outbox.send_pending(db_manager.session_factory())
 
 
 def start_scheduler() -> AsyncIOScheduler:
@@ -48,5 +59,12 @@ def start_scheduler() -> AsyncIOScheduler:
         redash_run_all, IntervalTrigger(hours=REFRESH_HOURS), id="redash_registrations_sync",
         max_instances=1, coalesce=True,
     )
+    scheduler.add_job(
+        channel_sync.refresh_all, CronTrigger(hour=3), id="channel_snapshots", max_instances=1, coalesce=True
+    )
+    scheduler.add_job(
+        _queue_reminders, IntervalTrigger(minutes=5), id="reminders", max_instances=1, coalesce=True
+    )
+    scheduler.add_job(_send_outbox, IntervalTrigger(minutes=1), id="slack_outbox", max_instances=1, coalesce=True)
     scheduler.start()
     return scheduler

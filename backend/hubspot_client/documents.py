@@ -19,9 +19,10 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
+from core import activities
 from core.config import settings
 from core.database import db_manager
-from core.orm import Program, ProgramDocument
+from core.orm import Program, ProgramActivity, ProgramDocument
 from hubspot_client.client import HubSpotClient
 
 logger = structlog.get_logger(__name__)
@@ -356,6 +357,8 @@ async def _process(
             set_={c: getattr(stmt.excluded, c) for c in row if c not in ("ticket_id", "kind")},
         )
         await session.execute(stmt)
+        if kind == "poa" and details is not None:
+            await activities.seed_from_poa(session, ticket_id, details)  # the plan follows the POA, never a person's edits
         await session.commit()
 
 
@@ -406,6 +409,25 @@ async def apply_sow_deal_value() -> None:
                 if program.expected_deal_size != amount or program.deal_size_source != "sow":
                     program.expected_deal_size = amount
                     program.deal_size_source = "sow"
+        await session.commit()
+
+
+async def seed_missing_plans() -> None:
+    """Give every program with an extracted POA a marketing plan if it has none yet. A newly extracted POA
+    seeds itself in _process; this covers POAs extracted before the plan existed."""
+    session_factory = db_manager.session_factory()
+    async with session_factory() as session:
+        docs = (
+            await session.execute(
+                select(ProgramDocument.ticket_id, ProgramDocument.details).where(
+                    ProgramDocument.kind == "poa",
+                    ProgramDocument.status == "ok",
+                    ProgramDocument.ticket_id.not_in(select(ProgramActivity.ticket_id)),
+                )
+            )
+        ).all()
+        for ticket_id, details in docs:
+            await activities.seed_from_poa(session, ticket_id, details)
         await session.commit()
 
 

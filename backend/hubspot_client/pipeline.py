@@ -13,10 +13,11 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from core.config import settings
 from core.database import db_manager
+from core.orm import Program
 from hubspot_client import cursor as cursor_store
 from hubspot_client.client import HubSpotClient
 from hubspot_client.db_writer import (
@@ -25,7 +26,7 @@ from hubspot_client.db_writer import (
     upsert_programs,
     upsert_stage_history,
 )
-from hubspot_client.documents import apply_sow_deal_value, sync_documents
+from hubspot_client.documents import apply_sow_deal_value, seed_missing_plans, sync_documents
 from hubspot_client.models import ProgramNoteModel, ProgramTicket, StageHistoryEvent
 
 logger = structlog.get_logger(__name__)
@@ -81,6 +82,19 @@ async def extract_history_and_notes(
     return events, notes
 
 
+async def sync_csm_emails() -> None:
+    """Fill `programs.csm_email` from HubSpot's owners for every program (not just this run's), so a CSM who signs in
+    finds their programs at once. Never fails the sync: an owners outage just leaves the last values."""
+    try:
+        emails = await HubSpotClient().fetch_owner_emails()
+        async with db_manager.session_factory()() as session:
+            for csm_id in (await session.scalars(select(Program.csm_id).where(Program.csm_id.is_not(None)).distinct())).all():
+                await session.execute(update(Program).where(Program.csm_id == csm_id).values(csm_email=emails.get(csm_id)))
+            await session.commit()
+    except Exception:
+        logger.exception("csm_email_sync_failed")
+
+
 async def _sync() -> dict:
     since = await cursor_store.get_cursor()
     since_ms = (
@@ -103,8 +117,10 @@ async def _sync() -> dict:
 
     # Documents and deletions are reconciled against the whole table, not just
     # this run's tickets, so earlier failures heal on their own.
+    await sync_csm_emails()
     documents = await sync_documents()
     await apply_sow_deal_value()
+    await seed_missing_plans()
     deleted = await _reconcile_deleted()
 
     # Back the cursor off: HubSpot's search index lags edits by up to a few

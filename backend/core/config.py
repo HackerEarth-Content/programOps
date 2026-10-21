@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # Saved queries: per-event details incl. the daily registration split, and the active-events list.
     REDASH_REGISTRATIONS_QUERY_ID: str = "6123"  # per-event details + daily registrations (param `event_slug`)
     REDASH_EVENTS_QUERY_ID: str = "6142"  # active events, for the slug picker
+    # Registrations by source / medium / campaign (param `Event - Title or Slug`; slow, so snapshotted).
+    REDASH_CHANNELS_QUERY_ID: str = "6170"
+
+    # Off until the HubSpot token has the ticket-update scope: lets CSMs change stage and checklists from the portal.
+    HUBSPOT_WRITEBACK_ENABLED: bool = False
 
     # HubSpot search API allows up to 200 results per page
     PROGRAM_PAGE_SIZE: int = 200
@@ -33,8 +38,9 @@ class Settings(BaseSettings):
     API_BASE_URL: str
     ENVIRONMENT: str
 
-    # Auth (Google OAuth) -- mirrors Ticket-Hub's core/config.py, minus its
-    # ALLOWED_EMAILS allowlist (not needed here -- any Google account can sign in).
+    # Auth (Google OAuth). Sign-in is invite-only (core/invites.py); these emails are created as
+    # super admins on start so the very first login works without an invite. Comma-separated.
+    SUPER_ADMIN_EMAILS: str = ""
     USER_SECRET: str
     GOOGLE_CLIENT_ID: str
     GOOGLE_CLIENT_SECRET: str

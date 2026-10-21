@@ -29,9 +29,12 @@ async def logout(
 # Custom Google login endpoint -- frontend navigates here directly (not
 # fetch) so the CSRF cookie is set as a first-party cookie.
 @router.get("/google/login")
-async def google_login():
+async def google_login(invite: str | None = None):
+    """`invite` is the token from an invite link; it rides in the signed OAuth state and is checked in the callback."""
     csrf_token = generate_csrf_token()
     state_data = {CSRF_TOKEN_KEY: csrf_token}
+    if invite:
+        state_data["invite"] = invite
     state = generate_state_token(state_data, SECRET)
 
     callback_url = f"{settings.API_BASE_URL}/api/auth/google/callback"
