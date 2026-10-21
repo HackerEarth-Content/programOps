@@ -520,3 +520,90 @@ Each step ends with its tests passing and a changelog line in `docs/PROJECT_LOG.
 2. **Settled (2026-10-19):** invite lifetime is 3 days; reminder defaults (approval pending > 4 h, go-live reminder 2 h ahead) are accepted; Sai Revanth (`sai.revanth@hackerearth.com`) is the super admin; the inviter assigns roles at invite time.
 3. HubSpot token ticket-update scope (D-1): the product owner will set it later. It is needed only for step 7 (write-back), which stays behind its flag until then.
 4. CSM and marketing emails are not needed up front: the super admin invites each person with their role from the portal.
+
+---
+
+## 13. CSM operations extension (the CSM team's pointers, 2026-10-19)
+
+### CAPABILITY
+A CSM runs a program through its whole life in the portal, not just its rounds and counts: kickoff to closure with gate checklists, client dependencies with their effect on the timeline, assessment readiness per round, participant communications, one report that joins registration to shortlisting and operational health, a recorded history of every timeline change, and a closure view that says what is still outstanding.
+
+### CONSTRAINTS (fixed)
+- **One checklist engine.** Lifecycle gates, assessment readiness, closure and special requests are all checklists: a template's items are snapshotted when the checklist is created (later template edits never change it), each item records who confirmed it and the detail, and a checklist is `ready` only when every required item is confirmed.
+- **Lifecycle is a portal-owned overlay.** Seven phases in a fixed order: kickoff, requirements, content approval, launch readiness, participant management, execution, closure. HubSpot's stage stays the master for the ticket. A phase can be completed only when its gate checklist is ready, or skipped with a written reason.
+- **Dependencies** have a client-side owner (free text), an internal follow-up owner (a user), a due date, and optionally what they block (a phase or a round). "Overdue" and "delay days" are derived from today's date, never stored. The projected slip is the largest delay among open, overdue dependencies.
+- **Communications are a record, not a sender.** The portal logs planned and sent invitations, reminders, shortlist announcements and RSVP communications. It never sends them (no email in release 1).
+- **Change management never overwrites the original.** A timeline change stores original and revised dates, the reason, who proposed it and who approved it. Only a CSM approves. Approving applies the revised date to the round, phase or activity it names and opens downstream tasks (for a round: its unsent communications and its readiness checklist, plus any the CSM lists). History is append-only through the audit trail.
+- **Reporting is derived, never stored.** Participation means attempted; submissions need a new `submitted` count on round counts (project-style rounds); conversion and drop-off are computed between consecutive funnel steps.
+- **Closure** is ready when the closure gate is ready, no dependency is open and no request is open.
+
+### IMPLEMENTATION CONTRACT
+Actors: CSM (edits all of it), marketing and account managers (read, comment, log requests), super admin (edit templates). Existing permissions cover it: `request.manage` for gates, dependencies, communications and changes; `rounds.edit` and `counts.enter` for readiness and counts; `request_types.edit` for templates; `activity.approve` is not involved.
+
+Tables (all additive; migrations in section 8's style):
+```
+checklist_templates(id, key unique, name, kind in (request, phase, readiness), active)
+checklist_template_items(id, template_id, seq, label, instruction, required, needs_detail)
+checklists(id, ticket_id, template_id, kind, title, status in (open, in_progress, ready, done, declined),
+           round_id null, phase null, owner_id null, due_at null, requested_by null, detail, resolution, created_at, updated_at)
+checklist_items(id, checklist_id, seq, label, instruction, required, needs_detail, confirmed_by null, confirmed_by_name null, confirmed_at null, detail)
+program_phases(ticket_id, phase, status in (not_started, in_progress, done, skipped), starts_on, due_on, completed_at, completed_by_name, skip_reason, PK(ticket_id, phase))
+client_dependencies(id, ticket_id, title, kind in (input, approval, asset, decision, other), client_owner, owner_id null, due_on,
+                    status in (open, received, waived), blocks_phase null, blocks_round_id null, notes, received_at null)
+participant_comms(id, ticket_id, kind in (invitation, reminder, shortlist, rsvp, announcement, other), audience, round_id null,
+                  planned_for, sent_at null, recipients null, status in (planned, sent, skipped), owner_id null, notes)
+timeline_changes(id, ticket_id, subject_type in (round, phase, activity), subject_id, label, field, original date, revised date, reason,
+                 status in (proposed, approved, rejected), proposed_by(+name), decided_by(+name), decided_at)
+timeline_change_tasks(id, change_id, label, ref_type null, ref_id null, done)
+round_counts + submitted int null
+program_notes + kind, health, blockers   (daily updates and comments)
+```
+Requests (the special-request flow from section 5.6) are `checklists` with `kind='request'`, so there is one engine and one set of tests.
+
+Endpoints (new): `GET|POST /checklist-templates`, `PATCH /checklist-templates/{id}`; `GET|POST /programs/{id}/requests`, `PATCH .../requests/{rid}`, `PUT .../checklists/{cid}/items/{iid}`; `GET /programs/{id}/lifecycle`, `PATCH .../lifecycle/{phase}`; readiness is created with each round (`GET /programs/{id}/rounds` embeds its readiness checklist); `GET|POST|PATCH /programs/{id}/dependencies`; `GET|POST|PATCH /programs/{id}/communications`; `GET|POST /programs/{id}/timeline-changes`, `POST .../{cid}/approve|reject`, `PATCH .../{cid}/tasks/{tid}`; `GET /programs/{id}/report`; `GET /programs/{id}/closure`.
+
+Queue and health effects: the CSM queue gains `dependency_overdue`, `comm_overdue`, `readiness_incomplete` (a round starting within 3 days whose readiness is not ready) and `change_awaiting_approval`; program health turns amber for any of these and critical for a dependency overdue by more than 3 days.
+
+### NON-GOALS
+Sending participant communications; integrating with the assessment platform (counts and submissions stay CSM-entered); client login or a client-facing timeline.
+
+### OPEN QUESTIONS (assumed defaults, change by editing templates or settings)
+- The seven phase gates ship with a starter checklist each (kickoff, requirements, content approval, launch readiness, participant management, execution, closure). The CSM team should review the wording; items are editable without a release.
+- "Critical" when a dependency is overdue by more than 3 days is a proposed threshold.
+- The readiness template (technical configuration, test links, engineering review, dry run, pre-launch sign-off) is a starter list for the same review.
+
+### HANDOFF
+Ready for direct implementation, test-first (`tdd-workflow`), then `verification-loop`.
+
+### Revised build order (supersedes section 11 from step 3)
+| Step | Scope |
+|---|---|
+| 3 | Registrations by source: relevant registrations, targets and dates, channel snapshot (Redash 6170), attribution, lift |
+| 4 | Rounds and counts, checklist engine with templates and requests, daily updates and comments, program assignments, CSM queue, program health |
+| 4b | CSM operations: lifecycle, client dependencies, assessment readiness, participant communications, timeline changes, closure, program report |
+| 5 | Settings, Slack outbox, reminders (now including dependencies, communications, readiness), manual nudge and breach alerts |
+| 6 | Views and clicks per activity, results-to-record queue |
+| 7 | HubSpot write-back behind its flag |
+| 8 | Contract migration and tidy |
+
+
+---
+
+## 14. As built (2026-10-19)
+
+Steps 0 to 8 and the CSM operations extension (section 13) are implemented and tested; see the project log for the full list and the migration chain. Where the build differs from the design above:
+
+| Design said | Built |
+|---|---|
+| `GET /admin/audit` | `GET /audit` (every internal role may read it) |
+| Separate resend and re-issue invite | one `POST /admin/invites/{id}/resend`; it is also what "Copy link" calls |
+| `expired` stored lazily | derived from `expires_at`, never stored |
+| `program_requests` and `request_*` tables | one checklist engine: `checklists`, `checklist_items`, `checklist_templates`, `checklist_template_items` (requests are `kind='request'`) |
+| Seed `content_to_marketing` in a migration | seeded in code at startup (`ensure_default_templates`), idempotent, never overwrites an edited template |
+| Last-super-admin guard as a DB trigger | row-locked service check (self-change is also refused) |
+| `GET /programs/portfolio` | `GET /portfolio` (the other path collides with `/programs/{ticket_id}`) |
+| Go-live reminder 2 hours ahead | on the planned date (activities have a planned date, not a planned time) |
+| Registration summaries through the outbox | still posted directly so the UI shows the result at once; all new messages use the outbox |
+| `last_active` on users, CSV exports, per-program AI brief | not built |
+
+Frontend: only the step 1 compatibility edits (`/me`, `useCan`, invite and waiting-for-access screens) exist. The Stitch reference screens are the next piece of work and every endpoint they need is in place.
