@@ -385,3 +385,32 @@ async def test_a_creative_proof_must_be_an_http_link(client_for, make_user, plan
     assert ok.status_code == 200
     cleared = await client.patch(f"/programs/{plan}/activities/{aid}", json={"creative_proof_url": ""})
     assert cleared.status_code == 200 and cleared.json()["creative_proof_url"] is None
+
+
+# ---- approval binds the content that was approved ------------------------------------------------
+
+
+async def approved_activity(client_for, make_user, make_program, db):
+    await make_program("t1")
+    await seed(db)
+    csm = await client_for(await make_user("csm@example.com", [Role.CSM], name="Priya S."))
+    first = (await csm.get("/programs/t1/activities")).json()[0]
+    await csm.post(f"/programs/t1/activities/{first['id']}/approve")
+    marketing = await client_for(await make_user("m@example.com", [Role.MARKETING], name="Neha K."))
+    return marketing, first["id"]
+
+
+async def test_editing_what_was_approved_voids_the_approval_and_says_so(client_for, make_user, make_program, db):
+    marketing, aid = await approved_activity(client_for, make_user, make_program, db)
+    edited = await marketing.patch(f"/programs/t1/activities/{aid}", json={"hook": "A completely different message"})
+    assert edited.status_code == 200 and edited.json()["approved_at"] is None
+    async with db() as session:
+        event = await session.scalar(select(ProgramEvent).where(ProgramEvent.action == "approval_reset"))
+    assert event.old["by"] == "Priya S." and event.new == {"because": ["hook"]}
+
+
+async def test_operational_fields_can_still_change_after_approval(client_for, make_user, make_program, db):
+    marketing, aid = await approved_activity(client_for, make_user, make_program, db)
+    for body in ({"utm": "he_mark/x"}, {"planned_date": "2026-11-02"}, {"status": "wip"}):
+        res = await marketing.patch(f"/programs/t1/activities/{aid}", json=body)
+        assert res.status_code == 200 and res.json()["approved_at"] is not None, body

@@ -38,6 +38,9 @@ class ActivitySource(StrEnum):
     MANUAL = "manual"  # added by hand: shown with an "ADDED" badge
 
 
+# What the CSM approves. Editing any of these on an approved activity that is not live clears the approval.
+APPROVED_CONTENT = frozenset({"title", "action", "audience", "outcome", "hook", "target_note", "creative_proof_url"})
+
 # The fields a PATCH may change. Approval has its own functions (a different permission).
 EDITABLE_FIELDS = frozenset(
     {
@@ -246,6 +249,7 @@ async def update(
         raise DomainError("activity_requires_utm", "A live activity must keep its UTM.")
 
     changed = False
+    changed_fields: set[str] = set()
     for field, value in changes.items():
         old = getattr(activity, field)
         if _jsonable(old) == _jsonable(value):
@@ -256,6 +260,16 @@ async def update(
         )
         setattr(activity, field, _jsonable(value) if field == "status" else value)
         changed = True
+        changed_fields.add(field)
+    if activity.approved_at is not None and activity.status != ActivityStatus.LIVE and changed_fields & APPROVED_CONTENT:
+        # The CSM signed off on this content: change it and the sign-off no longer applies (UTM, dates and status are
+        # operational and may change after approval).
+        audit.record(
+            session, actor, entity="activity", entity_id=str(activity.id), ticket_id=activity.ticket_id,
+            action="approval_reset", old={"by": activity.approved_by_name, "at": _jsonable(activity.approved_at)},
+            new={"because": sorted(changed_fields & APPROVED_CONTENT)},
+        )
+        activity.approved_by = activity.approved_by_name = activity.approved_at = None
     if changed:
         activity.updated_by, activity.updated_at = actor.id, _now()
     return activity

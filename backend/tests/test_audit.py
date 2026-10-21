@@ -90,3 +90,18 @@ async def test_the_audit_log_can_be_filtered_by_program(client_for, make_user, m
 async def test_a_person_with_no_role_cannot_read_the_audit_log(client_for, make_user):
     response = await (await client_for(await make_user("new@example.com"))).get("/audit")
     assert response.status_code == 403
+
+
+async def test_who_was_invited_and_whose_roles_changed_is_only_for_people_who_manage_users(client_for, make_user, db):
+    async with db() as session:
+        audit.record(session, None, entity="invite", entity_id="1", action="invite_created", new={"email": "x@example.com"})
+        audit.record(session, None, entity="user", entity_id="2", action="roles_changed")
+        audit.record(session, None, entity="activity", entity_id="3", ticket_id="t1", action="approved")
+        await session.commit()
+    am = await client_for(await make_user("am@example.com", [Role.ACCOUNT_MANAGER]))
+    admin = await client_for(await make_user("admin@example.com", [Role.SUPER_ADMIN]))
+    seen_by_am = {e["entity"] for e in (await am.get("/audit")).json()["items"]}
+    seen_by_admin = {e["entity"] for e in (await admin.get("/audit")).json()["items"]}
+    assert "activity" in seen_by_am and not seen_by_am & {"user", "invite", "settings"}
+    assert {"user", "invite", "activity"} <= seen_by_admin
+    assert (await am.get("/audit", params={"entity": "user"})).json()["items"] == []  # asking for them directly gets nothing

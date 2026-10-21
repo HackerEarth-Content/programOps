@@ -721,7 +721,7 @@ function Inspector({
         </div>
         <p className="text-[13px] text-ink-2">
           {a.approved_at
-            ? `Approved ${formatWhen(a.approved_at)}.`
+            ? `Approved ${formatWhen(a.approved_at)}.${a.status === "live" ? "" : " Changing the description or creative proof clears the approval."}`
             : "Can't go live without CSM approval and a UTM."}
         </p>
         {canApprove && !a.approved_at && (

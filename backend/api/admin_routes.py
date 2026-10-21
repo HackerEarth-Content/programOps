@@ -338,6 +338,8 @@ async def preview_invite(token: str, session: AsyncSession = Depends(get_session
 
 # ---- audit -----------------------------------------------------------------
 
+ADMIN_ENTITIES = ("user", "invite", "settings")
+
 
 @audit_router.get("", response_model=EventPage)
 async def list_events(
@@ -348,9 +350,13 @@ async def list_events(
     before: int | None = None,
     limit: int = Query(50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
+    access: Access = Depends(current_access),
 ) -> EventPage:
-    """Newest first. Keyset pagination: pass `next_before` back as `before`."""
+    """Newest first. Keyset pagination: pass `next_before` back as `before`. Who was invited, whose roles or
+    permissions changed and portal settings are visible only to people who manage users."""
     stmt = select(ProgramEvent).order_by(ProgramEvent.id.desc()).limit(limit + 1)
+    if Permission.USERS_MANAGE not in access.permissions:
+        stmt = stmt.where(ProgramEvent.entity.not_in(ADMIN_ENTITIES))
     for column, value in (
         (ProgramEvent.ticket_id, ticket_id),
         (ProgramEvent.entity, entity),

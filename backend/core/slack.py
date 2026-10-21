@@ -54,12 +54,20 @@ async def channel_name(channel_id: str) -> tuple[bool, str]:
     return (True, data["channel"]["name"]) if ok else (False, str(data))
 
 
+def escape(text: str) -> str:
+    """Slack's required escaping, so a program name, note or title can't ping @channel or build a link."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 async def post_message(channel_id: str, text: str) -> tuple[bool, str]:
-    ok, data = await _call("chat.postMessage", {"channel": channel_id, "text": text})
+    # Every message we write uses only *bold*, :emoji: and plain text, so escaping the whole body is safe and covers
+    # every caller (outbox, summaries, tests) at the one place messages leave.
+    ok, data = await _call("chat.postMessage", {"channel": channel_id, "text": escape(text)})
     return (True, "") if ok else (False, str(data))
 
 
 if __name__ == "__main__":
     assert CHANNEL_ID.match("C0123456789") and CHANNEL_ID.match("G0123456789")
     assert not CHANNEL_ID.match("general") and not CHANNEL_ID.match("c0123456789")
+    assert escape("<!channel> a&b <https://x|y>") == "&lt;!channel&gt; a&amp;b &lt;https://x|y&gt;"
     print("ok")
