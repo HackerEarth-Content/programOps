@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { ProgramDetail } from "@/components/program-detail";
+import { parseTab, type ProgramTab } from "@/lib/program-tabs";
 
 // No loader/SSR prefetch here on purpose: these queries require the auth
 // cookie, which isn't available during server-side rendering in this
@@ -7,6 +8,8 @@ import { ProgramDetail } from "@/components/program-detail";
 // unconditionally 401 on every server render, even for a signed-in user.
 // ProgramDetail fetches client-side instead, where the real cookie is present.
 export const Route = createFileRoute("/programs/$ticketId")({
+  validateSearch: (search: Record<string, unknown>): { tab?: ProgramTab } =>
+    search["tab"] === undefined ? {} : { tab: parseTab(search["tab"]) },
   head: () => ({
     meta: [
       { title: "Program - ProgramOps" },
@@ -19,5 +22,6 @@ export const Route = createFileRoute("/programs/$ticketId")({
 
 function ProgramPage() {
   const { ticketId } = Route.useParams();
-  return <ProgramDetail ticketId={ticketId} />;
+  const { tab = "overview" } = Route.useSearch();
+  return <ProgramDetail ticketId={ticketId} tab={tab} />;
 }

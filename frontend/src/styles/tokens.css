@@ -1,0 +1,116 @@
+/*
+ * Design tokens: the only place colour values live.
+ *
+ * Light is the default. `data-theme="dark"` on <html> selects dark; with no data-theme at all the
+ * operating-system preference decides (the app sets data-theme before first paint, see lib/theme.ts,
+ * so the media query below only matters if scripts are blocked).
+ *
+ * Rules the rest of the app follows:
+ *  - depth comes from surface steps (bg -> surface -> raised), not shadows or heavy borders
+ *  - accent (blue) is for interactive elements, the current stage and action-count badges
+ *  - ok / warn / danger are for status only; everything informational is neutral grey
+ *  - every text/background pair here is at least 4.5:1
+ */
+
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f5f2;
+  --surface: #ffffff;
+  --raised: #f0efeb;
+  --chip: #ecebe6;
+  --border: #e3e1da;
+  --text: #1b1b19;
+  --text-2: #55544f;
+  --text-3: #6b6a64;
+  --accent: #1f5fc4;
+  --accent-bg: #e7effc;
+  --accent-fill: #2563c9;
+  --on-accent: #ffffff;
+  --warn: #7f5200;
+  --warn-bg: #fbf0d6;
+  --danger: #b42318;
+  --danger-bg: #fcebe9;
+  --ok: #1b7046;
+  --ok-bg: #e3f3ea;
+  --selected: #eef3fc;
+  --scrim: rgb(27 27 25 / 0.45);
+
+  /* categorical chart series (never used for status) */
+  --chart-1: #2563c9;
+  --chart-2: #1b7046;
+  --chart-3: #a86a00;
+  --chart-4: #7a4fc2;
+  --chart-5: #b4437a;
+  --chart-6: #0f7a87;
+  --chart-7: #b4482a;
+  --chart-8: #6b6a64;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f1115;
+  --surface: #161a20;
+  --raised: #1e222a;
+  --chip: #262b34;
+  --border: #272c35;
+  --text: #e8eaed;
+  --text-2: #a1a8b3;
+  --text-3: #8a929e;
+  --accent: #7ab0ff;
+  --accent-bg: #1b2a42;
+  --accent-fill: #3470d0; /* the design table says #3e7fe6, but white on it is 3.9:1; this is 4.8:1 */
+  --on-accent: #ffffff;
+  --warn: #f0c05a;
+  --warn-bg: #30260f;
+  --danger: #f3968d;
+  --danger-bg: #371d1c;
+  --ok: #6fcf97;
+  --ok-bg: #14301f;
+  --selected: #1b2433;
+  --scrim: rgb(0 0 0 / 0.6);
+
+  --chart-1: #7ab0ff;
+  --chart-2: #6fcf97;
+  --chart-3: #f0c05a;
+  --chart-4: #b79cf0;
+  --chart-5: #ee8fbb;
+  --chart-6: #5fd0dd;
+  --chart-7: #f0a283;
+  --chart-8: #a1a8b3;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --bg: #0f1115;
+    --surface: #161a20;
+    --raised: #1e222a;
+    --chip: #262b34;
+    --border: #272c35;
+    --text: #e8eaed;
+    --text-2: #a1a8b3;
+    --text-3: #8a929e;
+    --accent: #7ab0ff;
+    --accent-bg: #1b2a42;
+    --accent-fill: #3470d0;
+    --on-accent: #ffffff;
+    --warn: #f0c05a;
+    --warn-bg: #30260f;
+    --danger: #f3968d;
+    --danger-bg: #371d1c;
+    --ok: #6fcf97;
+    --ok-bg: #14301f;
+    --selected: #1b2433;
+    --scrim: rgb(0 0 0 / 0.6);
+
+    --chart-1: #7ab0ff;
+    --chart-2: #6fcf97;
+    --chart-3: #f0c05a;
+    --chart-4: #b79cf0;
+    --chart-5: #ee8fbb;
+    --chart-6: #5fd0dd;
+    --chart-7: #f0a283;
+    --chart-8: #a1a8b3;
+  }
+}

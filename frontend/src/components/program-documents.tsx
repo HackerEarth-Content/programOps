@@ -1,39 +1,43 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
 import {
   AlertTriangle,
   CalendarClock,
   Download,
   ExternalLink,
   FileSignature,
-  FileText,
   Handshake,
-  Loader2,
   Mail,
   Megaphone,
   MessageCircle,
   Newspaper,
+  RefreshCw,
   Share2,
-  ShieldCheck,
-  Target,
-  UploadCloud,
+  type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  dueTodayQueryOptions,
+  Card,
+  CardBody,
+  CardHeader,
+  Chip,
+  EmptyState,
+  MonoLabel,
+  Segmented,
+  Skeleton,
+  type Tone,
+} from "@/components/kit";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { registrationsQueryOptions, type RegistrationEstimate } from "@/lib/api";
+import { formatDate, known } from "@/lib/format";
+import {
   programDocumentsQueryOptions,
-  type DocFile,
   type PoaActivity,
   type PoaChannel,
   type PoaDetails,
   type ProgramDocument,
   type SowDetails,
 } from "@/lib/program-documents";
-import { registrationsQueryOptions, type RegistrationEstimate } from "@/lib/api";
-import { ProgramRegistrations } from "@/components/program-registrations";
 import { cn } from "@/lib/utils";
 
 const toKey = (d: Date) =>
@@ -49,101 +53,115 @@ const fmtLong = (iso: string) =>
     year: "numeric",
   }).format(parse(iso));
 
-// Date-driven highlight only: the item covering today glows; no done/upcoming tags.
+// Date-driven highlight only: the item covering today is marked; no done/upcoming tags.
 const isToday = (today: string, start: string, end: string | null) =>
   today >= start && today <= (end ?? start);
 
-const channelIcon: Record<PoaChannel, typeof Mail> = {
-  Email: Mail,
-  Social: Share2,
-  Community: MessageCircle,
-  Newsletter: Newspaper,
-  Partner: Handshake,
-};
-const channelTone: Record<PoaChannel, string> = {
-  Email: "text-primary bg-primary/10",
-  Social: "text-chart-4 bg-chart-4/10",
-  Community: "text-success bg-success/10",
-  Newsletter: "text-warning bg-warning/10",
-  Partner: "text-destructive bg-destructive/10",
+const CHANNEL: Record<PoaChannel, { icon: LucideIcon; tone: Tone }> = {
+  Email: { icon: Mail, tone: "info" },
+  Social: { icon: Share2, tone: "indigo" },
+  Community: { icon: MessageCircle, tone: "good" },
+  Newsletter: { icon: Newspaper, tone: "warning" },
+  Partner: { icon: Handshake, tone: "serious" },
 };
 
-export function ProgramDocuments({ ticketId, isHiring = false, redashEnabled = true }: { ticketId: string; isHiring?: boolean; redashEnabled?: boolean }) {
-  const documentsQuery = useQuery(programDocumentsQueryOptions(ticketId));
-  const registrationsQuery = useQuery(registrationsQueryOptions(ticketId));
+const NOW = "border-primary bg-primary/5";
+
+export function ProgramDocuments({
+  ticketId,
+  isHiring: _isHiring,
+}: {
+  ticketId: string;
+  isHiring?: boolean | undefined;
+}) {
+  const documents = useQuery(programDocumentsQueryOptions(ticketId));
+  const registrations = useQuery(registrationsQueryOptions(ticketId));
   const [today, setToday] = useState("");
+  const [view, setView] = useState<"sow" | "poa">("sow");
   // Client-only: server render has no notion of the viewer's local date.
   useEffect(() => setToday(toKey(new Date())), []);
 
-  if (documentsQuery.isLoading) {
+  if (documents.isLoading)
     return (
-      <div className="flex justify-center py-10">
-        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+      <div className="space-y-3" aria-busy="true">
+        <div className="grid gap-3 md:grid-cols-2">
+          <Skeleton className="h-24" />
+          <Skeleton className="h-24" />
+        </div>
+        <Skeleton className="h-64" />
       </div>
     );
-  }
-  if (documentsQuery.isError || !documentsQuery.data) {
+  if (documents.isError || !documents.data)
     return (
-      <p className="text-sm text-muted-foreground">Couldn't load the SOW and plan of action.</p>
+      <div
+        role="alert"
+        className="flex items-center justify-between gap-3 rounded-xl border border-status-critical/30 bg-status-critical/5 px-4 py-3"
+      >
+        <span className="flex items-center gap-2 t-body-sm text-status-critical">
+          <AlertTriangle className="size-4" /> Couldn't load the SOW and plan of action.
+        </span>
+        <Button size="sm" variant="outline" onClick={() => void documents.refetch()}>
+          <RefreshCw className="size-3.5" /> Retry
+        </Button>
+      </div>
     );
-  }
 
-  const { sow, poa } = documentsQuery.data;
-  const estimate = registrationsQuery.data?.estimate;
+  const { sow, poa } = documents.data;
   const sowDetails = sow?.details ?? null;
   const poaDetails = poa?.details ?? null;
+  const active =
+    view === "poa" && poaDetails ? "poa" : sowDetails ? "sow" : poaDetails ? "poa" : null;
+  const options = [
+    ...(sowDetails ? [{ id: "sow" as const, label: "SOW details" }] : []),
+    ...(poaDetails ? [{ id: "poa" as const, label: "Marketing schedule" }] : []),
+  ];
 
   return (
-    <section className="space-y-5" aria-label="Program documents">
-      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
-        <div>
-          <p className="section-kicker">From HubSpot</p>
-          <h2 className="section-title">SOW & plan of action</h2>
+    <section className="space-y-4 page-in" aria-label="Program documents">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="grid flex-1 gap-3 md:grid-cols-2">
+          <FileCard kind="Statement of Work" icon={FileSignature} doc={sow} />
+          <FileCard kind="Plan of Action" icon={Megaphone} doc={poa} />
         </div>
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          <CalendarClock className="size-4" />
-          Tracking as of
-          <input
-            type="date"
-            value={today}
-            onChange={(e) => e.target.value && setToday(e.target.value)}
-            className="rounded-md border border-border bg-card px-2 py-1 text-foreground"
-          />
-          <button
-            type="button"
-            onClick={() => setToday(toKey(new Date()))}
-            className="underline-offset-2 hover:text-foreground hover:underline"
-          >
-            Reset
-          </button>
-        </label>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        <FileCard kind="Statement of Work" icon={FileSignature} doc={sow} />
-        <FileCard kind="Plan of Action" icon={Megaphone} doc={poa} />
-      </div>
+      {options.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          {options.length > 1 ? (
+            <Segmented value={active ?? "sow"} onChange={setView} options={options} />
+          ) : (
+            <span />
+          )}
+          <label className="flex items-center gap-2 t-body-sm text-muted-foreground">
+            <CalendarClock className="size-4" />
+            Tracking as of
+            <Input
+              type="date"
+              value={today}
+              onChange={(e) => e.target.value && setToday(e.target.value)}
+              className="w-36 font-mono"
+            />
+            <button
+              type="button"
+              onClick={() => setToday(toKey(new Date()))}
+              className="underline-offset-2 hover:text-foreground hover:underline"
+            >
+              Reset
+            </button>
+          </label>
+        </div>
+      )}
 
-      <Tabs defaultValue={sowDetails ? "sow" : poaDetails ? "poa" : "registrations"}>
-          <TabsList>
-            {sowDetails && <TabsTrigger value="sow">SOW details</TabsTrigger>}
-            {poaDetails && <TabsTrigger value="poa">Marketing schedule</TabsTrigger>}
-            <TabsTrigger value="registrations">Registrations</TabsTrigger>
-          </TabsList>
-          {sowDetails && (
-            <TabsContent value="sow" className="mt-4 space-y-4">
-              <SowView sow={sowDetails} today={today} />
-            </TabsContent>
-          )}
-          {poaDetails && (
-            <TabsContent value="poa" className="mt-4">
-              <PoaView poa={poaDetails} today={today} estimate={estimate} />
-            </TabsContent>
-          )}
-          <TabsContent value="registrations" className="mt-4">
-            <ProgramRegistrations ticketId={ticketId} isHiring={isHiring} activities={poaDetails?.activities ?? []} redashEnabled={redashEnabled} />
-          </TabsContent>
-        </Tabs>
+      {active === "sow" && sowDetails && <SowView sow={sowDetails} today={today} />}
+      {active === "poa" && poaDetails && (
+        <PoaView poa={poaDetails} today={today} estimate={registrations.data?.estimate} />
+      )}
+      {active === null && (
+        <EmptyState
+          title="No extracted details yet"
+          hint="Once the SOW or plan of action is attached to the HubSpot ticket and read, its details appear here."
+        />
+      )}
     </section>
   );
 }
@@ -154,261 +172,280 @@ function FileCard({
   doc,
 }: {
   kind: string;
-  icon: typeof FileText;
+  icon: LucideIcon;
   doc: ProgramDocument<unknown> | null;
 }) {
-  if (!doc) {
+  if (!doc)
     return (
-      <div className="flex items-center gap-4 rounded-lg border border-dashed border-border p-5 text-sm text-muted-foreground">
-        <UploadCloud className="size-5" />
-        <div>
-          <p className="font-medium text-foreground">{kind} not uploaded</p>
-          <p className="text-xs">Attach it to the HubSpot ticket and it will appear here.</p>
+      <Card>
+        <div className="flex items-center gap-3 px-[18px] py-4">
+          <Icon className="size-5 text-muted-foreground" />
+          <div className="min-w-0">
+            <MonoLabel>{kind}</MonoLabel>
+            <p className="text-[14px] font-medium">Not uploaded</p>
+            <p className="t-body-sm text-muted-foreground">
+              Attach it to the HubSpot ticket and it will appear here.
+            </p>
+          </div>
         </div>
-      </div>
+      </Card>
     );
-  }
-  const file: DocFile = doc.file;
+  const file = doc.file;
   return (
-    <div className="workspace-panel p-4">
-      <div className="flex items-center gap-4">
-        <span className="flex size-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-          <Icon className="size-5" />
-        </span>
+    <Card>
+      <div className="flex flex-wrap items-center gap-3 px-[18px] py-4">
+        <Icon className="size-5 shrink-0 text-primary" />
         <div className="min-w-0 flex-1">
-          <p className="text-[10px] font-semibold uppercase text-muted-foreground">{kind}</p>
-          <p className="truncate text-sm font-medium" title={file.file_name}>
+          <div className="flex items-center gap-2">
+            <MonoLabel>{kind}</MonoLabel>
+            <Chip tone={doc.status === "ok" ? "good" : "warning"}>
+              {doc.status === "ok" ? "extracted" : "extraction failed"}
+            </Chip>
+          </div>
+          <p className="truncate text-[14px] font-medium" title={file.file_name}>
             {file.file_name}
           </p>
-          <p className="text-xs text-muted-foreground">
-            {Math.max(1, Math.round(file.size_bytes / 1024))} KB · HubSpot: {file.hubspot_property}
+          <p className="t-data-sm text-muted-foreground">
+            {Math.max(1, Math.round(file.size_bytes / 1024))} KB · {file.hubspot_property}
+            {file.uploaded_at && ` · uploaded ${formatDate(file.uploaded_at)}`}
           </p>
         </div>
         <div className="flex gap-1.5">
           <Button asChild size="sm" variant="outline">
             <a href={file.url} target="_blank" rel="noreferrer">
-              <ExternalLink className="size-4" />
-              View
+              <ExternalLink className="size-3.5" /> View
             </a>
           </Button>
-          <Button asChild size="sm">
+          <Button asChild size="sm" variant="outline">
             <a href={`${file.url}?download=true`}>
-              <Download className="size-4" />
-              Download
+              <Download className="size-3.5" /> Download
             </a>
           </Button>
         </div>
       </div>
       {doc.status === "failed" && (
-        <p className="mt-3 flex items-start gap-2 rounded-md bg-warning/10 p-2 text-xs text-warning">
+        <p className="mx-[18px] mb-4 flex items-start gap-2 rounded-[8px] bg-status-warning/15 px-3 py-2 t-body-sm text-warn">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
           Couldn't extract details from this file ({doc.error ?? "unknown error"}). You can still
           view and download it.
         </p>
       )}
-    </div>
+    </Card>
   );
 }
 
-// "INR 9,50,000 + taxes" from the extracted amount; the raw contract wording
-// ("INR.9,50,000/- plus taxes") is the fallback when no amount was parsed.
-function feeLabel(sow: SowDetails) {
-  if (sow.fee_amount_inr == null) return sow.fee;
+// "INR 9,50,000 + taxes" from the extracted amount; the raw contract wording is the fallback.
+function feeLabel(sow: SowDetails): string | null {
+  if (sow.fee_amount_inr == null) return known(sow.fee);
   const amount = new Intl.NumberFormat("en-IN").format(sow.fee_amount_inr);
   return `INR ${amount}${/tax/i.test(sow.fee) ? " + taxes" : ""}`;
 }
 
 function SowView({ sow, today }: { sow: SowDetails; today: string }) {
   return (
-    <>
-      <div className="workspace-panel p-5">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+    <div className="space-y-4">
+      <Card>
+        <div className="flex flex-wrap items-start justify-between gap-4 px-[18px] pt-4">
           <div className="max-w-2xl">
-            <h3 className="font-display text-lg font-semibold">{sow.title}</h3>
-            <p className="text-sm text-muted-foreground">
+            <h2 className="t-headline-sm">{sow.title}</h2>
+            <p className="t-body-sm text-muted-foreground">
               {sow.customer} · Order dated {fmtLong(sow.order_date)}
             </p>
-            <p className="mt-3 text-sm leading-6">{sow.objective}</p>
+            <p className="mt-3 text-[14px] leading-5">{sow.objective}</p>
           </div>
-          <div className="text-right">
-            <p className="text-[10px] font-semibold uppercase text-muted-foreground">
-              Contract value
-            </p>
-            <p className="font-mono text-2xl font-semibold text-success">{feeLabel(sow)}</p>
-            <p className="text-xs text-muted-foreground">{sow.payment_terms}</p>
-          </div>
-        </div>
-        {sow.commitments.length > 0 && (
-          <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {sow.commitments.map((c) => (
-              <div key={c.label} className="rounded-md bg-secondary/60 p-3">
-                <p className="font-mono text-xl font-semibold">{c.value}</p>
-                <p className="text-xs text-muted-foreground">{c.label}</p>
-              </div>
-            ))}
-          </div>
-        )}
-        <p className="mt-4 text-xs text-muted-foreground">
-          <span className="font-semibold">Validity:</span> {sow.validity} ·{" "}
-          <span className="font-semibold">Excludes:</span> {sow.exclusions}
-        </p>
-      </div>
-
-      <div className="workspace-panel p-5">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h3 className="flex items-center gap-2 font-semibold">
-            <CalendarClock className="size-4 text-primary" />
-            Delivery timeline
-          </h3>
-          {sow.timeline.some((m) => !m.start) && (
-            <p className="text-xs text-muted-foreground">
-              The SOW gives no dates for some stages; they run in this order.
-            </p>
+          {feeLabel(sow) && (
+            <div className="sm:text-right">
+              <MonoLabel>Contract value</MonoLabel>
+              <p className="t-data-lg">{feeLabel(sow)}</p>
+              <p className="t-body-sm text-muted-foreground">{known(sow.payment_terms)}</p>
+            </div>
           )}
         </div>
-        <ol className="space-y-2">
+        <CardBody className="mt-4 space-y-3">
+          {sow.commitments.length > 0 && (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {sow.commitments.map((c) => (
+                <div key={c.label} className="surface-inset p-3">
+                  <p className="t-data-md">{c.value}</p>
+                  <p className="t-body-sm text-muted-foreground">{c.label}</p>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="t-body-sm text-muted-foreground">
+            <span className="font-medium text-secondary-foreground">Validity:</span> {sow.validity}{" "}
+            · <span className="font-medium text-secondary-foreground">Excludes:</span>{" "}
+            {sow.exclusions}
+          </p>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Delivery timeline"
+          icon={<CalendarClock />}
+          divided
+          meta={sow.timeline.some((m) => !m.start) ? "Undated stages run in this order" : undefined}
+        />
+        <ol className="divide-y divide-border">
           {sow.timeline.map((m, i) => {
             const end = m.start && m.end && m.end !== m.start ? m.end : null;
+            const now = !!today && !!m.start && isToday(today, m.start, end);
             return (
               <li
                 key={`${i}|${m.task}`}
-                className={cn(
-                  "flex flex-wrap items-center gap-3 rounded-md border border-border p-3 transition",
-                  today && m.start && isToday(today, m.start, end) && "doc-glow",
-                )}
+                className={cn("flex flex-wrap items-center gap-3 px-[18px] py-2.5", now && NOW)}
               >
-                <span className="w-28 shrink-0 font-mono text-xs">
-                  {m.start ? fmt(m.start) : <span className="text-muted-foreground">Date TBC</span>}
-                  {m.start && (end ? ` – ${fmt(end)}` : m.open_ended ? " →" : "")}
+                <span className="t-data-sm w-32 shrink-0">
+                  {m.start ? (
+                    <>
+                      {fmt(m.start)}
+                      {end ? ` – ${fmt(end)}` : m.open_ended ? " →" : ""}
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">Date TBC</span>
+                  )}
                 </span>
-                <span className="min-w-0 flex-1 text-sm font-medium">{m.task}</span>
-                <Badge variant="outline" className="text-[10px]">
+                <span className="min-w-0 flex-1 text-[14px] font-medium">{m.task}</span>
+                {now && <Chip tone="info">now</Chip>}
+                <Chip className="h-auto min-h-[22px] whitespace-normal py-0.5 text-left">
                   {m.owner}
-                </Badge>
+                </Chip>
               </li>
             );
           })}
         </ol>
-      </div>
+      </Card>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 break-words lg:grid-cols-2 [&>*]:min-w-0">
         {sow.rounds.length + sow.content.length > 0 && (
-          <div className="workspace-panel p-5">
-            <h3 className="mb-3 flex items-center gap-2 font-semibold">
-              <Target className="size-4 text-primary" />
-              Rounds & content
-            </h3>
-            {sow.rounds.map((r) => (
-              <div key={r.name} className="mb-3">
-                <p className="text-sm font-semibold">{r.name}</p>
-                <ul className="mt-1 list-disc pl-5 text-sm text-muted-foreground">
-                  {r.details.map((d) => (
-                    <li key={d}>{d}</li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-            <div className="flex flex-wrap gap-1.5">
-              {sow.content.map((c) => (
-                <span key={c} className="rounded-sm bg-secondary px-2 py-1 text-xs">
-                  {c}
-                </span>
+          <Card>
+            <CardHeader title="Rounds and content" divided />
+            <CardBody className="space-y-3 pt-3">
+              {sow.rounds.map((r) => (
+                <div key={r.name}>
+                  <p className="text-[14px] font-semibold">{r.name}</p>
+                  <ul className="mt-1 list-disc pl-5 t-body-sm text-muted-foreground">
+                    {r.details.map((d) => (
+                      <li key={d}>{d}</li>
+                    ))}
+                  </ul>
+                </div>
               ))}
-            </div>
-          </div>
+              <div className="flex flex-wrap gap-1.5">
+                {sow.content.map((c) => (
+                  <Chip key={c} className="h-auto min-h-[22px] whitespace-normal py-0.5 text-left">
+                    {c}
+                  </Chip>
+                ))}
+              </div>
+            </CardBody>
+          </Card>
         )}
         {(sow.client_requirements.length > 0 || sow.reports.length > 0) && (
-          <div className="workspace-panel p-5">
+          <Card>
             {sow.client_requirements.length > 0 && (
               <>
-                <h3 className="mb-3 font-semibold">Needed from client</h3>
-                <div className="grid grid-cols-2 gap-2">
+                <CardHeader title="Needed from client" divided />
+                <CardBody className="grid gap-2 pt-3 sm:grid-cols-2">
                   {sow.client_requirements.map((r) => (
-                    <div key={r.item} className="rounded-md border border-border p-2.5">
-                      <p className="text-sm font-medium">{r.item}</p>
-                      <p className="text-xs text-muted-foreground">{r.details}</p>
+                    <div key={r.item} className="surface-inset p-2.5">
+                      <p className="text-[14px] font-medium">{r.item}</p>
+                      <p className="t-body-sm text-muted-foreground">{r.details}</p>
                     </div>
                   ))}
-                </div>
+                </CardBody>
               </>
             )}
             {sow.reports.length > 0 && (
               <>
-                <h3 className="mb-2 mt-4 font-semibold">Reports</h3>
-                {sow.reports.map((r) => (
-                  <p key={r.type} className="flex justify-between text-sm">
-                    <span>{r.type}</span>
-                    <span className="text-muted-foreground">{r.frequency}</span>
-                  </p>
-                ))}
+                <CardHeader
+                  title="Reports"
+                  divided
+                  className={sow.client_requirements.length ? "border-t border-border" : ""}
+                />
+                <CardBody className="space-y-1 pt-3">
+                  {sow.reports.map((r) => (
+                    <p key={r.type} className="flex justify-between text-[14px]">
+                      <span>{r.type}</span>
+                      <span className="t-data-sm text-muted-foreground">{r.frequency}</span>
+                    </p>
+                  ))}
+                </CardBody>
               </>
             )}
-          </div>
+          </Card>
         )}
         {sow.contacts.length > 0 && (
-          <div className="workspace-panel p-5">
-            <h3 className="mb-3 font-semibold">Contacts</h3>
-            <div className="space-y-2.5">
+          <Card>
+            <CardHeader title="Contacts" divided />
+            <ul className="divide-y divide-border">
               {sow.contacts.map((c) => (
-                <div
+                <li
                   key={`${c.name}-${c.contact}`}
-                  className="flex items-center justify-between gap-3 text-sm"
+                  className="flex items-center justify-between gap-3 px-[18px] py-2.5"
                 >
                   <div className="min-w-0">
-                    <p className="font-medium">
-                      {c.name} <span className="text-xs text-muted-foreground">· {c.role}</span>
+                    <p className="text-[14px] font-medium">
+                      {c.name}{" "}
+                      <span className="t-body-sm font-normal text-muted-foreground">
+                        · {c.role}
+                      </span>
                     </p>
                     <a
                       href={`mailto:${c.contact}`}
-                      className="text-xs text-primary hover:underline"
+                      className="t-data-sm text-primary hover:underline"
                     >
                       {c.contact}
                     </a>
                   </div>
-                  <Badge variant="outline" className="text-[10px]">
-                    {c.side}
-                  </Badge>
-                </div>
+                  <Chip>{c.side}</Chip>
+                </li>
               ))}
-            </div>
-          </div>
+            </ul>
+          </Card>
         )}
         {(sow.sla.length > 0 || sow.services.length > 0) && (
-          <div className="workspace-panel p-5">
+          <Card>
             {sow.sla.length > 0 && (
               <>
-                <h3 className="mb-3 flex items-center gap-2 font-semibold">
-                  <ShieldCheck className="size-4 text-primary" />
-                  Service levels
-                </h3>
-                {sow.sla.map((s) => (
-                  <div
-                    key={s.audience}
-                    className="mb-2 flex items-center justify-between rounded-md bg-secondary/60 p-3 text-sm"
-                  >
-                    <div>
-                      <p className="font-medium">{s.audience}</p>
-                      <p className="text-xs text-muted-foreground">{s.hours}</p>
+                <CardHeader title="Service levels" divided />
+                <CardBody className="space-y-2 pt-3">
+                  {sow.sla.map((s) => (
+                    <div
+                      key={s.audience}
+                      className="surface-inset flex items-center justify-between p-3"
+                    >
+                      <div>
+                        <p className="text-[14px] font-medium">{s.audience}</p>
+                        <p className="t-data-sm text-muted-foreground">{s.hours}</p>
+                      </div>
+                      <span className="t-data-md">{s.response}</span>
                     </div>
-                    <span className="font-mono font-semibold">{s.response}</span>
-                  </div>
-                ))}
+                  ))}
+                </CardBody>
               </>
             )}
             {sow.services.length > 0 && (
               <>
-                <h3 className="mb-2 mt-4 font-semibold">Services</h3>
-                <ul className="list-disc pl-5 text-sm text-muted-foreground">
-                  {sow.services.map((s) => (
-                    <li key={s}>{s}</li>
-                  ))}
-                </ul>
+                <CardHeader
+                  title="Services"
+                  divided
+                  className={sow.sla.length ? "border-t border-border" : ""}
+                />
+                <CardBody className="pt-3">
+                  <ul className="list-disc pl-5 t-body-sm text-muted-foreground">
+                    {sow.services.map((s) => (
+                      <li key={s}>{s}</li>
+                    ))}
+                  </ul>
+                </CardBody>
               </>
             )}
-          </div>
+          </Card>
         )}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -445,164 +482,102 @@ function PoaView({
 
   return (
     <div className="space-y-4">
-      <div className="workspace-panel grid gap-4 p-5 sm:grid-cols-3">
-        <div>
-          <p className="text-[10px] font-semibold uppercase text-muted-foreground">
-            Campaign window
-          </p>
-          <p className="mt-1 text-sm font-medium">
-            {poa.window_start && poa.window_end
-              ? `${fmt(poa.window_start)} → ${fmt(poa.window_end)}`
-              : "Not specified in the document"}
-          </p>
+      <Card>
+        <div className="grid gap-4 p-[18px] sm:grid-cols-3">
+          <div>
+            <MonoLabel>Campaign window</MonoLabel>
+            <p className="mt-1 t-data-md">
+              {poa.window_start && poa.window_end
+                ? `${fmt(poa.window_start)} → ${fmt(poa.window_end)}`
+                : "Not in the document"}
+            </p>
+          </div>
+          <div>
+            <MonoLabel>Activities</MonoLabel>
+            <p className="mt-1 t-data-md">{poa.activities.length} planned</p>
+          </div>
+          <div>
+            <MonoLabel>{todays.length ? "Happening today" : "Next up"}</MonoLabel>
+            <p className="mt-1 text-[14px] font-medium">
+              {todays.length
+                ? todays.map((a) => a.activity).join(", ")
+                : next
+                  ? `${next.activity} · ${fmt(next.date)}`
+                  : "Nothing pending"}
+            </p>
+          </div>
         </div>
-        <div>
-          <p className="text-[10px] font-semibold uppercase text-muted-foreground">Activities</p>
-          <p className="mt-1 text-sm font-medium">{poa.activities.length} planned</p>
-        </div>
-        <div>
-          <p className="text-[10px] font-semibold uppercase text-muted-foreground">
-            {todays.length ? "Happening today" : "Next up"}
-          </p>
-          <p className="mt-1 text-sm font-medium">
-            {todays.length
-              ? todays.map((a) => a.activity).join(", ")
-              : next
-                ? `${next.activity} · ${fmt(next.date)}`
-                : "Nothing pending"}
-          </p>
-        </div>
-      </div>
+      </Card>
+
       {undated > 0 && (
-        <p className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
+        <p className="rounded-[8px] bg-status-warning/15 px-3 py-2 t-body-sm text-warn">
           {undated} {undated === 1 ? "activity has" : "activities have"} no date in the document.
           {estimate?.start
             ? ` Their weeks are estimated from the registration start (${fmt(estimate.start)}${estimate.start_source ? `, ${estimate.start_source}` : ""}).`
             : ` Shown as "Date TBC" until the registration start is known.`}
         </p>
       )}
-      <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-        {(Object.keys(channelIcon) as PoaChannel[]).map((c) => {
-          const I = channelIcon[c];
-          return (
-            <span key={c} className="flex items-center gap-1.5">
-              <span
-                className={cn("flex size-5 items-center justify-center rounded", channelTone[c])}
-              >
-                <I className="size-3" />
-              </span>
-              {c}
-            </span>
-          );
-        })}
-      </div>
-      <div className="space-y-4">
-        {weeks.map((w) => (
-          <div key={w}>
-            <p className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{w}</p>
-            <div className="space-y-2">
-              {poa.activities
-                .filter((a) => a.week === w)
-                .map((a) => {
-                  const I = channelIcon[a.channel];
-                  return (
-                    <div
-                      key={`${a.date ?? "tbc"}|${a.activity}`}
-                      className={cn(
-                        "flex gap-4 rounded-lg border border-border bg-card/60 p-4 transition",
-                        today && a.date && isToday(today, a.date, null) && "doc-glow",
-                      )}
-                    >
-                      <div className="w-16 shrink-0 text-center">
-                        {a.date ? (
-                          <>
-                            <p className="font-mono text-lg font-semibold leading-none">
-                              {a.date.slice(8)}
-                            </p>
-                            <p className="text-[10px] uppercase text-muted-foreground">
-                              {new Intl.DateTimeFormat("en", { month: "short" }).format(parse(a.date))}
-                            </p>
-                          </>
-                        ) : (
-                          (() => {
-                            const r = estimatedRange(a.week, estimate);
-                            return r ? (
-                              <>
-                                <p className="text-[10px] font-semibold uppercase text-muted-foreground">
-                                  Est.
-                                </p>
-                                <p className="font-mono text-[11px] leading-tight">
-                                  {fmt(r.from)}
-                                  <br />– {fmt(r.to)}
-                                </p>
-                                {today >= r.from && today <= r.to && (
-                                  <Badge className="mt-1 px-1 py-0 text-[9px]">This week</Badge>
-                                )}
-                              </>
-                            ) : (
-                              <p className="text-[10px] font-semibold uppercase text-muted-foreground">
-                                Date TBC
-                              </p>
-                            );
-                          })()
-                        )}
-                      </div>
-                      <span
-                        className={cn(
-                          "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md",
-                          channelTone[a.channel],
-                        )}
-                      >
-                        <I className="size-4" />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="text-sm font-semibold">{a.activity}</p>
-                          <span className="text-xs text-muted-foreground">· {a.objective}</span>
-                        </div>
-                        <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                          {a.description}
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
-// Dashboard strip: everything scheduled for today across programs.
-export function DueToday() {
-  const [today, setToday] = useState("");
-  useEffect(() => setToday(toKey(new Date())), []);
-  const { data } = useQuery({ ...dueTodayQueryOptions(today), enabled: !!today });
-  if (!data?.length) return null;
-  return (
-    <section className="workspace-panel doc-glow p-5" aria-label="Due today">
-      <p className="section-kicker">Due today</p>
-      <ul className="mt-3 max-h-56 space-y-2 overflow-y-auto pr-1">
-        {data.map((item) => (
-          <li key={`${item.ticket_id}-${item.kind}-${item.date}-${item.title}`}>
-            <Link
-              to="/programs/$ticketId"
-              params={{ ticketId: item.ticket_id }}
-              className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-card/70 px-3 py-2 text-sm hover:border-primary/50"
-            >
-              <span className="font-medium">{item.title}</span>
-              <span className="text-xs text-muted-foreground">
-                {item.subject} · {item.owner}
-              </span>
-              <Badge variant="outline" className="ml-auto text-[10px] uppercase">
-                {item.kind}
-              </Badge>
-            </Link>
-          </li>
+      <div className="flex flex-wrap gap-1.5">
+        {(Object.keys(CHANNEL) as PoaChannel[]).map((c) => (
+          <Chip key={c} tone={CHANNEL[c].tone}>
+            {c}
+          </Chip>
         ))}
-      </ul>
-    </section>
+      </div>
+
+      {weeks.map((w) => (
+        <Card key={w}>
+          <CardHeader
+            title={w}
+            divided
+            meta={`${poa.activities.filter((a) => a.week === w).length} activities`}
+          />
+          <ul className="divide-y divide-border">
+            {poa.activities
+              .filter((a) => a.week === w)
+              .map((a) => {
+                const ch = CHANNEL[a.channel];
+                const est = a.date ? null : estimatedRange(a.week, estimate);
+                const now =
+                  !!today &&
+                  (a.date
+                    ? isToday(today, a.date, null)
+                    : !!est && today >= est.from && today <= est.to);
+                return (
+                  <li
+                    key={`${a.date ?? "tbc"}|${a.activity}`}
+                    className={cn("flex gap-4 px-[18px] py-3", now && NOW)}
+                  >
+                    <div className="w-20 shrink-0">
+                      {a.date ? (
+                        <p className="t-data-md">{fmt(a.date)}</p>
+                      ) : est ? (
+                        <>
+                          <MonoLabel>Est.</MonoLabel>
+                          <p className="t-data-sm">
+                            {fmt(est.from)} – {fmt(est.to)}
+                          </p>
+                        </>
+                      ) : (
+                        <MonoLabel>Date TBC</MonoLabel>
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-[14px] font-semibold">{a.activity}</p>
+                        <Chip tone={ch.tone}>{a.channel}</Chip>
+                        {now && <Chip tone="info">{a.date ? "today" : "this week"}</Chip>}
+                      </div>
+                      <p className="t-body-sm text-secondary-foreground">{a.objective}</p>
+                      <p className="mt-0.5 t-body-sm text-muted-foreground">{a.description}</p>
+                    </div>
+                  </li>
+                );
+              })}
+          </ul>
+        </Card>
+      ))}
+    </div>
   );
 }
