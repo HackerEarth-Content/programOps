@@ -360,3 +360,17 @@ async def test_the_program_outbox_lists_what_was_sent_newest_first(client_for, m
     client = await client_for(await make_user("m@example.com", [Role.MARKETING]))
     body = (await client.get("/programs/t1/outbox")).json()
     assert [m["body"] for m in body] == ["second", "first"] and body[0]["status"] == "skipped"
+
+
+async def test_text_from_people_cannot_ping_a_channel_or_build_a_link_in_slack(monkeypatch):
+    from core import slack
+
+    sent: dict = {}
+
+    async def fake_call(method, payload):
+        sent.update(payload)
+        return True, {}
+
+    monkeypatch.setattr(slack, "_call", fake_call)
+    await slack.post_message("C0123456789", ":memo: *Launch <!channel> & <https://evil.example|click>*")
+    assert sent["text"] == ":memo: *Launch &lt;!channel&gt; &amp; &lt;https://evil.example|click&gt;*"
