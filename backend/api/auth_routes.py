@@ -34,7 +34,9 @@ async def google_login():
     state = generate_state_token({CSRF_TOKEN_KEY: csrf_token}, SECRET)
 
     callback_url = f"{settings.API_BASE_URL}/api/auth/google/callback"
-    authorization_url = await google_oauth_client.get_authorization_url(callback_url, state)
+    authorization_url = await google_oauth_client.get_authorization_url(
+        callback_url, state, extras_params={"hd": settings.ALLOWED_EMAIL_DOMAIN}
+    )
 
     response = RedirectResponse(authorization_url)
     response.set_cookie(

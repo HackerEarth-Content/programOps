@@ -11,7 +11,7 @@ from core import invites
 from core.errors import DomainError
 from core.orm import Invite, OAuthAccount, User, UserRoleAssignment
 from core.permissions import Permission as P, Role, effective_permissions
-from core.users import UserManager
+from core.users import UserManager, google_oauth_client
 
 
 async def issue(db, admin: User, email: str = "new@hackerearth.com", roles=(Role.CSM,)):
@@ -27,12 +27,26 @@ async def refused(coro) -> str:
     return caught.value.code
 
 
-async def sign_in(db, email: str) -> User:
+@pytest.fixture(autouse=True)
+def google_says_company_account(monkeypatch):
+    """Google's userinfo for the signed-in account; tests override `info` to model other accounts."""
+    info: dict = {}
+
+    async def userinfo(token: str) -> dict:
+        email = token.removeprefix("token-for-")
+        base = {"email": email, "email_verified": True, "hd": email.rpartition("@")[2]}
+        return {**base, **info}
+
+    monkeypatch.setattr(google_oauth_client, "userinfo", userinfo)
+    return info
+
+
+async def sign_in(db, email: str, account_id: str | None = None) -> User:
     request = Request({"type": "http", "method": "GET", "path": "/", "query_string": b"", "headers": []})
     async with db() as session:
         manager = UserManager(SQLAlchemyUserDatabase(session, User, OAuthAccount))
         return await manager.oauth_callback(
-            "google", "access-token", f"google-id-{email}", email, None, None, request,
+            "google", f"token-for-{email}", account_id or f"google-id-{email}", email, None, None, request,
             associate_by_email=True, is_verified_by_default=True,
         )
 
@@ -61,6 +75,26 @@ async def test_an_account_outside_the_company_domain_is_refused_and_no_user_is_c
 async def test_a_lookalike_domain_is_refused(db):
     assert await refused(sign_in(db, "x@evilhackerearth.com")) == "outside_domain"
     assert await refused(sign_in(db, "x@hackerearth.com.evil.io")) == "outside_domain"
+
+
+async def test_a_look_alike_account_without_the_workspace_domain_is_refused(db, google_says_company_account):
+    google_says_company_account["hd"] = ""  # a consumer Google account that merely uses a company address
+    assert await refused(sign_in(db, "x@hackerearth.com")) == "outside_domain"
+    async with db() as session:
+        assert await session.scalar(select(User.id).where(User.email == "x@hackerearth.com")) is None
+
+
+async def test_an_unverified_email_is_refused(db, google_says_company_account):
+    google_says_company_account["email_verified"] = False
+    assert await refused(sign_in(db, "x@hackerearth.com")) == "outside_domain"
+
+
+async def test_a_failed_google_check_lets_nobody_in(db, monkeypatch):
+    async def broken(token: str) -> dict:
+        raise RuntimeError("google is down")
+
+    monkeypatch.setattr(google_oauth_client, "userinfo", broken)
+    assert await refused(sign_in(db, "x@hackerearth.com")) == "outside_domain"
 
 
 async def test_a_company_account_signs_in_as_a_viewer(db):
@@ -93,6 +127,20 @@ async def test_an_existing_user_signs_in_unchanged_even_outside_the_domain(db, m
     user = await sign_in(db, "Sai@Example.com")
     assert user.id == existing.id
     assert await roles_of(db, user.id) == {"super_admin"}
+
+
+async def test_a_known_google_account_with_a_changed_email_is_not_treated_as_new(db, make_user):
+    existing = await make_user("old@hackerearth.com", [Role.CSM])
+    async with db() as session:
+        session.add(
+            OAuthAccount(oauth_name="google", access_token="t", account_id="g-1", account_email="old@hackerearth.com", user_id=existing.id)
+        )
+        await session.commit()
+    admin = await make_user("admin@hackerearth.com", [Role.SUPER_ADMIN])
+    await issue(db, admin, email="renamed@hackerearth.com", roles=(Role.SUPER_ADMIN,))
+    user = await sign_in(db, "renamed@hackerearth.com", account_id="g-1")
+    assert user.id == existing.id
+    assert await roles_of(db, user.id) == {"csm"}  # no Viewer added, and the pre-grant for the new address is not applied
 
 
 # ---- the pre-grant service -------------------------------------------------

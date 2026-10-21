@@ -29,12 +29,14 @@ def upgrade() -> None:
     # Pre-grants are applied by email on first sign-in: no link, so no token and no expiry.
     op.drop_column("invites", "token_hash")
     op.drop_column("invites", "expires_at")
-    # Anyone already signed in with no role was waiting for access: they are Viewers now.
+    # Active company accounts that were waiting for access are Viewers now. Anyone else (outside the company
+    # domain, or deliberately left without roles and inactive) stays without access until a super admin acts.
     op.execute(
         """
         INSERT INTO user_roles (user_id, role)
         SELECT u.user_id, 'viewer' FROM "user" u
-        WHERE NOT EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id = u.user_id)
+        WHERE u.is_active AND lower(u.email) LIKE '%@hackerearth.com'
+          AND NOT EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id = u.user_id)
         """
     )
 

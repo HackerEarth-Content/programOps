@@ -22,7 +22,18 @@ from core.permissions import Role
 SECRET = settings.USER_SECRET
 
 
+USERINFO_ENDPOINT = "https://www.googleapis.com/oauth2/v3/userinfo"
+
+
 class CustomGoogleOAuth2(GoogleOAuth2):
+    async def userinfo(self, token: str) -> dict[str, Any]:
+        """Google's verified view of the signed-in account: `email`, `email_verified`, and `hd` (the Workspace
+        domain, present only for accounts managed by one)."""
+        async with self.get_httpx_client() as client:
+            response = await client.get(USERINFO_ENDPOINT, headers={"Authorization": f"Bearer {token}"})
+            response.raise_for_status()
+            return response.json()
+
     async def get_id_email(self, token: str):
         try:
             return await super().get_id_email(token)
@@ -36,6 +47,26 @@ google_oauth_client = CustomGoogleOAuth2(
     settings.GOOGLE_CLIENT_ID,
     settings.GOOGLE_CLIENT_SECRET,
 )
+
+
+async def _require_company_account(access_token: str, email: str) -> None:
+    """Refuse a first-time sign-in unless Google says the email is verified and belongs to the company domain."""
+    refusal = DomainError(
+        "outside_domain", f"Sign in with your @{settings.ALLOWED_EMAIL_DOMAIN} Google account.", 403
+    )
+    if not invites.in_allowed_domain(email):
+        raise refusal
+    try:
+        info = await google_oauth_client.userinfo(access_token)
+    except Exception as error:  # a failed check must not let anyone in
+        raise refusal from error
+    domain = settings.ALLOWED_EMAIL_DOMAIN.strip().lower()
+    if (
+        info.get("email_verified") is not True
+        or str(info.get("email", "")).strip().lower() != email
+        or str(info.get("hd", "")).strip().lower() != domain
+    ):
+        raise refusal
 
 
 class UserManager(BaseUserManager[User, str]):
@@ -58,16 +89,21 @@ class UserManager(BaseUserManager[User, str]):
         associate_by_email: bool = False,
         is_verified_by_default: bool = False,
     ):
-        # Company accounts only. People who already have an account (e.g. the bootstrapped super admin) just
-        # sign in; a first-time sign-in must be on the allowed domain and starts as a Viewer unless a
-        # super admin pre-granted roles for that email.
+        # Company accounts only. People who already have an account (matched by email, or by this Google
+        # account, so a changed Google email doesn't make them "new") just sign in, e.g. the bootstrapped
+        # super admin. A first-time sign-in must be a verified account managed by the company's Google
+        # Workspace domain, and starts as a Viewer unless a super admin pre-granted roles for that email.
         session = self.user_db.session
         email = account_email.strip().lower()
         known = await session.scalar(select(User.id).where(func.lower(User.email) == email))
-        if known is None and not invites.in_allowed_domain(email):
-            raise DomainError(
-                "outside_domain", f"Sign in with your @{settings.ALLOWED_EMAIL_DOMAIN} Google account.", 403
+        known = known or await session.scalar(
+            select(OAuthAccount.user_id).where(
+                OAuthAccount.oauth_name == oauth_name, OAuthAccount.account_id == account_id
             )
+        )
+        is_new = known is None
+        if is_new:
+            await _require_company_account(access_token, email)
 
         result = await super().oauth_callback(
             oauth_name,
@@ -85,7 +121,7 @@ class UserManager(BaseUserManager[User, str]):
         if not result.name and result.email:
             result = await self.user_db.update(result, {"name": result.email.split("@")[0]})
 
-        if known is None:
+        if is_new:
             pre_granted = await invites.pending_for(session, email)
             if pre_granted is not None:
                 await invites.accept(session, pre_granted, result)
