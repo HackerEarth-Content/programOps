@@ -2313,9 +2313,8 @@ function TimelineChanges({ ticketId, onChanged }: { ticketId: string; onChanged:
   );
 }
 
-type OpsSection = "requests" | "updates" | "phases" | "blockers";
+type OpsSection = "requests" | "phases" | "blockers";
 const OPS_SECTIONS: { id: OpsSection; label: string }[] = [
-  { id: "updates", label: "Daily updates" },
   { id: "requests", label: "Special requests" },
   { id: "phases", label: "Phase checklist" },
   { id: "blockers", label: "Dependencies & changes" },
@@ -2325,7 +2324,7 @@ export function ProgramRequests({ ticketId }: { ticketId: string }) {
   const refresh = useRefresh(ticketId);
   const requests = useQuery(requestsFullQuery(ticketId));
   const canRaise = useCan("request.create");
-  const [section, setSection] = useState<OpsSection>("updates");
+  const [section, setSection] = useState<OpsSection>("requests");
   const deps = useQuery(dependenciesQuery(ticketId)).data;
   const phases = useQuery(lifecycleQuery(ticketId)).data;
   const changes = useQuery(timelineChangesQuery(ticketId)).data;
@@ -2347,6 +2346,10 @@ export function ProgramRequests({ ticketId }: { ticketId: string }) {
   );
   return (
     <div className="space-y-4 page-in">
+      <div className="grid items-start gap-4 xl:grid-cols-2">
+        <Composer ticketId={ticketId} onChanged={refresh} />
+        <Feed ticketId={ticketId} />
+      </div>
       <div className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-3">
         <Kpi
           label="Last update"
@@ -2432,12 +2435,6 @@ export function ProgramRequests({ ticketId }: { ticketId: string }) {
               hint="Special asks from the client or team show up here with a confirmation checklist."
             />
           )}
-        </div>
-      )}
-      {section === "updates" && (
-        <div className="grid items-start gap-4 xl:grid-cols-2">
-          <Composer ticketId={ticketId} onChanged={refresh} />
-          <Feed ticketId={ticketId} />
         </div>
       )}
       {section === "phases" && (

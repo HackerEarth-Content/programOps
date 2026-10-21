@@ -71,6 +71,7 @@ export type PortalSettings = {
     work_days: number[];
     timezone: string;
   };
+  redash_sync_time: string | null;
   retention_days: number | null;
 };
 export const settingsQuery = queryOptions({

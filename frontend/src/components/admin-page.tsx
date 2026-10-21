@@ -1312,6 +1312,28 @@ function SettingsForm({ initial }: { initial: PortalSettings }) {
         </CardBody>
       </Card>
       <Card>
+        <CardHeader title="Registration counts" divided />
+        <CardBody className="space-y-2 pt-4">
+          {field(
+            "Daily Redash fetch time",
+            <Input
+              type="time"
+              className="max-w-[160px] font-mono"
+              value={hhmm(s.redash_sync_time)}
+              onChange={(e) => {
+                setSaved(false);
+                setS({ ...s, redash_sync_time: e.target.value || null });
+              }}
+            />,
+          )}
+          <p className="text-[13px] text-muted-foreground">
+            In the time zone above. Each day at this time, programs in an active stage that are
+            inside their registration period are refreshed from Redash and today's count is posted
+            to their Slack channel. Empty keeps the scheduled fetch off.
+          </p>
+        </CardBody>
+      </Card>
+      <Card>
         <CardHeader title="History retention" divided />
         <CardBody className="space-y-2 pt-4">
           {field(

@@ -48,6 +48,9 @@ class ReminderSettings(BaseModel):
 
 class PortalSettings(BaseModel):
     reminders: ReminderSettings = ReminderSettings()
+    # Daily time (in the reminders time zone) the registration counts are fetched from Redash and posted to
+    # Slack. None keeps the scheduled fetch off; the "Reload registrations" button still works.
+    redash_sync_time: dt.time | None = None
     # How long history is kept. None means forever. Nothing is ever deleted automatically in release 1:
     # this only records the choice, so a period can be picked later without rebuilding anything.
     retention_days: int | None = Field(default=None, ge=1)

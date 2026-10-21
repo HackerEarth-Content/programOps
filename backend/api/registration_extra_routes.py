@@ -7,19 +7,22 @@ import datetime as dt
 from collections import defaultdict
 from typing import Literal
 
+import structlog
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import activities, audit, channel_sync, relevant
+from core import activities, audit, channel_sync, relevant, slack
 from core.access import Access, require_permission
 from core.channel_sync import ActivityRef, SourceBucket
 from core.database import get_session
 from core.deps import program_or_404
 from core.errors import DomainError
-from core.orm import ProgramRegistration, ProgramRegistrationSettings, RelevantRegistration
+from core.orm import Program, ProgramRegistration, ProgramRegistrationSettings, RelevantRegistration
 from core.permissions import Permission
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(
     prefix="/programs/{ticket_id}",
@@ -63,6 +66,23 @@ class RelevantOut(BaseModel):
     entries: list[RelevantEntryOut]
 
 
+async def _notify_relevant(session: AsyncSession, ticket_id: str, entry: RelevantRegistration) -> None:
+    """Post the CSM's relevant count to the program's Slack channel (when notify is on). A Slack failure
+    never fails the save, so the entry stays and the error is only logged."""
+    cfg = await session.get(ProgramRegistrationSettings, ticket_id)
+    program = await session.get(Program, ticket_id)
+    if not (cfg and cfg.notify_slack and cfg.slack_channel_id and program):
+        return
+    total = relevant.total(await relevant.current(session, ticket_id))
+    text = (
+        f":calendar: *{entry.date:%d %b %Y}* | {program.display_name}\n"
+        f"Relevant registrations update\n- {entry.count:,} relevant\n\nRelevant so far: *{total:,}*"
+    )
+    ok, err = await slack.post_message(cfg.slack_channel_id, text)
+    if not ok:
+        logger.warning("slack_notify_failed", ticket_id=ticket_id, error=err)
+
+
 @router.get("/relevant-registrations", response_model=RelevantOut)
 async def list_relevant(ticket_id: str, session: AsyncSession = Depends(get_session)) -> RelevantOut:
     entries = await relevant.current(session, ticket_id)
@@ -80,6 +100,7 @@ async def add_relevant(
         session, access.user, ticket_id, day=body.date, count=body.count, criteria=body.criteria, note=body.note
     )
     await session.commit()
+    await _notify_relevant(session, ticket_id, entry)
     return entry
 
 
@@ -95,6 +116,7 @@ async def correct_relevant(
         session, access.user, ticket_id, entry_id, count=body.count, criteria=body.criteria, note=body.note
     )
     await session.commit()
+    await _notify_relevant(session, ticket_id, entry)
     return entry
 
 

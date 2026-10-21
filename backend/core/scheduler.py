@@ -20,7 +20,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from core import channel_sync, reminders, slack_outbox
 from core.database import db_manager
-from core.redash_sync import REFRESH_HOURS, run_all as redash_run_all
+from core.redash_sync import run_daily as redash_run_daily
 from hubspot_client import pipeline
 
 logger = structlog.get_logger(__name__)
@@ -56,7 +56,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,  # if we fall behind, run once on catch-up, not once per missed interval
     )
     scheduler.add_job(
-        redash_run_all, IntervalTrigger(hours=REFRESH_HOURS), id="redash_registrations_sync",
+        redash_run_daily, IntervalTrigger(minutes=1), id="redash_registrations_sync",
         max_instances=1, coalesce=True,
     )
     scheduler.add_job(

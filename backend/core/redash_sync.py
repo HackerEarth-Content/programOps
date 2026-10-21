@@ -13,16 +13,18 @@ import asyncio
 import json
 import re
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 import structlog
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import redash
+from core import redash, registration_message, registration_window, settings_store, slack_outbox
 from core.config import settings
 from core.database import db_manager
-from core.orm import ProgramRegistration, ProgramRegistrationSettings
+from core.csm_queue import ACTIVE_STAGES
+from core.orm import Program, ProgramRegistration, ProgramRegistrationSettings
 
 logger = structlog.get_logger(__name__)
 
@@ -126,11 +128,14 @@ async def apply_days(session: AsyncSession, ticket_id: str, days: dict[date, int
 
 # ---- Scheduled / manual run ----------------------------------------------------
 
-REFRESH_HOURS = 6  # scheduler cadence (core/scheduler.py); the Reload button overrides it
 _MANUAL_COOLDOWN = 20  # seconds
-state: dict = {"running": False, "started_at": None, "finished_at": None, "programs": 0, "failed": 0, "error": None}
+state: dict = {
+    "running": False, "started_at": None, "finished_at": None, "programs": 0, "failed": 0, "skipped": 0, "posted": 0,
+    "error": None,
+}
 _lock = asyncio.Lock()
 _task: asyncio.Task | None = None
+_last_scheduled: date | None = None  # local date of the last scheduled run; a restart may repeat it, Slack dedupes
 
 
 def _now() -> datetime:
@@ -147,41 +152,90 @@ def event_dates(info: dict) -> tuple[date | None, date | None]:
     return d(info.get("start")), d(info.get("end"))
 
 
-async def run_all() -> None:
-    """Refresh every program in auto mode, one at a time (each Redash query can take
-    ~30s). Silent -- Slack summaries only go out from a program's Fetch button. One
-    program failing is logged and counted, not fatal. Single-flight."""
+def in_registration_period(estimate: dict, today: date) -> bool:
+    """Both ends must be known: a program with no dates is skipped rather than fetched forever."""
+    return bool(estimate["start"] and estimate["end"] and estimate["start"] <= today <= estimate["end"])
+
+
+async def _post_today(session, program: Program, cfg: ProgramRegistrationSettings, changed: list[dict], today: date) -> bool:
+    """Queue today's count for the program's channel: only today, one message per program per day."""
+    row = next((r for r in changed if r["date"] == today), None)
+    if row is None or not (cfg.notify_slack and cfg.slack_channel_id):
+        return False
+    body = ":robot_face: _Auto-fetched from Redash_\n" + await registration_message.summary(session, program, [row])
+    queued = await slack_outbox.enqueue(
+        session, ticket_id=program.ticket_id, kind="registrations", body=body,
+        dedupe_key=f"redash-daily:{program.ticket_id}:{today}",
+    )
+    await session.commit()
+    return queued is not None
+
+
+async def run_all(now: datetime | None = None) -> None:
+    """Fetch every auto program that is in an active stage and inside its registration period, one at a time (each
+    Redash query can take ~30s), and post today's count to its Slack channel (once a day per program, through the
+    outbox). One program failing is logged and counted, not fatal. Single-flight."""
     if _lock.locked():
         return
     async with _lock:
-        state.update(running=True, started_at=_now(), programs=0, failed=0, error=None)
+        state.update(running=True, started_at=_now(), programs=0, failed=0, skipped=0, posted=0, error=None)
         try:
             factory = db_manager.session_factory()
             async with factory() as session:
+                zone = ZoneInfo((await settings_store.load(session)).reminders.timezone)
                 targets = (
                     await session.execute(
-                        select(ProgramRegistrationSettings.ticket_id, ProgramRegistrationSettings.redash_event_slug).where(
+                        select(ProgramRegistrationSettings.ticket_id, ProgramRegistrationSettings.redash_event_slug)
+                        .join(Program, Program.ticket_id == ProgramRegistrationSettings.ticket_id)
+                        .where(
                             ProgramRegistrationSettings.redash_auto,
                             ProgramRegistrationSettings.redash_event_slug.is_not(None),
+                            Program.stage_label.in_(ACTIVE_STAGES),
                         )
                     )
                 ).all()
+            today = (now or _now()).astimezone(zone).date()
             for ticket_id, slug in targets:
                 try:
+                    async with factory() as session:
+                        program = await session.get(Program, ticket_id)
+                        if not in_registration_period(await registration_window.load_estimate(session, program), today):
+                            state["skipped"] += 1
+                            continue
                     info, days = await fetch_event(slug)
                     async with factory() as session:
+                        program = await session.get(Program, ticket_id)
                         cfg = await session.get(ProgramRegistrationSettings, ticket_id)
                         cfg.redash_event_title = info["name"]
                         cfg.redash_event_start, cfg.redash_event_end = event_dates(info)
                         changed = await apply_days(session, ticket_id, days)  # commits
-                    logger.info("redash_auto_sync", ticket_id=ticket_id, slug=slug, changed_days=len(changed))
+                        posted = await _post_today(session, program, cfg, changed, today)
+                    logger.info("redash_auto_sync", ticket_id=ticket_id, slug=slug, changed_days=len(changed), posted=posted)
                     state["programs"] += 1
+                    state["posted"] += posted
                 except Exception as e:  # noqa: BLE001 -- keep going with the other programs
                     logger.exception("redash_auto_sync_failed", ticket_id=ticket_id, slug=slug)
                     state["failed"] += 1
                     state["error"] = str(e)[:200]
         finally:
             state.update(running=False, finished_at=_now())
+
+
+async def run_daily(now: datetime | None = None) -> bool:
+    """Scheduler tick (every minute): run once a day, at or after the time the super admin set, in the portal time
+    zone. Off until a time is set. Returns whether it ran."""
+    global _last_scheduled
+    now = now or _now()
+    async with db_manager.session_factory()() as session:
+        cfg = await settings_store.load(session)
+    if cfg.redash_sync_time is None:
+        return False
+    local = now.astimezone(ZoneInfo(cfg.reminders.timezone))
+    if local.time() < cfg.redash_sync_time or _last_scheduled == local.date():
+        return False
+    _last_scheduled = local.date()
+    await run_all(now)
+    return True
 
 
 def start_background() -> str:
