@@ -88,7 +88,7 @@ export const raiseRequest = (ticketId: string, body: RaiseRequestInput) =>
 export const patchRequest = (
   ticketId: string,
   id: number,
-  body: { status?: RequestStatus; resolution?: string | null },
+  body: { status?: RequestStatus; resolution?: string | null; owner_id?: string | null },
 ) => sendJson<Checklist>("PATCH", `${p(ticketId)}/requests/${id}`, body);
 /** Same endpoint ops-api uses, but returns the updated checklist for any kind (gates too). */
 export const confirmChecklistItem = (
@@ -154,6 +154,7 @@ export type Dependency = {
   title: string;
   kind: string;
   client_owner: string | null;
+  owner_id: string | null;
   owner_name: string | null;
   due_on: string | null;
   status: DependencyStatus;
@@ -182,8 +183,11 @@ export const addDependency = (
   ticketId: string,
   body: { title: string; client_owner?: string | null; due_on?: string | null },
 ) => sendJson<Dependency>("POST", `${p(ticketId)}/dependencies`, body);
-export const patchDependency = (ticketId: string, id: number, body: { status: DependencyStatus }) =>
-  sendJson<Dependency>("PATCH", `${p(ticketId)}/dependencies/${id}`, body);
+export const patchDependency = (
+  ticketId: string,
+  id: number,
+  body: { status?: DependencyStatus; owner_id?: string | null },
+) => sendJson<Dependency>("PATCH", `${p(ticketId)}/dependencies/${id}`, body);
 
 // ---- communications ----------------------------------------------------------------------
 export type CommStatus = "planned" | "sent" | "skipped";

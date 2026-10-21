@@ -411,6 +411,29 @@ async def test_editing_what_was_approved_voids_the_approval_and_says_so(client_f
 
 async def test_operational_fields_can_still_change_after_approval(client_for, make_user, make_program, db):
     marketing, aid = await approved_activity(client_for, make_user, make_program, db)
-    for body in ({"utm": "he_mark/x"}, {"planned_date": "2026-11-02"}, {"status": "wip"}):
+    for body in ({"utm": "he_mark/x"}, {"planned_date": (date.today() + timedelta(days=10)).isoformat()}, {"status": "wip"}):
         res = await marketing.patch(f"/programs/t1/activities/{aid}", json=body)
         assert res.status_code == 200 and res.json()["approved_at"] is not None, body
+
+
+async def test_a_go_live_date_must_be_today_or_later_and_within_two_months(client_for, make_user, make_program, db):
+    marketing, aid = await approved_activity(client_for, make_user, make_program, db)
+    url = f"/programs/t1/activities/{aid}"
+    day = lambda n: (date.today() + timedelta(days=n)).isoformat()  # noqa: E731
+    past = await marketing.patch(url, json={"planned_date": day(-1)})
+    far = await marketing.patch(url, json={"planned_date": day(61)})
+    assert (past.status_code, past.json()["code"]) == (422, "go_live_date_in_past")
+    assert (far.status_code, far.json()["code"]) == (422, "go_live_date_too_far")
+    for n in (0, 60):
+        assert (await marketing.patch(url, json={"planned_date": day(n)})).status_code == 200
+    added = await marketing.post("/programs/t1/activities", json={"channel": "Email", "title": "x", "planned_date": day(-3)})
+    assert added.status_code == 422
+
+
+async def test_an_old_poa_date_is_left_alone_when_other_fields_change(client_for, make_user, make_program, db):
+    marketing, aid = await approved_activity(client_for, make_user, make_program, db)
+    async with db() as session:
+        await session.execute(text("UPDATE program_activities SET planned_date = '2020-01-01' WHERE id = :i"), {"i": aid})
+        await session.commit()
+    res = await marketing.patch(f"/programs/t1/activities/{aid}", json={"utm": "he_new"})
+    assert res.status_code == 200 and res.json()["planned_date"] == "2020-01-01"

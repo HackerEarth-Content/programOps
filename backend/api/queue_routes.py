@@ -81,7 +81,7 @@ def _kinds(activity: ProgramActivity, today: date, logged_yesterday: bool) -> li
     if activity.approved_at is None and activity.status == ActivityStatus.WIP:
         found.append((MarketingKind.AWAITING_APPROVAL, Severity.AMBER, "Waiting for a CSM to approve"))
     missing = [
-        name for name, value in (("UTM", activity.utm), ("creative proof", activity.creative_proof_url)) if not value
+        name for name, value in (("UTM", activity.utm), ("go-live date", activity.planned_date), ("creative proof", activity.creative_proof_url)) if not value
     ]
     in_motion = activity.status != ActivityStatus.NOT_STARTED or activity.approved_at is not None
     if missing and in_motion:  # a plan row nobody has touched yet isn't a blocker; it would flood the queue

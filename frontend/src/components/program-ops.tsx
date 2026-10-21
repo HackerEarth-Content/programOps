@@ -16,7 +16,9 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useState, type ComponentProps, type ReactNode } from "react";
+import { Link } from "@tanstack/react-router";
+import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
+import { toast } from "sonner";
 import {
   Avatar,
   Bar,
@@ -40,6 +42,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useCan } from "@/lib/api";
+import { assignmentsQuery } from "@/lib/marketing-api";
 import { formatDate, formatDateTime, timeAgo } from "@/lib/format";
 import {
   HEALTH_REASONS,
@@ -109,6 +112,84 @@ const n = (v: number | null | undefined) => (v == null ? "–" : v.toLocaleStrin
 const pct = (v: number | null | undefined) => (v == null ? "–" : `${v}%`);
 const today = () => new Date().toISOString().slice(0, 10);
 const label = (s: string) => s.replace(/_/g, " ");
+const titleCase = (s: string) => label(s).replace(/^./, (c) => c.toUpperCase());
+const isPast = (iso: string | null | undefined) => !!iso && iso.slice(0, 10) < today();
+
+/** "due 3 Nov", turning red once it is past and the item is still open. */
+function Due({
+  at,
+  open = true,
+  prefix = "due",
+}: {
+  at: string | null | undefined;
+  open?: boolean;
+  prefix?: string;
+}) {
+  if (!at) return null;
+  const late = open && isPast(at);
+  return (
+    <span className={cn(late && "font-medium text-status-critical")}>
+      {prefix} {formatDate(at)}
+      {late && " · overdue"}
+    </span>
+  );
+}
+
+/** A toast with an Undo button, for one-click status moves that can be taken back. */
+const undoable = (message: string, undo: () => void) =>
+  toast(message, { action: { label: "Undo", onClick: undo }, duration: 7000 });
+
+/** A text draft that survives a reload (per program); storage may be unavailable, so it never throws. */
+function useDraft(key: string): [string, (v: string) => void] {
+  const k = `programops:draft:${key}`;
+  const [value, setValue] = useState("");
+  useEffect(() => {
+    try {
+      setValue(localStorage.getItem(k) ?? "");
+    } catch {
+      /* no storage: start empty */
+    }
+  }, [k]);
+  const set = (v: string) => {
+    setValue(v);
+    try {
+      if (v) localStorage.setItem(k, v);
+      else localStorage.removeItem(k);
+    } catch {
+      /* ignore */
+    }
+  };
+  return [value, set];
+}
+
+function OwnerSelect({
+  ticketId,
+  value,
+  onPick,
+  disabled,
+}: {
+  ticketId: string;
+  value: string | null;
+  onPick: (id: string | null) => void;
+  disabled?: boolean;
+}) {
+  const people = useQuery(assignmentsQuery(ticketId)).data ?? [];
+  return (
+    <Select
+      aria-label="Owner"
+      value={value ?? ""}
+      disabled={disabled}
+      onChange={(e) => onPick(e.target.value || null)}
+    >
+      <option value="">Unassigned</option>
+      {people.map((p) => (
+        <option key={p.user_id} value={p.user_id}>
+          {p.name} · {label(p.role)}
+        </option>
+      ))}
+    </Select>
+  );
+}
 
 const HEALTH_TONE: Record<Health, Tone> = {
   good: "good",
@@ -1013,8 +1094,11 @@ function RequestCard({
     onSuccess: onChanged,
   });
   const patch = useMutation({
-    mutationFn: (b: { status: RequestStatus; resolution?: string | null }) =>
-      patchRequest(ticketId, c.id, b),
+    mutationFn: (b: {
+      status?: RequestStatus;
+      resolution?: string | null;
+      owner_id?: string | null;
+    }) => patchRequest(ticketId, c.id, b),
     onSuccess: () => {
       setPending(null);
       setResolution("");
@@ -1033,7 +1117,12 @@ function RequestCard({
           <h3 className="text-[16px] font-semibold leading-[22px]">{c.title}</h3>
           <p className="t-data-sm text-muted-foreground">
             {c.requested_by_name ?? "Unknown"} · {timeAgo(c.created_at)}
-            {c.due_at && ` · due ${formatDate(c.due_at)}`}
+            {c.due_at && (
+              <>
+                {" · "}
+                <Due at={c.due_at} open={!resolved} />
+              </>
+            )}
             {c.owner_name && ` · owner ${c.owner_name}`}
           </p>
         </div>
@@ -1071,6 +1160,12 @@ function RequestCard({
         )}
         {canManage && (
           <div className="flex flex-wrap items-center gap-2">
+            <OwnerSelect
+              ticketId={ticketId}
+              value={c.owner_id}
+              disabled={patch.isPending}
+              onPick={(owner_id) => patch.mutate({ owner_id })}
+            />
             <Select
               aria-label="Request status"
               value={pending ?? c.status}
@@ -1100,7 +1195,11 @@ function RequestCard({
                   }
                   aria-label="Resolution"
                 />
-                <Button type="submit" size="sm" disabled={patch.isPending}>
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={patch.isPending || (pending === "declined" && !resolution.trim())}
+                >
                   Save
                 </Button>
                 <Button type="button" size="sm" variant="ghost" onClick={() => setPending(null)}>
@@ -1109,7 +1208,14 @@ function RequestCard({
               </form>
             )}
             {resolved && !pending && (
-              <span className="t-body-sm text-muted-foreground">Reopen by changing status.</span>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={patch.isPending}
+                onClick={() => patch.mutate({ status: "open" })}
+              >
+                Reopen
+              </Button>
             )}
           </div>
         )}
@@ -1201,12 +1307,14 @@ function LifecycleCard({ ticketId, onChanged }: { ticketId: string; onChanged: (
   const { data, isLoading, isError, error, refetch } = useQuery(lifecycleQuery(ticketId));
   const [openPhase, setOpenPhase] = useState<string | null>(null);
   const [skipping, setSkipping] = useState<string | null>(null);
+  const [finishing, setFinishing] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const patch = useMutation({
     mutationFn: ({ phase, status, skip }: { phase: string; status: PhaseStatus; skip?: string }) =>
       patchPhase(ticketId, phase, { status, skip_reason: skip ?? null }),
     onSuccess: () => {
       setSkipping(null);
+      setFinishing(null);
       setReason("");
       onChanged();
     },
@@ -1273,10 +1381,10 @@ function LifecycleCard({ ticketId, onChanged }: { ticketId: string; onChanged: (
                   )}
                   {p.due_on && (
                     <span className="t-data-sm text-muted-foreground">
-                      due {formatDate(p.due_on)}
+                      <Due at={p.due_on} open={p.status !== "done" && p.status !== "skipped"} />
                     </span>
                   )}
-                  <Chip tone={PHASE_TONE[p.status]}>{label(p.status)}</Chip>
+                  <Chip tone={PHASE_TONE[p.status]}>{titleCase(p.status)}</Chip>
                 </div>
                 {p.status === "skipped" && p.skip_reason && (
                   <p className="ml-6 t-body-sm text-muted-foreground">Skipped: {p.skip_reason}</p>
@@ -1312,10 +1420,30 @@ function LifecycleCard({ ticketId, onChanged }: { ticketId: string; onChanged: (
                             size="sm"
                             variant="success"
                             disabled={patch.isPending}
-                            onClick={() => patch.mutate({ phase: p.phase, status: "done" })}
+                            onClick={() =>
+                              g.progress.done < g.progress.total
+                                ? setFinishing(p.phase)
+                                : patch.mutate({ phase: p.phase, status: "done" })
+                            }
                           >
                             Mark done
                           </Button>
+                        )}
+                        {finishing === p.phase && (
+                          <span className="flex flex-wrap items-center gap-1.5 t-body-sm text-status-warning">
+                            {g.progress.total - g.progress.done} checklist item(s) not confirmed.
+                            <Button
+                              size="sm"
+                              variant="success"
+                              disabled={patch.isPending}
+                              onClick={() => patch.mutate({ phase: p.phase, status: "done" })}
+                            >
+                              Mark done anyway
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={() => setFinishing(null)}>
+                              Cancel
+                            </Button>
+                          </span>
                         )}
                         {p.status !== "skipped" && (
                           <Button size="sm" variant="ghost" onClick={() => setSkipping(p.phase)}>
@@ -1372,16 +1500,24 @@ function LifecycleCard({ ticketId, onChanged }: { ticketId: string; onChanged: (
 function Composer({ ticketId, onChanged }: { ticketId: string; onChanged: () => void }) {
   const canPost = useCan("update.post");
   const canComment = useCan("comment.add");
-  const [health, setHealth] = useState<Health>("good");
-  const [summary, setSummary] = useState("");
-  const [blockers, setBlockers] = useState("");
-  const [comment, setComment] = useState("");
+  const [health, setHealth] = useState<Health | null>(null);
+  const [summary, setSummary] = useDraft(`${ticketId}:summary`);
+  const [blockers, setBlockers] = useDraft(`${ticketId}:blockers`);
+  const [comment, setComment] = useDraft(`${ticketId}:comment`);
+  const feed = useInfiniteQuery(updatesFeedQuery(ticketId));
+  const last = feed.data?.pages.flatMap((pg) => pg.items).find((u) => u.health);
   const post = useMutation({
     mutationFn: () =>
-      postUpdate(ticketId, { health, summary: summary.trim(), blockers: blockers.trim() || null }),
+      postUpdate(ticketId, {
+        health: health ?? "good",
+        summary: summary.trim(),
+        blockers: blockers.trim() || null,
+      }),
     onSuccess: () => {
       setSummary("");
       setBlockers("");
+      setHealth(null);
+      toast.success("Update posted");
       onChanged();
     },
   });
@@ -1389,6 +1525,7 @@ function Composer({ ticketId, onChanged }: { ticketId: string; onChanged: () => 
     mutationFn: () => postComment(ticketId, comment.trim()),
     onSuccess: () => {
       setComment("");
+      toast.success("Comment added");
       onChanged();
     },
   });
@@ -1405,7 +1542,18 @@ function Composer({ ticketId, onChanged }: { ticketId: string; onChanged: () => 
               post.mutate();
             }}
           >
-            <div role="radiogroup" aria-label="Health" className="flex gap-1.5">
+            <p className="t-body-sm text-muted-foreground">
+              {last ? (
+                <>
+                  Last update {timeAgo(last.created_at)} · health{" "}
+                  <HealthPill health={last.health as Health} />
+                </>
+              ) : (
+                "No update posted yet."
+              )}
+            </p>
+            <div role="radiogroup" aria-label="Health" className="flex items-center gap-1.5">
+              <MonoLabel className="mr-1">How is it going?</MonoLabel>
               {(["good", "warning", "critical"] as const).map((h) => (
                 <button
                   key={h}
@@ -1439,9 +1587,16 @@ function Composer({ ticketId, onChanged }: { ticketId: string; onChanged: () => 
               />
             </Field>
             <div className="flex items-center gap-2">
-              <Button type="submit" size="sm" disabled={!summary.trim() || post.isPending}>
+              <Button
+                type="submit"
+                size="sm"
+                disabled={!summary.trim() || !health || post.isPending}
+              >
                 Post update
               </Button>
+              {!health && summary.trim() && (
+                <span className="t-body-sm text-muted-foreground">Choose a health first.</span>
+              )}
               <MutationError m={post} />
             </div>
           </form>
@@ -1449,15 +1604,16 @@ function Composer({ ticketId, onChanged }: { ticketId: string; onChanged: () => 
       )}
       {canComment && (
         <form
-          className={cn("flex gap-2 p-[18px]", canPost && "border-t border-border")}
+          className={cn("flex items-start gap-2 p-[18px]", canPost && "border-t border-border")}
           onSubmit={(e) => {
             e.preventDefault();
             talk.mutate();
           }}
         >
-          <Input
+          <Textarea
             value={comment}
             onChange={(e) => setComment(e.target.value)}
+            rows={2}
             placeholder="Add a comment"
             aria-label="Comment"
           />
@@ -1508,7 +1664,7 @@ function Feed({ ticketId }: { ticketId: string }) {
               <div className="flex flex-wrap items-center gap-2">
                 <Avatar name={u.author_name} />
                 <span className="text-[14px] font-medium">{u.author_name ?? "Unknown"}</span>
-                <Chip>{u.kind}</Chip>
+                <Chip>{titleCase(u.kind)}</Chip>
                 {u.health && <HealthPill health={u.health} />}
                 <span
                   className="ml-auto t-data-sm text-muted-foreground"
@@ -1631,9 +1787,16 @@ function Dependencies({ ticketId, onChanged }: { ticketId: string; onChanged: ()
     },
   });
   const set = useMutation({
-    mutationFn: ({ id, status }: { id: number; status: Dependency["status"] }) =>
-      patchDependency(ticketId, id, { status }),
-    onSuccess: onChanged,
+    mutationFn: (b: { id: number; status?: Dependency["status"]; owner_id?: string | null }) =>
+      patchDependency(ticketId, b.id, {
+        ...(b.status ? { status: b.status } : {}),
+        ...(b.owner_id !== undefined ? { owner_id: b.owner_id } : {}),
+      }),
+    onSuccess: (_, v) => {
+      onChanged();
+      if (v.status && v.status !== "open")
+        undoable(`Marked ${v.status}`, () => set.mutate({ id: v.id, status: "open" }));
+    },
   });
   const items = q.data?.items ?? [];
   const impact = q.data?.impact;
@@ -1664,16 +1827,28 @@ function Dependencies({ ticketId, onChanged }: { ticketId: string; onChanged: ()
                       : "neutral"
                 }
               >
-                {d.status === "open" && d.overdue ? `${d.delay_days}d late` : d.status}
+                {d.status === "open" && d.overdue ? `${d.delay_days}d late` : titleCase(d.status)}
               </Chip>
             </div>
             <p className="t-data-sm text-muted-foreground">
-              {d.kind}
-              {d.client_owner && ` · ${d.client_owner}`}
-              {d.due_on && ` · due ${formatDate(d.due_on)}`}
+              {titleCase(d.kind)}
+              {d.client_owner && ` · client: ${d.client_owner}`}
+              {d.owner_name && ` · ours: ${d.owner_name}`}
+              {d.due_on && (
+                <>
+                  {" · "}
+                  <Due at={d.due_on} open={d.status === "open"} />
+                </>
+              )}
             </p>
             {canManage && d.status === "open" && (
-              <div className="mt-1 flex gap-1.5">
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                <OwnerSelect
+                  ticketId={ticketId}
+                  value={d.owner_id}
+                  disabled={set.isPending}
+                  onPick={(owner_id) => set.mutate({ id: d.id, owner_id })}
+                />
                 <Button
                   size="sm"
                   variant="outline"
@@ -1775,7 +1950,11 @@ function Communications({ ticketId, onChanged }: { ticketId: string; onChanged: 
   const set = useMutation({
     mutationFn: ({ id, status }: { id: number; status: Comm["status"] }) =>
       patchCommunication(ticketId, id, { status }),
-    onSuccess: onChanged,
+    onSuccess: (_, v) => {
+      onChanged();
+      if (v.status !== "planned")
+        undoable(`Marked ${v.status}`, () => set.mutate({ id: v.id, status: "planned" }));
+    },
   });
   const items = q.data ?? [];
   return (
@@ -1804,7 +1983,7 @@ function Communications({ ticketId, onChanged }: { ticketId: string; onChanged: 
                         : "info"
                 }
               >
-                {c.overdue && c.status === "planned" ? "overdue" : c.status}
+                {c.overdue && c.status === "planned" ? "Overdue" : titleCase(c.status)}
               </Chip>
             </div>
             <p className="t-data-sm text-muted-foreground">
@@ -1853,7 +2032,9 @@ function Communications({ ticketId, onChanged }: { ticketId: string; onChanged: 
                 aria-label="Kind"
               >
                 {COMM_KINDS.map((k) => (
-                  <option key={k}>{k}</option>
+                  <option key={k} value={k}>
+                    {titleCase(k)}
+                  </option>
                 ))}
               </Select>
               <Input
@@ -1911,9 +2092,13 @@ function ChangeRow({
   onChanged: () => void;
 }) {
   const canManage = useCan("request.manage");
+  const [deciding, setDeciding] = useState<"approve" | "reject" | null>(null);
   const decide = useMutation({
     mutationFn: (d: "approve" | "reject") => decideChange(ticketId, ch.id, d),
-    onSuccess: onChanged,
+    onSuccess: () => {
+      setDeciding(null);
+      onChanged();
+    },
   });
   const task = useMutation({
     mutationFn: ({ id, done }: { id: number; done: boolean }) =>
@@ -1923,8 +2108,22 @@ function ChangeRow({
   return (
     <li className="px-[18px] py-2.5">
       <div className="flex items-start justify-between gap-2">
-        <p className="text-[14px] font-medium">{ch.label}</p>
-        <Chip tone={CHANGE_TONE[ch.status]}>{ch.status}</Chip>
+        <p className="text-[14px] font-medium">
+          {ch.subject_type === "activity" ? (
+            <Link
+              to="/programs/$ticketId"
+              params={{ ticketId }}
+              search={{ tab: "marketing" }}
+              hash={`a=${ch.subject_id}`}
+              className="hover:underline"
+            >
+              {ch.label}
+            </Link>
+          ) : (
+            ch.label
+          )}
+        </p>
+        <Chip tone={CHANGE_TONE[ch.status]}>{titleCase(ch.status)}</Chip>
       </div>
       <p className="t-data-sm">
         <span className="text-muted-foreground">{ch.field}</span>{" "}
@@ -1952,23 +2151,33 @@ function ChangeRow({
           ))}
         </ul>
       )}
-      {canManage && ch.status === "proposed" && (
+      {canManage && ch.status === "proposed" && !deciding && (
         <div className="mt-1 flex gap-1.5">
-          <Button
-            size="sm"
-            variant="success"
-            disabled={decide.isPending}
-            onClick={() => decide.mutate("approve")}
-          >
+          <Button size="sm" variant="success" onClick={() => setDeciding("approve")}>
             Approve
           </Button>
+          <Button size="sm" variant="ghost" onClick={() => setDeciding("reject")}>
+            Reject
+          </Button>
+        </div>
+      )}
+      {deciding && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <span className="t-body-sm text-secondary-foreground">
+            {deciding === "approve"
+              ? "Approve this change? Follow-up tasks are created and the date is updated."
+              : "Reject this change? It can't be reopened."}
+          </span>
           <Button
             size="sm"
-            variant="ghost"
+            variant={deciding === "approve" ? "success" : "danger"}
             disabled={decide.isPending}
-            onClick={() => decide.mutate("reject")}
+            onClick={() => decide.mutate(deciding)}
           >
-            Reject
+            Confirm {deciding}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setDeciding(null)}>
+            Cancel
           </Button>
         </div>
       )}
@@ -2104,50 +2313,145 @@ function TimelineChanges({ ticketId, onChanged }: { ticketId: string; onChanged:
   );
 }
 
+type OpsSection = "requests" | "updates" | "phases" | "blockers";
+const OPS_SECTIONS: { id: OpsSection; label: string }[] = [
+  { id: "updates", label: "Daily updates" },
+  { id: "requests", label: "Special requests" },
+  { id: "phases", label: "Phase checklist" },
+  { id: "blockers", label: "Dependencies & changes" },
+];
+
 export function ProgramRequests({ ticketId }: { ticketId: string }) {
   const refresh = useRefresh(ticketId);
   const requests = useQuery(requestsFullQuery(ticketId));
   const canRaise = useCan("request.create");
+  const [section, setSection] = useState<OpsSection>("updates");
+  const deps = useQuery(dependenciesQuery(ticketId)).data;
+  const phases = useQuery(lifecycleQuery(ticketId)).data;
+  const changes = useQuery(timelineChangesQuery(ticketId)).data;
+  const comms = useQuery(communicationsQuery(ticketId)).data;
+  const feed = useInfiniteQuery(updatesFeedQuery(ticketId));
+  const lastUpdate = feed.data?.pages.flatMap((pg) => pg.items).find((u) => u.health);
+  const isOpen = (c: RequestFull) => c.status !== "done" && c.status !== "declined";
+  const open = (requests.data?.filter(isOpen) ?? []).sort((a, b) =>
+    (a.due_at ?? "9999").localeCompare(b.due_at ?? "9999"),
+  );
+  const overdueRequests = open.filter((c) => isPast(c.due_at)).length;
+  const proposed = changes?.filter((c) => c.status === "proposed").length ?? 0;
+  const lateComms = comms?.filter((c) => c.overdue && c.status === "planned").length ?? 0;
+  const phasesDone = phases?.filter((p) => p.status === "done").length ?? 0;
+  const attention = (deps?.impact.overdue ?? 0) + proposed + lateComms;
+  const resolved = requests.data?.filter((c) => !isOpen(c)) ?? [];
+  const card = (c: RequestFull) => (
+    <RequestCard key={c.id} c={c} ticketId={ticketId} onChanged={refresh} />
+  );
   return (
     <div className="space-y-4 page-in">
-      <div className="grid items-start gap-4 xl:grid-cols-2">
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-[16px] font-semibold">Special requests</h2>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-3">
+        <Kpi
+          label="Last update"
+          value={lastUpdate ? timeAgo(lastUpdate.created_at) : "None yet"}
+          sub={
+            lastUpdate ? <HealthPill health={lastUpdate.health as Health} /> : "Post the first one"
+          }
+          index={0}
+        />
+        <Kpi
+          label="Open requests"
+          value={open.length}
+          tone={overdueRequests ? "critical" : undefined}
+          sub={overdueRequests ? `${overdueRequests} overdue` : "none overdue"}
+          index={1}
+        />
+        <Kpi
+          label="Client dependencies"
+          value={deps?.impact.open ?? "–"}
+          tone={deps?.impact.overdue ? "critical" : undefined}
+          sub={deps?.impact.overdue ? `${deps.impact.overdue} overdue` : "none overdue"}
+          index={2}
+        />
+        <Kpi
+          label="Phases done"
+          value={phases ? `${phasesDone}/${phases.length}` : "–"}
+          sub="lifecycle checklist"
+          index={3}
+        />
+        <Kpi
+          label="Changes to decide"
+          value={proposed}
+          tone={proposed ? "warning" : undefined}
+          sub={lateComms ? `${lateComms} overdue comms` : "timeline changes"}
+          index={4}
+        />
+      </div>
+      <div className="overflow-x-auto pb-1">
+        <Segmented
+          value={section}
+          onChange={setSection}
+          options={OPS_SECTIONS.map((o) => ({
+            ...o,
+            ...(o.id === "requests" && open.length ? { count: open.length } : {}),
+            ...(o.id === "blockers" && attention ? { count: attention } : {}),
+          }))}
+        />
+      </div>
+      {section === "requests" && (
+        <div className="max-w-3xl space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-[16px] font-semibold">Special requests</h2>
+              <p className="t-body-sm text-muted-foreground">
+                Anything the client or team asks for beyond the plan. Each one has a checklist to
+                tick off until it is done.
+              </p>
+            </div>
             {requests.data && (
-              <span className="t-data-sm text-muted-foreground">
-                {requests.data.filter((c) => c.status !== "done" && c.status !== "declined").length}{" "}
-                open
-              </span>
+              <span className="t-data-sm text-muted-foreground">{open.length} open</span>
             )}
           </div>
+          {canRaise && <RaiseRequest ticketId={ticketId} onChanged={refresh} />}
           {requests.isLoading ? (
             <ListSkeleton rows={2} />
           ) : requests.isError ? (
             <ErrorBox error={requests.error} onRetry={() => void requests.refetch()} />
           ) : requests.data?.length ? (
-            requests.data.map((c) => (
-              <RequestCard key={c.id} c={c} ticketId={ticketId} onChanged={refresh} />
-            ))
+            <>
+              {open.map(card)}
+              {resolved.length > 0 && (
+                <details className="space-y-4">
+                  <summary className="cursor-pointer t-body-sm text-muted-foreground">
+                    {resolved.length} resolved
+                  </summary>
+                  <div className="mt-4 space-y-4">{resolved.map(card)}</div>
+                </details>
+              )}
+            </>
           ) : (
             <EmptyState
               title="No requests raised"
               hint="Special asks from the client or team show up here with a confirmation checklist."
             />
           )}
-          {canRaise && <RaiseRequest ticketId={ticketId} onChanged={refresh} />}
-          <LifecycleCard ticketId={ticketId} onChanged={refresh} />
         </div>
-        <div className="space-y-4">
+      )}
+      {section === "updates" && (
+        <div className="grid items-start gap-4 xl:grid-cols-2">
           <Composer ticketId={ticketId} onChanged={refresh} />
           <Feed ticketId={ticketId} />
         </div>
-      </div>
-      <div className="grid items-start gap-4 lg:grid-cols-2 2xl:grid-cols-3">
-        <Dependencies ticketId={ticketId} onChanged={refresh} />
-        <Communications ticketId={ticketId} onChanged={refresh} />
-        <TimelineChanges ticketId={ticketId} onChanged={refresh} />
-      </div>
+      )}
+      {section === "phases" && (
+        <div className="max-w-3xl">
+          <LifecycleCard ticketId={ticketId} onChanged={refresh} />
+        </div>
+      )}
+      {section === "blockers" && (
+        <div className="grid items-start gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+          <Dependencies ticketId={ticketId} onChanged={refresh} />
+          <Communications ticketId={ticketId} onChanged={refresh} />
+          <TimelineChanges ticketId={ticketId} onChanged={refresh} />
+        </div>
+      )}
     </div>
   );
 }

@@ -3,7 +3,7 @@ export const PROGRAM_TABS = [
   { id: "marketing", label: "Marketing" },
   { id: "registrations", label: "Registrations" },
   { id: "rounds", label: "Rounds" },
-  { id: "requests", label: "Requests" },
+  { id: "requests", label: "Requests & updates" },
   { id: "documents", label: "Documents" },
   { id: "activity", label: "Activity" },
 ] as const;

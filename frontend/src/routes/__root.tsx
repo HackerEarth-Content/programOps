@@ -14,6 +14,7 @@ import { themeInitScript } from "../lib/theme";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { AppShell } from "../components/app-shell";
 import { AuthGate } from "../components/auth-gate";
+import { Toaster } from "../components/ui/sonner";
 
 function NotFoundComponent() {
   return (
@@ -125,6 +126,7 @@ function RootComponent() {
           <Outlet />
         </AppShell>
       </AuthGate>
+      <Toaster position="bottom-right" />
     </QueryClientProvider>
   );
 }

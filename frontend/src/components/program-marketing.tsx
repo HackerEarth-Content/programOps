@@ -16,6 +16,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
+import { toast } from "sonner";
 import { Chip, EmptyState, Skeleton, StatusDot } from "@/components/kit";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -46,6 +47,7 @@ import {
   type ActivityMetrics,
   type ChannelInput,
   type PlanActivity,
+  type PlanPatch,
   type RereadResult,
 } from "@/lib/marketing-api";
 import {
@@ -62,12 +64,21 @@ const STATUS_LABEL: Record<ActivityStatus, string> = {
   not_started: "Not started",
   wip: "In progress",
   live: "Live",
-  off: "Off",
+  off: "Done",
 };
 const SELECT_CLS =
-  "h-9 rounded-[8px] border border-border bg-surface px-2.5 text-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60";
+  "h-10 rounded-[8px] border border-border bg-surface px-3 text-[14px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60";
 const FIELD_CLS = "bg-raised";
-const GRID = "grid grid-cols-[minmax(0,2.4fr)_minmax(0,1.6fr)_110px_150px_110px] gap-4";
+const GRID =
+  "flex flex-col gap-1.5 xl:grid xl:grid-cols-[minmax(0,2fr)_128px_minmax(0,1.6fr)_104px] xl:items-center xl:gap-4 2xl:grid-cols-[minmax(0,2.2fr)_minmax(0,1.4fr)_128px_minmax(0,1.8fr)_104px]";
+
+/** Not live or done yet, and still missing approval, a UTM or a go-live date. */
+const isBlocked = (a: PlanActivity) =>
+  a.status !== "off" && a.status !== "live" && (!a.approved_at || !a.utm || !a.planned_date);
+const missingOf = (a: PlanActivity) =>
+  [!a.approved_at && "Needs approval", !a.utm && "No UTM", !a.planned_date && "No date"].filter(
+    (x): x is string => !!x,
+  );
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : "Action failed");
 const hashId = () => {
@@ -77,6 +88,8 @@ const hashId = () => {
 const weekKey = (a: PlanActivity) => String(a.week ?? "none");
 const weekLabel = (k: string) => (k === "none" ? "Unscheduled" : `Week ${k}`);
 const todayIso = () => new Date().toISOString().slice(0, 10);
+/** Go-live dates run from today to 60 days out (the backend enforces the same window). */
+const maxGoLiveIso = () => new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10);
 
 /** The week to open first: the one that contains today, else the next one, else the first. */
 function currentWeek(groups: [string, PlanActivity[]][]): string | null {
@@ -110,7 +123,9 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
 
   const [selectedId, setSelectedId] = useState<number | null>(hashId);
   const [week, setWeek] = useState("all");
-  const [dupOnly, setDupOnly] = useState(false);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | ActivityStatus>("all");
+  const [blockedOnly, setBlockedOnly] = useState(false);
   const [channel, setChannel] = useState("all");
   const [open, setOpen] = useState<Record<string, boolean> | null>(null);
   const [adding, setAdding] = useState(false);
@@ -144,6 +159,7 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
     onSuccess: () => {
       void reload();
       void qc.invalidateQueries({ queryKey: ["audit"] });
+      toast.success("Saved");
     },
     onError: (e) => {
       if (e instanceof ConflictError) {
@@ -191,11 +207,14 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
       return Number(a[0]) - Number(b[0]);
     });
   }, [rows]);
+  const q = query.trim().toLowerCase();
   const visible = rows.filter(
     (r) =>
       (week === "all" || weekKey(r) === week) &&
-      (!dupOnly || duplicates.has(r.id)) &&
-      (channel === "all" || r.channel === channel),
+      (channel === "all" || r.channel === channel) &&
+      (statusFilter === "all" || r.status === statusFilter) &&
+      (!blockedOnly || isBlocked(r)) &&
+      (!q || [r.title, r.channel, r.utm, r.code].some((x) => x?.toLowerCase().includes(q))),
   );
   const groups = useMemo(() => {
     const m = new Map<string, PlanActivity[]>();
@@ -229,11 +248,17 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
   const s = summary.data;
   const regEnd = regs?.estimate.end ?? null;
   const regClosed = regEnd !== null && regEnd < todayIso();
-  const blocked = rows.filter(
-    (a) => a.status !== "off" && a.status !== "live" && (!a.approved_at || !a.utm),
-  );
+  // `end` is only the real close date when it is known (linked event or CSM override); otherwise it is the start
+  // plus the SOW's registration weeks, so it must be worded as an expectation, not as a fact.
+  const regLabel = !regs?.estimate.end_is_actual
+    ? "after the expected registration end"
+    : regClosed
+      ? "after registration closed"
+      : "after registration closes";
+  const blocked = rows.filter(isBlocked);
   const unapproved = blocked.filter((a) => !a.approved_at).length;
   const noUtm = blocked.filter((a) => !a.utm).length;
+  const noDate = blocked.filter((a) => !a.planned_date).length;
   const afterClose = regEnd ? blocked.filter((a) => a.planned_date && a.planned_date > regEnd) : [];
   const withUtm = rows.filter((a) => a.utm).length;
   const who = csm ?? "the CSM";
@@ -278,27 +303,36 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
 
       {blocked.length > 0 && (
         <section className="flex flex-wrap items-center gap-3 rounded-[12px] bg-warn-bg px-4 py-3.5">
-          <TriangleAlert aria-hidden className="size-[18px] shrink-0 text-warn" />
+          <TriangleAlert aria-hidden className="size-5 shrink-0 text-warn" />
           <div className="min-w-0 flex-[1_1_400px]">
             <p className="font-medium">
               {blocked.length} {blocked.length === 1 ? "activity" : "activities"} can't go live yet
             </p>
-            <p className="text-[13px] text-ink-2">
-              {unapproved === blocked.length
-                ? `Each needs ${who}'s approval`
-                : `${unapproved} need ${who}'s approval`}
-              {noUtm > 0 && ` and ${noUtm === blocked.length ? "also " : ""}${noUtm} need a UTM`}
-              {". "}
-              {regClosed && afterClose.length > 0
-                ? afterClose.length === blocked.length
-                  ? `All of them start after registration closed on ${formatDay(regEnd)}.`
-                  : `${afterClose.length} start after registration closed on ${formatDay(regEnd)}.`
+            <p className="text-[14px] text-ink-2">
+              {[
+                unapproved > 0 && `${unapproved} awaiting ${who}'s approval`,
+                noUtm > 0 && `${noUtm} without a UTM`,
+                noDate > 0 && `${noDate} without a go-live date`,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+              {afterClose.length > 0
+                ? ` · ${afterClose.length === blocked.length ? "all" : afterClose.length} start ${regLabel} (${formatDay(regEnd)})`
                 : ""}
             </p>
           </div>
-          {canEdit && noUtm > 0 && (
+          <Button
+            variant="ghost"
+            onClick={() => {
+              setBlockedOnly(true);
+              setWeek("all");
+            }}
+          >
+            Show them
+          </Button>
+          {canEdit && (noUtm > 0 || noDate > 0) && (
             <Button variant="outline" onClick={() => setBulkUtm(true)}>
-              Add UTMs in bulk
+              Add UTMs & dates in bulk
             </Button>
           )}
           {canEdit && unapproved > 0 && (
@@ -307,7 +341,7 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
               disabled={nudgeAll.isPending}
               onClick={() => nudgeAll.mutate()}
             >
-              Nudge {who}
+              Remind {who} in Slack
             </Button>
           )}
         </section>
@@ -319,60 +353,68 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
           {banner.edits_kept} custom edits kept intact.
         </Notice>
       )}
-      {notice && (
+      {!selected && notice && (
         <Notice tone="warn" onDismiss={() => setNotice(null)}>
           {notice}
         </Notice>
       )}
-      {error && (
+      {!selected && error && (
         <Notice tone="danger" onDismiss={() => setError(null)}>
           {error}
         </Notice>
       )}
 
-      <div className="flex flex-wrap items-center gap-3">
-        <div
-          role="group"
-          aria-label="Filter by week"
-          className="flex gap-0.5 rounded-[10px] bg-raised p-[3px]"
+      <div className="flex flex-wrap items-center gap-2.5">
+        <Input
+          type="search"
+          className={cn("h-10 w-64", FIELD_CLS)}
+          placeholder="Search title, channel or UTM"
+          aria-label="Search activities"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <select
+          className={SELECT_CLS}
+          value={week}
+          onChange={(e) => setWeek(e.target.value)}
+          aria-label="Week"
         >
-          {[
-            ["all", "All", rows.length] as const,
-            ...weekCounts.map(([k, n]) => [k, weekLabel(k), n] as const),
-          ].map(([k, label, n]) => (
-            <button
-              key={k}
-              type="button"
-              aria-pressed={week === k}
-              onClick={() => setWeek(k)}
-              className={cn(
-                "h-8 rounded-[8px] px-3 text-[13px] font-medium",
-                week === k ? "bg-surface text-foreground" : "text-ink-2 hover:text-foreground",
-              )}
-            >
-              {label} <span className="text-ink-3">{n}</span>
-            </button>
+          <option value="all">All weeks ({rows.length})</option>
+          {weekCounts.map(([k, n]) => (
+            <option key={k} value={k}>
+              {weekLabel(k)} ({n})
+            </option>
           ))}
-        </div>
-        <label className="flex cursor-pointer items-center gap-2 text-[13px] text-ink-2">
-          <Checkbox checked={dupOnly} onCheckedChange={(v) => setDupOnly(v === true)} />
-          Show possible duplicates only
-        </label>
-        <label className="flex items-center gap-2 text-[13px] text-ink-2">
-          Channel
-          <select
-            className={SELECT_CLS}
-            value={channel}
-            onChange={(e) => setChannel(e.target.value)}
-            aria-label="Channel"
-          >
-            <option value="all">All channels</option>
-            {channels.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+        </select>
+        <select
+          className={SELECT_CLS}
+          value={channel}
+          onChange={(e) => setChannel(e.target.value)}
+          aria-label="Channel"
+        >
+          <option value="all">All channels</option>
+          {channels.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+        <select
+          className={SELECT_CLS}
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as "all" | ActivityStatus)}
+          aria-label="Status"
+        >
+          <option value="all">Any status</option>
+          {(Object.keys(STATUS_LABEL) as ActivityStatus[]).map((st) => (
+            <option key={st} value={st}>
+              {STATUS_LABEL[st]}
+            </option>
+          ))}
+        </select>
+        <label className="flex cursor-pointer items-center gap-2 text-[14px] text-ink-2">
+          <Checkbox checked={blockedOnly} onCheckedChange={(v) => setBlockedOnly(v === true)} />
+          Blocked only
         </label>
         <div className="flex-1" />
         {canReread && (
@@ -387,11 +429,7 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
         >
           Export CSV
         </Button>
-        {canAdd && (
-          <Button variant="outline" onClick={() => setAdding(true)}>
-            Add activity
-          </Button>
-        )}
+        {canAdd && <Button onClick={() => setAdding(true)}>Add activity</Button>}
       </div>
 
       {rows.length === 0 ? (
@@ -402,15 +440,18 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
       ) : (
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
           <section className="surface min-w-0 overflow-hidden">
-            <div className="overflow-x-auto">
-              <div className="min-w-[760px]">
+            <div>
+              <div>
                 <div
-                  className={cn(GRID, "border-b border-border px-5 py-2.5 text-[12px] text-ink-3")}
+                  className={cn(
+                    GRID,
+                    "hidden border-b border-border px-5 py-2.5 text-[13px] text-ink-3 xl:grid",
+                  )}
                 >
                   <span>Activity</span>
-                  <span>Goal</span>
-                  <span>Dates</span>
-                  <span>Ready to go live</span>
+                  <span className="hidden 2xl:block">Goal</span>
+                  <span>Go-live date</span>
+                  <span>Ready (approval · UTM · date)</span>
                   <span>Status</span>
                 </div>
                 {groups.length === 0 && (
@@ -426,7 +467,15 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
                   const range = dates.length
                     ? formatRange(dates[0], dates[dates.length - 1])
                     : null;
-                  const late = !!regEnd && !!dates[0] && dates[0] > regEnd;
+                  const late =
+                    !!regEnd &&
+                    items.some(
+                      (i) =>
+                        i.status !== "live" &&
+                        i.status !== "off" &&
+                        !!i.planned_date &&
+                        i.planned_date > regEnd,
+                    );
                   const expanded = isOpen(wk);
                   return (
                     <div key={wk}>
@@ -434,12 +483,12 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
                         type="button"
                         aria-expanded={expanded}
                         onClick={() => toggleWeek(wk)}
-                        className="flex w-full items-center gap-2.5 border-b border-border bg-raised px-5 py-3 text-left text-[13px]"
+                        className="flex w-full items-center gap-2.5 border-b border-border bg-raised px-5 py-3.5 text-left text-[14px]"
                       >
                         {expanded ? (
-                          <ChevronDown className="size-3.5 text-ink-2" />
+                          <ChevronDown className="size-4 text-ink-2" />
                         ) : (
-                          <ChevronRight className="size-3.5 text-ink-2" />
+                          <ChevronRight className="size-4 text-ink-2" />
                         )}
                         <span className="font-semibold">{weekLabel(wk)}</span>
                         <span className="text-ink-2">
@@ -447,8 +496,9 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
                           {items.length} {items.length === 1 ? "activity" : "activities"}
                         </span>
                         {late && (
-                          <span className="ml-auto rounded-full bg-warn-bg px-2 py-0.5 text-[12px] text-warn">
-                            After registration closed
+                          <span className="ml-auto rounded-full bg-warn-bg px-2 py-0.5 text-[13px] text-warn">
+                            {regLabel.charAt(0).toUpperCase() + regLabel.slice(1)} ·{" "}
+                            {formatDay(regEnd)}
                           </span>
                         )}
                       </button>
@@ -467,7 +517,7 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
                 })}
               </div>
             </div>
-            <p className="px-5 py-3 text-[12px] text-ink-3">
+            <p className="px-5 py-3 text-[13px] text-ink-3">
               Showing {visible.length} of {rows.length} planned activities
             </p>
           </section>
@@ -487,6 +537,20 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
                 canApprove={canApprove}
                 canEdit={canEdit}
                 onClose={() => select(null)}
+                feedback={
+                  <>
+                    {notice && (
+                      <Notice tone="warn" onDismiss={() => setNotice(null)}>
+                        {notice}
+                      </Notice>
+                    )}
+                    {error && (
+                      <Notice tone="danger" onDismiss={() => setError(null)}>
+                        {error}
+                      </Notice>
+                    )}
+                  </>
+                }
                 act={(fn) => act(selected.id, fn)}
                 onNudge={() =>
                   act(selected.id, async () => {
@@ -502,7 +566,7 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
             ) : (
               <>
                 <p className="font-medium">Select an activity</p>
-                <p className="mt-1 text-[13px] text-ink-2">
+                <p className="mt-1 text-[14px] text-ink-2">
                   Open a row to approve it, set its UTM and creative proof, log results and read its
                   history.
                 </p>
@@ -525,11 +589,25 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
       <BulkUtmDialog
         open={bulkUtm}
         onOpenChange={setBulkUtm}
-        rows={blocked.filter((a) => !a.utm)}
+        rows={blocked.filter((a) => !a.utm || !a.planned_date)}
         onSave={async (entries) => {
-          for (const [a, utm] of entries) await patchPlanActivity(ticketId, a, { utm });
+          const failed: string[] = [];
+          for (const [a, body] of entries) {
+            try {
+              await patchPlanActivity(ticketId, a, body);
+            } catch (e) {
+              failed.push(`${a.title}: ${errText(e)}`);
+            }
+          }
           await reload();
           void qc.invalidateQueries({ queryKey: ["audit"] });
+          if (failed.length) {
+            toast.warning(`Saved ${entries.length - failed.length} of ${entries.length}`);
+            throw new Error(`Not saved — ${failed.join("; ")}`);
+          }
+          toast.success(
+            `Saved ${entries.length} ${entries.length === 1 ? "activity" : "activities"}`,
+          );
         }}
       />
     </div>
@@ -549,9 +627,9 @@ function StatTile({
 }) {
   return (
     <div className="surface px-4 py-3.5">
-      <p className="text-[13px] text-ink-2">{label}</p>
+      <p className="text-[14px] text-ink-2">{label}</p>
       <p className="mt-0.5 text-[24px] font-semibold leading-8">{value}</p>
-      <p className={cn("text-[12px]", warn ? "text-warn" : "text-ink-3")}>{note}</p>
+      <p className={cn("text-[13px]", warn ? "text-warn" : "text-ink-3")}>{note}</p>
     </div>
   );
 }
@@ -580,7 +658,7 @@ function Notice({
     >
       <span>{children}</span>
       <button
-        className="shrink-0 text-[13px] underline-offset-2 hover:underline"
+        className="shrink-0 text-[14px] underline-offset-2 hover:underline"
         onClick={onDismiss}
       >
         Dismiss
@@ -614,6 +692,9 @@ function ActivityRow({
   duplicate: boolean;
   onSelect: () => void;
 }) {
+  const missing = missingOf(a);
+  const overdue =
+    !!a.planned_date && a.planned_date < todayIso() && a.status !== "live" && a.status !== "off";
   return (
     <button
       type="button"
@@ -621,34 +702,59 @@ function ActivityRow({
       onClick={onSelect}
       className={cn(
         GRID,
-        "w-full items-center border-b border-border px-5 py-3 text-left text-[13px]",
+        "w-full items-center border-b border-border px-5 py-3.5 text-left text-[14px]",
         selected ? "bg-selected" : "hover:bg-raised",
       )}
     >
       <span className="flex min-w-0 items-center gap-2">
         {a.breach && (
           <TriangleAlert
-            className="size-3.5 shrink-0 text-danger"
+            className="size-4 shrink-0 text-danger"
             aria-label="Live without approval"
           />
         )}
         <span className="truncate font-medium">{a.title}</span>
-        <span className="shrink-0 rounded-[6px] bg-chip px-2 py-px text-[12px] text-ink-2">
+        <span className="shrink-0 rounded-[6px] bg-chip px-2 py-px text-[13px] text-ink-2">
           {a.channel}
         </span>
         {duplicate && (
-          <span className="shrink-0 rounded-[6px] bg-accent-bg px-2 py-px text-[12px] text-primary">
+          <span className="shrink-0 rounded-[6px] bg-accent-bg px-2 py-px text-[13px] text-primary">
             Possible duplicate
           </span>
         )}
       </span>
-      <span className="truncate text-ink-2">{a.audience ?? a.outcome ?? "—"}</span>
-      <span className={a.planned_date ? "" : "text-ink-3"}>
-        {a.planned_date ? formatDay(a.planned_date) : "—"}
+      <span className="truncate text-ink-2 xl:hidden 2xl:block">
+        {a.audience ?? a.outcome ?? "—"}
       </span>
-      <span className="flex gap-3">
-        <StatusDot hollow={!a.approved_at} tone="ok" label="Approval" />
-        <StatusDot hollow={!a.utm} tone="ok" label="UTM" />
+      <span
+        className={cn(
+          "flex flex-wrap items-center gap-x-1.5",
+          !a.planned_date && "text-ink-3",
+          overdue && "font-medium text-danger",
+        )}
+      >
+        {a.planned_date ? formatDay(a.planned_date) : "—"}
+        {overdue && <span className="text-[13px]">· overdue</span>}
+      </span>
+      <span className="flex flex-wrap items-center gap-1.5">
+        {a.status === "live" || a.status === "off" ? (
+          <span className="text-[13px] text-ink-2">
+            {a.status === "live"
+              ? `Live since ${formatDay((a.go_live_at ?? a.updated_at).slice(0, 10))}`
+              : `Completed ${formatDay((a.comes_off_at ?? a.updated_at).slice(0, 10))}`}
+          </span>
+        ) : missing.length === 0 ? (
+          <Chip tone="good">Ready</Chip>
+        ) : (
+          missing.map((m) => (
+            <span
+              key={m}
+              className="rounded-[6px] bg-warn-bg px-1.5 py-px text-[13px] font-medium text-warn"
+            >
+              {m}
+            </span>
+          ))
+        )}
       </span>
       <span>
         <Chip tone={a.status === "live" ? "good" : "neutral"}>{STATUS_LABEL[a.status]}</Chip>
@@ -667,7 +773,9 @@ function Inspector({
   onClose,
   act,
   onNudge,
+  feedback,
 }: {
+  feedback: ReactNode;
   ticketId: string;
   a: PlanActivity;
   csm: string | null;
@@ -679,27 +787,41 @@ function Inspector({
   onNudge: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const [approving, setApproving] = useState(false);
   const [utm, setUtm] = useState(a.utm ?? "");
   const [proof, setProof] = useState(a.creative_proof_url ?? "");
-  const eligible = !!a.approved_at && !!a.utm;
+  const [date, setDate] = useState(a.planned_date ?? "");
+  const eligible = !!a.approved_at && !!a.utm && !!a.planned_date;
+  const missing = [
+    !a.approved_at && "CSM approval",
+    !a.utm && "UTM",
+    !a.planned_date && "go-live date",
+  ].filter(Boolean);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      const typing = !!t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName);
+      if (e.key === "Escape" && !typing && !document.querySelector("[role=dialog]")) onClose();
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const save = (body: { utm?: string | null; creative_proof_url?: string | null }) =>
-    act(() => patchPlanActivity(ticketId, a, body));
+  const save = (body: {
+    utm?: string | null;
+    planned_date?: string | null;
+    creative_proof_url?: string | null;
+  }) => act(() => patchPlanActivity(ticketId, a, body));
 
   return (
     <div className="flex flex-col gap-[18px]">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[12px] text-ink-3">
+          <p className="text-[13px] text-ink-3">
             {weekLabel(weekKey(a))} · {a.channel} · <span className="font-mono">{a.code}</span>
           </p>
-          <h2 className="mt-0.5 text-[18px] font-semibold leading-6">{a.title}</h2>
-          <p className="mt-1 text-[13px] text-ink-2">{a.audience ?? a.outcome ?? a.hook ?? ""}</p>
+          <h2 className="mt-0.5 text-[20px] font-semibold leading-6">{a.title}</h2>
+          <p className="mt-1 text-[14px] text-ink-2">{a.audience ?? a.outcome ?? a.hook ?? ""}</p>
         </div>
         <button
           aria-label="Close details"
@@ -710,6 +832,8 @@ function Inspector({
         </button>
       </div>
 
+      {feedback}
+
       <section className="flex flex-col gap-2.5 rounded-[10px] bg-raised p-3.5">
         <div className="flex items-center justify-between">
           <span className="font-medium">Approval</span>
@@ -719,24 +843,47 @@ function Inspector({
             <Chip tone="warning">Waiting for {csm ?? "the CSM"}</Chip>
           )}
         </div>
-        <p className="text-[13px] text-ink-2">
+        <p className="text-[14px] text-ink-2">
           {a.approved_at
             ? `Approved ${formatWhen(a.approved_at)}.${a.status === "live" ? "" : " Changing the description or creative proof clears the approval."}`
             : "Can't go live without CSM approval and a UTM."}
         </p>
-        {canApprove && !a.approved_at && (
-          <Button disabled={busy} onClick={() => act(() => approveActivity(ticketId, a.id))}>
-            {busy ? "Approving…" : "Approve activity"}
+        {canApprove && !a.approved_at && !approving && (
+          <Button disabled={busy} onClick={() => setApproving(true)}>
+            Approve activity
           </Button>
+        )}
+        {canApprove && !a.approved_at && approving && (
+          <div className="space-y-2">
+            <p className="text-[14px] text-ink-2">
+              Approve “{a.title}” for {a.channel}? Editing its description or creative proof
+              afterwards clears the approval.
+            </p>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                disabled={busy}
+                onClick={() => {
+                  act(() => approveActivity(ticketId, a.id));
+                  setApproving(false);
+                }}
+              >
+                {busy ? "Approving…" : "Confirm approval"}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setApproving(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
         )}
         {!a.approved_at && canEdit && (
           <button
             type="button"
             disabled={busy}
             onClick={onNudge}
-            className="self-start text-[13px] text-primary hover:underline disabled:opacity-50"
+            className="self-start text-[14px] text-primary hover:underline disabled:opacity-50"
           >
-            Nudge {csm ?? "the CSM"}
+            Remind {csm ?? "the CSM"} in Slack
           </button>
         )}
         {canApprove && a.approved_at && !confirming && (
@@ -747,8 +894,8 @@ function Inspector({
         {canApprove && a.approved_at && confirming && (
           <div className="space-y-2">
             {a.status === "live" && (
-              <p className="flex items-start gap-1.5 text-[13px] text-danger">
-                <TriangleAlert className="mt-0.5 size-3.5 shrink-0" /> This activity is live.
+              <p className="flex items-start gap-1.5 text-[14px] text-danger">
+                <TriangleAlert className="mt-0.5 size-4 shrink-0" /> This activity is live.
                 Withdrawing the approval makes it a control breach and alerts the program channel.
               </p>
             )}
@@ -772,11 +919,11 @@ function Inspector({
         )}
       </section>
 
-      <label className="flex flex-col gap-1.5 text-[13px]">
+      <label className="flex flex-col gap-1.5 text-[14px]">
         <span className="font-medium">UTM campaign</span>
         <span className="flex gap-2">
           <Input
-            className={cn("min-w-0 flex-1 font-mono text-[12px]", FIELD_CLS)}
+            className={cn("min-w-0 flex-1 font-mono text-[13px]", FIELD_CLS)}
             value={utm}
             readOnly={!canEdit}
             placeholder="he_embark_onsite_banner"
@@ -795,7 +942,33 @@ function Inspector({
         </span>
       </label>
 
-      <label className="flex flex-col gap-1.5 text-[13px]">
+      <label className="flex flex-col gap-1.5 text-[14px]">
+        <span className="font-medium">Go-live date</span>
+        <span className="flex gap-2">
+          <Input
+            type="date"
+            min={todayIso()}
+            max={maxGoLiveIso()}
+            className={cn("min-w-0 flex-1", FIELD_CLS)}
+            value={date}
+            readOnly={!canEdit}
+            aria-label="Go-live date"
+            onChange={(e) => setDate(e.target.value)}
+          />
+          {canEdit && (
+            <Button
+              variant="outline"
+              disabled={busy || date === (a.planned_date ?? "")}
+              onClick={() => save({ planned_date: date || null })}
+            >
+              Save
+            </Button>
+          )}
+        </span>
+        <span className="text-ink-3">The day this goes out: today up to 2 months ahead.</span>
+      </label>
+
+      <label className="flex flex-col gap-1.5 text-[14px]">
         <span className="font-medium">Creative proof link</span>
         <span className="flex gap-2">
           <Input
@@ -814,7 +987,7 @@ function Inspector({
                 rel="noreferrer noopener"
                 aria-label="Open creative proof"
               >
-                <ExternalLink className="size-3.5" />
+                <ExternalLink className="size-4" />
               </a>
             </Button>
           )}
@@ -831,8 +1004,13 @@ function Inspector({
       </label>
 
       {canEdit && (
-        <label className="flex flex-col gap-1.5 text-[13px]">
+        <label className="flex flex-col gap-1.5 text-[14px]">
           <span className="font-medium">Status</span>
+          {a.status !== "live" && a.status !== "off" && (
+            <span className="text-ink-3">
+              {eligible ? "Ready to go live." : `Still needs: ${missing.join(", ")}.`}
+            </span>
+          )}
           <select
             className={SELECT_CLS}
             aria-label={`Status of ${a.title}`}
@@ -912,31 +1090,31 @@ function Telemetry({ ticketId, a }: { ticketId: string; a: PlanActivity }) {
 
   return (
     <section className="flex flex-col gap-2">
-      <h3 className="text-[13px] font-medium">Results</h3>
+      <h3 className="text-[14px] font-medium">Results</h3>
       {isLoading && <Skeleton className="h-16" />}
-      {isError && <p className="text-[13px] text-danger">{errText(error)}</p>}
+      {isError && <p className="text-[14px] text-danger">{errText(error)}</p>}
       {data && (
         <>
           {hasResults && <Sparkline points={points} />}
           <div className="grid grid-cols-3 gap-2">
             {tiles.map(([k, v]) => (
               <div key={k} className="rounded-[8px] bg-raised p-2.5">
-                <p className="text-[12px] text-ink-3">{k}</p>
+                <p className="text-[13px] text-ink-3">{k}</p>
                 <p className="font-semibold">{v}</p>
               </div>
             ))}
             {t && (t.sent > 0 || t.opens > 0) && (
               <>
                 <div className="rounded-[8px] bg-raised p-2.5">
-                  <p className="text-[12px] text-ink-3">Sent</p>
+                  <p className="text-[13px] text-ink-3">Sent</p>
                   <p className="font-semibold">{fmt(t.sent)}</p>
                 </div>
                 <div className="rounded-[8px] bg-raised p-2.5">
-                  <p className="text-[12px] text-ink-3">Opens</p>
+                  <p className="text-[13px] text-ink-3">Opens</p>
                   <p className="font-semibold">{fmt(t.opens)}</p>
                 </div>
                 <div className="rounded-[8px] bg-raised p-2.5">
-                  <p className="text-[12px] text-ink-3">Open rate</p>
+                  <p className="text-[13px] text-ink-3">Open rate</p>
                   <p className="font-semibold">
                     {t.open_rate == null ? "—" : `${(t.open_rate * 100).toFixed(1)}%`}
                   </p>
@@ -945,13 +1123,13 @@ function Telemetry({ ticketId, a }: { ticketId: string; a: PlanActivity }) {
             )}
           </div>
           {!hasResults && (
-            <p className="text-[12px] text-ink-3">Results appear here once the activity is live.</p>
+            <p className="text-[13px] text-ink-3">Results appear here once the activity is live.</p>
           )}
         </>
       )}
       {canEnter && a.status === "live" && (
         <form onSubmit={submit} className="space-y-2 border-t border-border pt-3">
-          <p className="text-[13px] font-medium">Log results</p>
+          <p className="text-[14px] font-medium">Log results</p>
           <div className="grid grid-cols-2 gap-2">
             <Input
               type="date"
@@ -975,7 +1153,7 @@ function Telemetry({ ticketId, a }: { ticketId: string; a: PlanActivity }) {
               />
             ))}
           </div>
-          {log.isError && <p className="text-[13px] text-danger">{errText(log.error)}</p>}
+          {log.isError && <p className="text-[14px] text-danger">{errText(log.error)}</p>}
           <Button type="submit" variant="outline" disabled={log.isPending}>
             {log.isPending ? "Saving…" : "Log results"}
           </Button>
@@ -1013,43 +1191,99 @@ function Sparkline({ points }: { points: number[] }) {
   );
 }
 
-function describe(e: AuditEvent): string {
-  const v = (x: unknown) => (x === null || x === undefined || x === "" ? "empty" : String(x));
+const FIELD_LABEL: Record<string, string> = {
+  utm: "UTM",
+  planned_date: "Go-live date",
+  creative_proof_url: "Creative proof",
+  go_live_at: "Went live at",
+  comes_off_at: "Done at",
+  tracker_ref: "Tracker ref",
+  target_note: "Target note",
+};
+const fieldLabel = (f: string) =>
+  FIELD_LABEL[f] ?? f.charAt(0).toUpperCase() + f.slice(1).replace(/_/g, " ");
+
+/** One audit event as a short headline plus, for field edits, the before and after values. */
+function describe(e: AuditEvent): { title: string; from?: string; to?: string } {
+  const v = (x: unknown) => {
+    if (x === null || x === undefined || x === "") return "empty";
+    if (e.field === "status") return STATUS_LABEL[x as ActivityStatus] ?? String(x);
+    if (e.field === "planned_date" || e.field === "go_live_at" || e.field === "comes_off_at")
+      return formatDay(String(x).slice(0, 10));
+    return String(x);
+  };
   switch (e.action) {
     case "activity_updated":
-      return e.field === "utm"
-        ? `set the UTM to ${v(e.new)}`
-        : `changed ${(e.field ?? "a field").replace(/_/g, " ")} from ${v(e.old)} to ${v(e.new)}`;
+      return { title: fieldLabel(e.field ?? "field"), from: v(e.old), to: v(e.new) };
     case "approved":
-      return "approved the activity";
+      return { title: "Approved" };
     case "approval_withdrawn":
-      return "withdrew the approval";
+      return { title: "Approval withdrawn" };
+    case "approval_reset":
+      return { title: "Approval cleared by an edit" };
     case "channel_added":
-      return "added this activity manually";
-    default:
-      return e.action.replace(/_/g, " ");
+      return { title: "Added manually" };
+    default: {
+      const t = e.action.replace(/_/g, " ");
+      return { title: t.charAt(0).toUpperCase() + t.slice(1) };
+    }
   }
 }
 
 function History({ id }: { id: number }) {
   const { data, isLoading, isError, error } = useQuery(activityAuditQuery(id));
+  const items = data?.items ?? [];
+  const days = new Map<string, AuditEvent[]>();
+  for (const e of items) {
+    const day = formatDay(e.at.slice(0, 10));
+    days.set(day, [...(days.get(day) ?? []), e]);
+  }
   return (
-    <section className="border-t border-border pt-3.5 text-[13px]">
-      <h3 className="mb-1 font-medium">History</h3>
-      {isLoading && <Skeleton className="h-12" />}
-      {isError && <p className="text-danger">{errText(error)}</p>}
-      {data?.items.length === 0 && <p className="text-ink-3">No changes yet.</p>}
-      <ol className="space-y-1.5">
-        {data?.items.map((e) => (
-          <li key={e.id} className="flex justify-between gap-3">
-            <span>
-              {e.actor_name} {describe(e)}
-            </span>
-            <span className="shrink-0 text-[12px] text-ink-3">{formatWhen(e.at)}</span>
-          </li>
+    <details className="group border-t border-border pt-3.5 text-[14px]">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 font-medium">
+        <ChevronRight className="size-4 text-ink-2 transition-transform group-open:rotate-90" />
+        History
+        {data && <span className="font-normal text-ink-3">· {items.length}</span>}
+      </summary>
+      <div className="mt-3 space-y-4">
+        {isLoading && <Skeleton className="h-12" />}
+        {isError && <p className="text-danger">{errText(error)}</p>}
+        {data && items.length === 0 && <p className="text-ink-3">No changes yet.</p>}
+        {[...days].map(([day, events]) => (
+          <div key={day}>
+            <p className="mb-1.5 text-[13px] font-medium uppercase tracking-wide text-ink-3">
+              {day}
+            </p>
+            <ol className="space-y-3 border-l border-border pl-3.5">
+              {events.map((e) => {
+                const d = describe(e);
+                return (
+                  <li key={e.id} className="relative">
+                    <span
+                      aria-hidden
+                      className="absolute -left-[19px] top-1.5 size-2 rounded-full bg-border"
+                    />
+                    <p className="font-medium">{d.title}</p>
+                    {d.to !== undefined && (
+                      <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-ink-2">
+                        <span className="rounded-[6px] bg-chip px-1.5 py-px text-ink-3 line-through">
+                          {d.from}
+                        </span>
+                        <span aria-hidden>→</span>
+                        <span className="break-all rounded-[6px] bg-chip px-1.5 py-px">{d.to}</span>
+                      </p>
+                    )}
+                    <p className="mt-0.5 text-[13px] text-ink-3">
+                      {e.actor_name} · {formatWhen(e.at)}
+                    </p>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
         ))}
-      </ol>
-    </section>
+      </div>
+    </details>
   );
 }
 
@@ -1062,9 +1296,10 @@ function BulkUtmDialog({
   open: boolean;
   onOpenChange: (o: boolean) => void;
   rows: PlanActivity[];
-  onSave: (entries: [PlanActivity, string][]) => Promise<void>;
+  onSave: (entries: [PlanActivity, PlanPatch][]) => Promise<void>;
 }) {
   const [values, setValues] = useState<Record<number, string>>({});
+  const [dates, setDates] = useState<Record<number, string>>({});
   const slug = (s: string) =>
     s
       .toLowerCase()
@@ -1073,18 +1308,24 @@ function BulkUtmDialog({
   const suggest = () =>
     setValues((cur) =>
       Object.fromEntries(
-        rows.map((a) => [
-          a.id,
-          cur[a.id]?.trim() || `he_${slug(a.channel)}_${slug(a.title)}`.slice(0, 60),
-        ]),
+        rows
+          .filter((a) => !a.utm)
+          .map((a) => [
+            a.id,
+            cur[a.id]?.trim() || `he_${slug(a.channel)}_${slug(a.title)}`.slice(0, 60),
+          ]),
       ),
     );
-  const filled = rows.filter((a) => values[a.id]?.trim());
+  const patchFor = (a: PlanActivity): PlanPatch => ({
+    ...(!a.utm && values[a.id]?.trim() ? { utm: values[a.id]!.trim() } : {}),
+    ...(!a.planned_date && dates[a.id] ? { planned_date: dates[a.id]! } : {}),
+  });
+  const filled = rows.filter((a) => Object.keys(patchFor(a)).length > 0);
   const save = useMutation({
-    mutationFn: () =>
-      onSave(filled.map((a) => [a, values[a.id]!.trim()] as [PlanActivity, string])),
+    mutationFn: () => onSave(filled.map((a) => [a, patchFor(a)] as [PlanActivity, PlanPatch])),
     onSuccess: () => {
       setValues({});
+      setDates({});
       onOpenChange(false);
     },
   });
@@ -1092,33 +1333,44 @@ function BulkUtmDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Add UTMs in bulk</DialogTitle>
+          <DialogTitle>Add UTMs and go-live dates</DialogTitle>
           <DialogDescription>
-            {rows.length} {rows.length === 1 ? "activity needs" : "activities need"} a UTM. Fill in
-            the ones you know, or use suggestions and adjust them.
+            {rows.length} {rows.length === 1 ? "activity needs" : "activities need"} a UTM or a
+            go-live date. Fill in what you know; the UTM suggestions can be adjusted.
           </DialogDescription>
         </DialogHeader>
         <div className="max-h-[50vh] space-y-2 overflow-y-auto pr-1">
           {rows.map((a) => (
             <label
               key={a.id}
-              className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3 text-[13px]"
+              className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_150px] items-center gap-3 text-[14px]"
             >
               <span className="min-w-0 truncate">
                 {a.title} <span className="text-ink-3">· {a.channel}</span>
               </span>
               <Input
-                className={cn("font-mono text-[12px]", FIELD_CLS)}
-                value={values[a.id] ?? ""}
+                className={cn("font-mono text-[13px]", FIELD_CLS)}
+                value={a.utm ?? values[a.id] ?? ""}
+                disabled={!!a.utm}
                 placeholder="he_channel_name"
                 aria-label={`UTM for ${a.title}`}
                 onChange={(e) => setValues({ ...values, [a.id]: e.target.value })}
+              />
+              <Input
+                type="date"
+                min={todayIso()}
+                max={maxGoLiveIso()}
+                className={FIELD_CLS}
+                value={a.planned_date ?? dates[a.id] ?? ""}
+                disabled={!!a.planned_date}
+                aria-label={`Go-live date for ${a.title}`}
+                onChange={(e) => setDates({ ...dates, [a.id]: e.target.value })}
               />
             </label>
           ))}
         </div>
         {save.isError && (
-          <p role="alert" className="text-[13px] text-danger">
+          <p role="alert" className="text-[14px] text-danger">
             {errText(save.error)}
           </p>
         )}
@@ -1184,7 +1436,7 @@ function AddChannelDialog({
     label: string,
     props: Partial<ComponentProps<typeof Input>> = {},
   ) => (
-    <label className="block space-y-1 text-[13px] text-ink-2">
+    <label className="block space-y-1 text-[14px] text-ink-2">
       {label}
       <Input value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} {...props} />
     </label>
@@ -1215,13 +1467,17 @@ function AddChannelDialog({
           {field("title", "Activity", { required: true })}
           <div className="grid grid-cols-2 gap-3">
             {field("week", "Week", { type: "number", min: 1 })}
-            {field("planned_date", "Planned date", { type: "date" })}
+            {field("planned_date", "Go-live date", {
+              type: "date",
+              min: todayIso(),
+              max: maxGoLiveIso(),
+            })}
           </div>
           {field("audience", "Target segment")}
           {field("outcome", "Outcome")}
           {field("hook", "Hook / description")}
           {add.isError && (
-            <p role="alert" className="text-[13px] text-danger">
+            <p role="alert" className="text-[14px] text-danger">
               {errText(add.error)}
             </p>
           )}
@@ -1250,7 +1506,7 @@ function exportCsv(rows: PlanActivity[]) {
     ["status", (a) => a.status],
     ["approved_by", (a) => a.approved_by_name],
     ["approved_at", (a) => a.approved_at],
-    ["planned_date", (a) => a.planned_date],
+    ["go_live_date", (a) => a.planned_date],
     ["utm", (a) => a.utm],
     ["breach", (a) => (a.breach ? "yes" : "no")],
   ];

@@ -171,3 +171,19 @@ async def test_my_queue_follows_the_csm_named_on_the_hubspot_ticket_by_email(cli
     everyone = (await me.get("/queues/csm", params={"scope": "all"})).json()["items"]
     assert {i["ticket_id"] for i in mine} == {"mine"}
     assert {i["ticket_id"] for i in everyone} == {"mine", "theirs"}
+
+
+async def test_a_plan_row_in_motion_is_flagged_for_a_missing_go_live_date(client_for, make_user, make_program, db):
+    from core import activities
+
+    await make_program("t1")
+    async with db() as session:
+        await activities.seed_from_poa(session, "t1", {"activities": [
+            {"week": "Week 1", "channel": "Email", "activity": "No date", "date": None, "objective": "", "description": ""}
+        ]})
+        await session.commit()
+    client = await client_for(await make_user("m@example.com", [Role.MARKETING]))
+    aid = (await client.get("/programs/t1/activities")).json()[0]["id"]
+    await client.patch(f"/programs/t1/activities/{aid}", json={"status": "wip", "utm": "he_x", "creative_proof_url": "https://x.io"})
+    items = (await client.get("/queues/marketing")).json()["items"]
+    assert any("go-live date" in i["detail"] for i in items if i["kind"] == "missing_utm_or_proof")

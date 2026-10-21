@@ -441,19 +441,29 @@ export function StatusDot({
   tone = "neutral",
   label,
   hollow,
+  size = "sm",
   className,
 }: {
   tone?: StatusTone;
   label: ReactNode;
   hollow?: boolean;
+  size?: "sm" | "lg";
   className?: string;
 }) {
   return (
-    <span className={cn("inline-flex items-center gap-1.5 text-[12px] text-ink-2", className)}>
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 text-ink-2",
+        size === "lg" ? "text-[13px]" : "text-[12px]",
+        className,
+      )}
+    >
       <span
         aria-hidden
         className={cn(
-          "box-border size-2 shrink-0 rounded-full border-[1.5px]",
+          "box-border shrink-0",
+          size === "lg" ? "size-3" : "size-2",
+          "rounded-full border-[1.5px]",
           hollow ? "border-ink-3 bg-transparent" : DOT_FILL[tone],
         )}
       />

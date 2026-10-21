@@ -332,6 +332,7 @@ export type Checklist = {
   id: number;
   title: string;
   status: "open" | "in_progress" | "ready" | "done" | "declined";
+  owner_id: string | null;
   owner_name: string | null;
   due_at: string | null;
   requested_by_name: string | null;

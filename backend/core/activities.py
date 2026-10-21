@@ -14,7 +14,7 @@ import re
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any
 
@@ -194,9 +194,24 @@ async def seed_from_poa(session: AsyncSession, ticket_id: str, details: Mapping[
     return SeedResult(added=added, removed=removed, edits_kept=sum(a.updated_by is not None for a in existing.values()))
 
 
+MAX_LEAD_DAYS = 60  # a go-live date may be at most ~2 months out
+
+
+def check_go_live_date(day: date | None) -> None:
+    """A newly entered go-live date must be today or later, and no more than two months away."""
+    if day is None:
+        return
+    today = _now().date()
+    if day < today:
+        raise DomainError("go_live_date_in_past", "The go-live date can't be in the past.", 422)
+    if day > today + timedelta(days=MAX_LEAD_DAYS):
+        raise DomainError("go_live_date_too_far", "The go-live date can't be more than 2 months from today.", 422)
+
+
 async def add_channel(
     session: AsyncSession, actor: User, ticket_id: str, *, channel: str, title: str, fields: Mapping[str, Any]
 ) -> ProgramActivity:
+    check_go_live_date(fields.get("planned_date"))
     activity = ProgramActivity(
         ticket_id=ticket_id,
         code=_next_code("ADD", await _codes(session, ticket_id)),
@@ -235,6 +250,8 @@ async def update(
     if proof is not None and urlparse(proof).scheme not in ("http", "https"):
         # The UI renders this as a link, so anything but http(s) (e.g. javascript:) is refused here.
         raise DomainError("invalid_proof_url", "The creative proof must be an http(s) link.", 422)
+    if changes.get("planned_date") != activity.planned_date:  # unchanged dates (e.g. from the POA) are left alone
+        check_go_live_date(changes.get("planned_date"))
     status = ActivityStatus(changes.get("status", activity.status))
     utm = changes["utm"] if "utm" in changes else activity.utm
 
@@ -245,6 +262,8 @@ async def update(
             raise DomainError("activity_requires_utm", "Add the UTM before this activity goes live.")
         if changes.get("go_live_at") is None:
             changes["go_live_at"] = _now()
+        if activity.planned_date is None and changes.get("planned_date") is None:
+            changes["planned_date"] = _now().date()  # went live without a planned date: record the actual day
     if activity.status == ActivityStatus.LIVE and "utm" in changes and not changes["utm"]:
         raise DomainError("activity_requires_utm", "A live activity must keep its UTM.")
 

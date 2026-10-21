@@ -51,6 +51,7 @@ async function send<T>(method: string, path: string, body: unknown, ifMatch?: st
 export type PlanPatch = {
   status?: "not_started" | "wip" | "off";
   utm?: string | null;
+  planned_date?: string | null;
   creative_proof_url?: string | null;
 };
 /** PATCH with optimistic concurrency: the activity's `updated_at` goes back as If-Match. */
