@@ -41,7 +41,7 @@ P = Permission
 _INTERNAL_BASE = frozenset({P.PROGRAM_VIEW, P.AUDIT_VIEW, P.COMMENT_ADD, P.REQUEST_CREATE})
 
 ROLE_DEFAULTS: dict[Role, frozenset[Permission]] = {
-    Role.SUPER_ADMIN: _INTERNAL_BASE | {P.REQUEST_TYPES_EDIT, P.USERS_MANAGE, P.SETTINGS_EDIT},
+    Role.SUPER_ADMIN: frozenset(Permission),  # everything, including any permission added later
     Role.CSM: _INTERNAL_BASE
     | {
         P.UPDATE_POST, P.ACTIVITY_EDIT, P.ACTIVITY_ADD_CHANNEL, P.ACTIVITY_APPROVE, P.METRICS_ENTER,

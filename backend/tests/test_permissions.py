@@ -7,12 +7,16 @@ def roles_with(permission: P) -> set[Role]:
     return {role for role in Role if permission in ROLE_DEFAULTS[role]}
 
 
-def test_only_a_csm_can_approve():
-    assert roles_with(P.ACTIVITY_APPROVE) == {Role.CSM}
+def test_super_admin_has_every_permission():
+    assert ROLE_DEFAULTS[Role.SUPER_ADMIN] == set(P)
+
+
+def test_only_a_csm_or_super_admin_can_approve():
+    assert roles_with(P.ACTIVITY_APPROVE) == {Role.CSM, Role.SUPER_ADMIN}
 
 
 def test_relevant_registrations_are_csm_only_for_now():
-    assert roles_with(P.RELEVANT_ENTER) == {Role.CSM}
+    assert roles_with(P.RELEVANT_ENTER) == {Role.CSM, Role.SUPER_ADMIN}
 
 
 def test_only_the_super_admin_manages_users_and_settings():
