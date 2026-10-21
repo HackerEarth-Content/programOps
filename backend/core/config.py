@@ -38,9 +38,11 @@ class Settings(BaseSettings):
     API_BASE_URL: str
     ENVIRONMENT: str
 
-    # Auth (Google OAuth). Sign-in is invite-only (core/invites.py); these emails are created as
-    # super admins on start so the very first login works without an invite. Comma-separated.
+    # Auth (Google OAuth). Sign-in is limited to ALLOWED_EMAIL_DOMAIN; these emails are created as
+    # super admins on start so the very first login works. Comma-separated.
     SUPER_ADMIN_EMAILS: str = ""
+    # Only Google accounts on this domain can sign in for the first time; they start as Viewers.
+    ALLOWED_EMAIL_DOMAIN: str = "hackerearth.com"
     USER_SECRET: str
     GOOGLE_CLIENT_ID: str
     GOOGLE_CLIENT_SECRET: str

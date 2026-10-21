@@ -11,6 +11,7 @@ class Role(StrEnum):
     CSM = "csm"
     MARKETING = "marketing"
     ACCOUNT_MANAGER = "account_manager"
+    VIEWER = "viewer"  # signs in with a company account, sees progress, changes nothing
 
 
 class Permission(StrEnum):
@@ -50,6 +51,7 @@ ROLE_DEFAULTS: dict[Role, frozenset[Permission]] = {
     Role.MARKETING: _INTERNAL_BASE
     | {P.UPDATE_POST, P.ACTIVITY_EDIT, P.ACTIVITY_ADD_CHANNEL, P.METRICS_ENTER},
     Role.ACCOUNT_MANAGER: _INTERNAL_BASE,
+    Role.VIEWER: frozenset({P.PROGRAM_VIEW}),
 }
 
 

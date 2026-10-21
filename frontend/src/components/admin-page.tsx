@@ -3,8 +3,6 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
   AlertTriangle,
   Ban,
-  Check,
-  Copy,
   Download,
   History,
   Lock,
@@ -12,8 +10,8 @@ import {
   MoreHorizontal,
   Search,
   Settings as SettingsIcon,
+  Check,
   ShieldCheck,
-  Trash2,
   UserPlus,
   Users as UsersIcon,
 } from "lucide-react";
@@ -35,6 +33,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
@@ -74,16 +73,14 @@ import { formatDate, formatDateTime } from "@/lib/format";
 import {
   PERMISSION_LABELS,
   adminUsersQuery,
-  createInvite,
-  deleteInvite,
+  createInvites,
   invitesQuery,
   patchUser,
-  resendInvite,
   revokeInvite,
   setUserPermissions,
   type AdminUser,
   type Invite,
-  type InviteLink,
+  type InvitesResult,
 } from "@/lib/ops-api";
 import { cn } from "@/lib/utils";
 
@@ -93,13 +90,11 @@ const ROLE_TONE: Record<UserRole, Tone> = {
   csm: "info",
   marketing: "indigo",
   account_manager: "neutral",
+  viewer: "neutral",
 };
+// Roles a person is given on purpose. Viewer is what everyone starts as, so it is never picked.
+const GRANTABLE: UserRole[] = ROLES.filter((r) => r !== "viewer");
 const SELF_REASON = "You can't change your own roles or access.";
-const daysLeft = (iso: string) =>
-  Math.max(
-    0,
-    Math.ceil((new Date(iso.endsWith("Z") ? iso : `${iso}Z`).getTime() - Date.now()) / 86_400_000),
-  );
 
 const NAV: { id: Section; label: string; icon: ReactNode; needs: string }[] = [
   { id: "users", label: "Users & Personnel", icon: <UsersIcon />, needs: "users.manage" },
@@ -201,7 +196,7 @@ function RoleChips({ roles }: { roles: UserRole[] }) {
 // ---- Users & Personnel ---------------------------------------------------------------------------
 
 type Row = { kind: "user"; user: AdminUser } | { kind: "invite"; invite: Invite };
-type StatusFilter = "all" | "active" | "inactive" | "invited" | "expired";
+type StatusFilter = "all" | "active" | "inactive" | "waiting" | "viewers";
 
 function UsersSection({ meId }: { meId: string }) {
   const qc = useQueryClient();
@@ -212,8 +207,7 @@ function UsersSection({ meId }: { meId: string }) {
   const [text, setText] = useState("");
   const [inviteOpen, setInviteOpen] = useState(false);
   const [permsFor, setPermsFor] = useState<string | null>(null);
-  const [link, setLink] = useState<InviteLink | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [result, setResult] = useState<InvitesResult | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
   const refreshInvites = () => qc.invalidateQueries({ queryKey: ["admin", "invites"] });
@@ -228,34 +222,21 @@ function UsersSection({ meId }: { meId: string }) {
       patchUser(id, body),
     onSuccess: saveUser,
   });
-  const resend = useMutation({
-    mutationFn: resendInvite,
-    onSuccess: (r) => {
-      setLink(r);
-      setCopied(false);
-      void refreshInvites();
-    },
-  });
   const revoke = useMutation({ mutationFn: revokeInvite, onSuccess: refreshInvites });
-  const remove = useMutation({ mutationFn: deleteInvite, onSuccess: refreshInvites });
-  const failure =
-    patch.error ??
-    resend.error ??
-    revoke.error ??
-    remove.error ??
-    (exportError ? new Error(exportError) : null);
+  const failure = patch.error ?? revoke.error ?? (exportError ? new Error(exportError) : null);
 
-  const live = useMemo(
-    () => (invites.data ?? []).filter((i) => i.status === "pending" || i.status === "expired"),
+  const waiting = useMemo(
+    () => (invites.data ?? []).filter((i) => i.status === "pending"),
     [invites.data],
   );
-  const pending = live.filter((i) => i.status === "pending");
-  const expired = live.filter((i) => i.status === "expired");
   const all = useMemo(() => users.data ?? [], [users.data]);
   const active = all.filter((u) => u.is_active);
   const superAdmins = active.filter((u) => u.roles.includes("super_admin"));
   const csms = active.filter((u) => u.roles.includes("csm"));
-  const soonest = pending.length ? Math.min(...pending.map((i) => daysLeft(i.expires_at))) : null;
+  // Signed in with a company account and not given a real role yet: newest first, so new people show up on top.
+  const viewers = active
+    .filter((u) => u.roles.every((r) => r === "viewer"))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
 
   const rows: Row[] = useMemo(() => {
     const t = text.trim().toLowerCase();
@@ -268,25 +249,16 @@ function UsersSection({ meId }: { meId: string }) {
         (u) =>
           status === "all" ||
           (status === "active" && u.is_active) ||
-          (status === "inactive" && !u.is_active),
+          (status === "inactive" && !u.is_active) ||
+          (status === "viewers" && viewers.includes(u)),
       )
       .map((user) => ({ kind: "user", user }));
-    const is: Row[] = live
+    const is: Row[] = waiting
       .filter((i) => matchRole(i.roles) && matchText(i.email))
-      .filter(
-        (i) =>
-          status === "all" ||
-          (status === "invited" && i.status === "pending") ||
-          (status === "expired" && i.status === "expired"),
-      )
+      .filter(() => status === "all" || status === "waiting")
       .map((invite) => ({ kind: "invite", invite }));
     return [...us, ...is];
-  }, [all, live, roleFilter, status, text]);
-
-  const copy = async (value: string) => {
-    await navigator.clipboard.writeText(value);
-    setCopied(true);
-  };
+  }, [all, waiting, viewers, roleFilter, status, text]);
   const permsUser = all.find((u) => u.id === permsFor) ?? null;
 
   return (
@@ -297,9 +269,7 @@ function UsersSection({ meId }: { meId: string }) {
           <h1 className="t-headline-lg flex flex-wrap items-center gap-2.5">
             Users &amp; Access Governance
             <Chip tone="neutral">{all.length} total accounts</Chip>
-            <Chip tone={pending.length ? "critical" : "neutral"}>
-              {pending.length} pending invites
-            </Chip>
+            <Chip tone={waiting.length ? "info" : "neutral"}>{waiting.length} pre-granted</Chip>
           </h1>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -309,7 +279,7 @@ function UsersSection({ meId }: { meId: string }) {
               <Download className="size-4" /> Export audit log (CSV)
             </Button>
             <Button onClick={() => setInviteOpen(true)}>
-              <UserPlus className="size-4" /> Invite person
+              <UserPlus className="size-4" /> Pre-grant access
             </Button>
           </div>
         </div>
@@ -322,7 +292,7 @@ function UsersSection({ meId }: { meId: string }) {
           icon={<UsersIcon />}
           value={<Num value={all.length} />}
           unit={`${active.length} active seats`}
-          sub={`${pending.length} invited · ${expired.length} expired`}
+          sub={`${waiting.length} pre-granted, not signed in yet`}
         />
         <Kpi
           index={1}
@@ -347,16 +317,16 @@ function UsersSection({ meId }: { meId: string }) {
           icon={<UsersIcon />}
           value={<Num value={csms.length} />}
           unit="active"
-          sub={`+${live.filter((i) => i.status === "pending" && i.roles.includes("csm")).length} pending invites`}
+          sub={`+${waiting.filter((i) => i.roles.includes("csm")).length} pre-granted`}
         />
         <Kpi
           index={3}
-          label="Pending / expired invites"
-          tone={expired.length ? "warning" : "neutral"}
+          label="Viewers"
+          tone={viewers.length ? "warning" : "neutral"}
           icon={<Mail />}
-          value={<Num value={live.length} />}
-          unit={`${pending.length} valid / ${expired.length} expired`}
-          sub={soonest === null ? "No invite waiting" : `Expiring soonest in ${soonest}d`}
+          value={<Num value={viewers.length} />}
+          unit="see progress, change nothing"
+          sub={viewers.length ? "Give a role to anyone who should act" : "Everyone has a role"}
         />
       </div>
 
@@ -401,8 +371,8 @@ function UsersSection({ meId }: { meId: string }) {
                 <SelectItem value="all">All statuses</SelectItem>
                 <SelectItem value="active">Active</SelectItem>
                 <SelectItem value="inactive">Inactive</SelectItem>
-                <SelectItem value="invited">Invited</SelectItem>
-                <SelectItem value="expired">Expired token</SelectItem>
+                <SelectItem value="viewers">Viewers only</SelectItem>
+                <SelectItem value="waiting">Pre-granted</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -413,18 +383,34 @@ function UsersSection({ meId }: { meId: string }) {
             <ErrorBox error={failure} />
           </div>
         )}
-        {link && (
-          <div className="m-3 flex flex-wrap items-center gap-2 rounded-[8px] border border-border bg-secondary p-2.5">
-            <code className="t-data-sm min-w-0 flex-1 truncate">{link.link}</code>
-            <Button size="sm" variant="outline" onClick={() => void copy(link.link)}>
-              {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}{" "}
-              {copied ? "Copied" : "Copy"}
-            </Button>
-            <span className="t-data-sm text-muted-foreground">
-              shown once · {link.invite.email} · expires {formatDate(link.invite.expires_at)}
+        {result && (
+          <div className="m-3 flex flex-wrap items-center gap-2 rounded-[8px] border border-border bg-secondary p-2.5 text-[13px]">
+            <span>
+              Pre-granted {result.created.length}.
+              {result.skipped.length > 0 &&
+                ` Skipped ${result.skipped.length}: ${result.skipped
+                  .map((x) => `${x.email} (${SKIP_REASONS[x.reason] ?? x.reason})`)
+                  .join(", ")}.`}
             </span>
-            <Button size="sm" variant="ghost" onClick={() => setLink(null)}>
+            <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setResult(null)}>
               Dismiss
+            </Button>
+          </div>
+        )}
+        {viewers.length > 0 && status !== "viewers" && (
+          <div className="m-3 flex flex-wrap items-center gap-2 rounded-[8px] border border-border bg-accent-bg p-2.5 text-[13px]">
+            <span>
+              <strong>{viewers.length}</strong>{" "}
+              {viewers.length === 1 ? "person has" : "people have"} signed in and can only view.
+              Newest: {viewers[0]?.name ?? viewers[0]?.email}.
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="ml-auto"
+              onClick={() => setStatus("viewers")}
+            >
+              Review who needs a role
             </Button>
           </div>
         )}
@@ -473,9 +459,7 @@ function UsersSection({ meId }: { meId: string }) {
                       key={row.invite.id}
                       invite={row.invite}
                       index={i}
-                      onResend={() => resend.mutate(row.invite.id)}
                       onRevoke={() => revoke.mutate(row.invite.id)}
-                      onDelete={() => remove.mutate(row.invite.id)}
                     />
                   ),
                 )}
@@ -498,15 +482,15 @@ function UsersSection({ meId }: { meId: string }) {
             <EmptyState
               icon={<UsersIcon />}
               title="No accounts match"
-              hint="Clear a filter, or invite someone."
+              hint="Clear a filter, or pre-grant access to someone."
             />
           </div>
         )}
         <div className="flex flex-wrap justify-between gap-2 border-t border-border px-4 py-2 t-data-sm text-muted-foreground">
           <span>
-            Showing {rows.length} of {all.length + live.length} entries
+            Showing {rows.length} of {all.length + waiting.length} entries
           </span>
-          <span>Invite-only sign-in · links last 3 days</span>
+          <span>@hackerearth.com sign-in · new people start as Viewers</span>
         </div>
       </Card>
 
@@ -519,7 +503,8 @@ function UsersSection({ meId }: { meId: string }) {
             </h2>
             <p className="text-[13px] text-secondary-foreground">
               Nobody can change their own roles or access, the last active super admin can't be
-              demoted or deactivated, and sign-in works only through an invite a super admin issued.
+              demoted or deactivated, and only HackerEarth accounts can sign in, as read-only
+              Viewers until a super admin gives them a role.
             </p>
           </div>
         </div>
@@ -528,10 +513,10 @@ function UsersSection({ meId }: { meId: string }) {
       <InviteSheet
         open={inviteOpen}
         onOpenChange={setInviteOpen}
-        onCreated={(l) => {
-          setLink(l);
-          setCopied(false);
+        onCreated={(r) => {
+          setResult(r);
           void refreshInvites();
+          void qc.invalidateQueries({ queryKey: ["admin", "users"] });
         }}
       />
       {permsUser && (
@@ -578,11 +563,29 @@ function UserRow({
               {isMe && <Chip tone="info">You</Chip>}
             </div>
             <div className="t-data-sm truncate text-muted-foreground">{u.email}</div>
+            <div className="t-data-sm text-muted-foreground">
+              signed up {formatDate(u.created_at)}
+            </div>
           </div>
         </div>
       </td>
       <td className="px-4 py-3">
         {u.roles.length ? <RoleChips roles={u.roles} /> : <Chip>No role yet</Chip>}
+        {u.hubspot_csm_programs > 0 && !u.roles.includes("csm") && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[12px] text-secondary-foreground">
+            CSM on {u.hubspot_csm_programs} program{u.hubspot_csm_programs === 1 ? "" : "s"} in
+            HubSpot
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={isMe}
+              title={isMe ? SELF_REASON : undefined}
+              onClick={() => onPatch({ roles: [...u.roles.filter((r) => r !== "viewer"), "csm"] })}
+            >
+              Grant CSM
+            </Button>
+          </div>
+        )}
       </td>
       <td className="px-4 py-3">
         <Chip tone={u.is_active ? "good" : "neutral"}>{u.is_active ? "Active" : "Inactive"}</Chip>
@@ -652,13 +655,14 @@ function RolePopover({
   onApply: (roles: UserRole[]) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [roles, setRoles] = useState<UserRole[]>(user.roles);
+  const current: UserRole[] = user.roles.filter((r) => r !== "viewer");
+  const [roles, setRoles] = useState<UserRole[]>(current);
   return (
     <Popover
       open={open}
       onOpenChange={(o) => {
         setOpen(o);
-        if (o) setRoles(user.roles);
+        if (o) setRoles(current);
       }}
     >
       <PopoverTrigger asChild>
@@ -673,7 +677,7 @@ function RolePopover({
       </PopoverTrigger>
       <PopoverContent align="end" className="w-56 space-y-2 p-3">
         <MonoLabel>Roles</MonoLabel>
-        {ROLES.map((r) => (
+        {GRANTABLE.map((r) => (
           <label key={r} className="flex items-center gap-2 text-[14px]">
             <Checkbox
               checked={roles.includes(r)}
@@ -685,9 +689,7 @@ function RolePopover({
         <Button
           size="sm"
           className="w-full"
-          disabled={
-            roles.length === user.roles.length && roles.every((r) => user.roles.includes(r))
-          }
+          disabled={roles.length === current.length && roles.every((r) => current.includes(r))}
           onClick={() => {
             onApply(roles);
             setOpen(false);
@@ -695,6 +697,9 @@ function RolePopover({
         >
           Apply
         </Button>
+        <p className="text-[12px] text-muted-foreground">
+          No role means Viewer: sees progress only.
+        </p>
       </PopoverContent>
     </Popover>
   );
@@ -703,17 +708,12 @@ function RolePopover({
 function InviteRow({
   invite,
   index,
-  onResend,
   onRevoke,
-  onDelete,
 }: {
   invite: Invite;
   index: number;
-  onResend: () => void;
   onRevoke: () => void;
-  onDelete: () => void;
 }) {
-  const expired = invite.status === "expired";
   return (
     <tr
       className="border-b border-border bg-secondary/40 align-middle last:border-0"
@@ -725,16 +725,9 @@ function InviteRow({
             <Mail className="size-4" />
           </span>
           <div className="min-w-0">
-            <div
-              className={cn(
-                "text-[14px] font-medium italic",
-                expired && "line-through text-muted-foreground",
-              )}
-            >
-              {invite.email}
-            </div>
+            <div className="text-[14px] font-medium italic">{invite.email}</div>
             <div className="t-data-sm text-muted-foreground">
-              invited {formatDate(invite.created_at)}
+              pre-granted {formatDate(invite.created_at)}
             </div>
           </div>
         </div>
@@ -743,42 +736,16 @@ function InviteRow({
         <RoleChips roles={invite.roles} />
       </td>
       <td className="px-4 py-3">
-        <Chip tone={expired ? "critical" : "neutral"}>
-          {expired ? "Expired token" : `Invited · expires in ${daysLeft(invite.expires_at)}d`}
-        </Chip>
+        <Chip tone="neutral">Waiting for first sign-in</Chip>
       </td>
       <td className="px-4 py-3 text-[13px] italic text-muted-foreground">
-        {expired ? "Token inactive (past 3-day TTL)" : "Pending token acceptance"}
+        Gets these roles instead of Viewer
       </td>
       <td className="px-4 py-3">
         <div className="flex items-center justify-end gap-1.5">
-          {expired ? (
-            <>
-              <Button size="sm" variant="outline" onClick={onResend}>
-                Re-issue invite
-              </Button>
-              <Button size="sm" variant="ghost" onClick={onDelete}>
-                <Trash2 className="size-3.5" /> Delete
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={onResend}
-                title="Issues a fresh link; the old one stops working"
-              >
-                <Copy className="size-3.5" /> Copy link
-              </Button>
-              <Button size="sm" variant="ghost" onClick={onResend}>
-                Resend
-              </Button>
-              <Button size="sm" variant="ghost" className="text-status-critical" onClick={onRevoke}>
-                Revoke
-              </Button>
-            </>
-          )}
+          <Button size="sm" variant="ghost" className="text-status-critical" onClick={onRevoke}>
+            Revoke
+          </Button>
         </div>
       </td>
     </tr>
@@ -788,7 +755,7 @@ function InviteRow({
 function RolePicker({ value, onChange }: { value: UserRole[]; onChange: (r: UserRole[]) => void }) {
   return (
     <div className="flex flex-wrap gap-1.5" role="group" aria-label="Roles">
-      {ROLES.map((r) => {
+      {GRANTABLE.map((r) => {
         const on = value.includes(r);
         return (
           <button
@@ -811,6 +778,13 @@ function RolePicker({ value, onChange }: { value: UserRole[]; onChange: (r: User
   );
 }
 
+const SKIP_REASONS: Record<string, string> = {
+  user_exists: "already has an account",
+  outside_domain: "not a HackerEarth email",
+};
+
+const parseEmails = (text: string) => text.split(/[\s,;]+/).filter(Boolean);
+
 function InviteSheet({
   open,
   onOpenChange,
@@ -818,15 +792,16 @@ function InviteSheet({
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
-  onCreated: (l: InviteLink) => void;
+  onCreated: (r: InvitesResult) => void;
 }) {
-  const [email, setEmail] = useState("");
+  const [text, setText] = useState("");
   const [roles, setRoles] = useState<UserRole[]>(["csm"]);
+  const emails = parseEmails(text);
   const create = useMutation({
-    mutationFn: () => createInvite(email.trim(), roles),
-    onSuccess: (l) => {
-      onCreated(l);
-      setEmail("");
+    mutationFn: () => createInvites(emails, roles),
+    onSuccess: (r) => {
+      onCreated(r);
+      setText("");
       onOpenChange(false);
     },
   });
@@ -834,10 +809,10 @@ function InviteSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full sm:max-w-md">
         <SheetHeader>
-          <SheetTitle>Invite person</SheetTitle>
+          <SheetTitle>Pre-grant access</SheetTitle>
           <SheetDescription>
-            You choose their roles; nobody picks their own. The link works once, for this email, for
-            3 days.
+            Set roles before someone first signs in. Paste one or many @hackerearth.com emails. They
+            get these roles on their first sign-in instead of starting as a Viewer.
           </SheetDescription>
         </SheetHeader>
         <form
@@ -848,13 +823,13 @@ function InviteSheet({
           }}
         >
           <label className="block space-y-1.5">
-            <MonoLabel>Email</MonoLabel>
-            <Input
-              type="email"
+            <MonoLabel>Emails</MonoLabel>
+            <Textarea
               required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="name@hackerearth.com"
+              rows={5}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder={"priya@hackerearth.com\nneha@hackerearth.com"}
             />
           </label>
           <div className="space-y-1.5">
@@ -865,9 +840,11 @@ function InviteSheet({
           <Button
             type="submit"
             className="w-full"
-            disabled={!email || roles.length === 0 || create.isPending}
+            disabled={emails.length === 0 || roles.length === 0 || create.isPending}
           >
-            {create.isPending ? "Creating..." : "Create invite link"}
+            {create.isPending
+              ? "Saving..."
+              : `Pre-grant ${emails.length || ""} ${emails.length === 1 ? "person" : "people"}`}
           </Button>
         </form>
       </SheetContent>
@@ -1054,8 +1031,8 @@ function RolesSection() {
                 "A change that would leave no active super admin is refused.",
               ],
               [
-                "Invite-only sign-in",
-                "Google sign-in works only with a valid invite link, issued for that exact email.",
+                "Company sign-in only",
+                "Google sign-in works only for @hackerearth.com accounts. New people start as read-only Viewers.",
               ],
             ].map(([t, d]) => (
               <li key={t} className="flex items-start gap-2">

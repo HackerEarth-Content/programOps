@@ -16,7 +16,7 @@ from core.errors import DomainError
 from core.scheduler import start_scheduler
 
 from api.activity_routes import router as activity_router
-from api.admin_routes import audit_router, invites_public
+from api.admin_routes import audit_router
 from api.admin_routes import router as admin_router
 from api.auth_routes import router as auth_router
 from api.checklist_routes import router as checklist_router
@@ -71,7 +71,6 @@ async def domain_error_handler(request: Request, exc: DomainError) -> Response:
 app.include_router(auth_router, prefix="/api")
 app.include_router(me_router)
 app.include_router(admin_router)
-app.include_router(invites_public)
 app.include_router(audit_router)
 app.include_router(program_router)
 app.include_router(registration_router)

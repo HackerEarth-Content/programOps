@@ -107,26 +107,15 @@ export async function apiFetch<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export type UserRole = "super_admin" | "csm" | "marketing" | "account_manager";
+export type UserRole = "super_admin" | "csm" | "marketing" | "account_manager" | "viewer";
 
 export const ROLE_LABELS: Record<UserRole, string> = {
   super_admin: "Super Admin",
   csm: "CSM",
   marketing: "Marketing",
   account_manager: "Account Manager",
+  viewer: "Viewer",
 };
-
-export type InvitePreview = { email_hint: string; roles: UserRole[] };
-
-// Public: the invite token is the secret. Rejects with the backend's reason (invalid or expired link).
-export async function fetchInvitePreview(token: string): Promise<InvitePreview> {
-  const response = await fetch(`${API_BASE_URL}/invites/${encodeURIComponent(token)}`);
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-    throw new Error(body?.detail ?? "This invite link is not valid.");
-  }
-  return response.json() as Promise<InvitePreview>;
-}
 
 export type CurrentUser = {
   id: string;

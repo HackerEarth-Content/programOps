@@ -131,10 +131,9 @@ const VERB: Record<string, string> = {
   roles_changed: "changed roles of",
   permissions_changed: "changed permissions of",
   deactivated: "deactivated",
-  invite_created: "invited",
-  invite_resent: "re-issued the invite for",
-  invite_revoked: "revoked the invite for",
-  invite_deleted: "deleted the invite for",
+  invite_created: "pre-granted access to",
+  invite_revoked: "revoked the pre-granted access of",
+  invite_deleted: "deleted the pre-granted access of",
   settings_changed: "changed portal settings",
 };
 const words = (s: string) => s.replace(/_/g, " ");

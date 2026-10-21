@@ -28,6 +28,7 @@ export const ROLE_DEFAULTS: Record<UserRole, readonly string[]> = {
   ],
   marketing: [...BASE, "update.post", "activity.edit", "activity.add_channel", "metrics.enter"],
   account_manager: BASE,
+  viewer: ["program.view"],
 };
 export const ROLES = Object.keys(ROLE_LABELS) as UserRole[];
 
@@ -133,10 +134,9 @@ const VERBS: Record<string, string> = {
   permissions_changed: "changed permissions of",
   activated: "reactivated",
   deactivated: "deactivated",
-  invite_created: "invited",
-  invite_resent: "re-issued the invite for",
-  invite_revoked: "revoked the invite for",
-  invite_deleted: "deleted the invite for",
+  invite_created: "pre-granted access to",
+  invite_revoked: "revoked the pre-granted access of",
+  invite_deleted: "deleted the pre-granted access of",
   settings_changed: "changed portal settings",
   stage_moved: "moved the stage of",
   status_changed: "changed the status of",

@@ -296,8 +296,8 @@ class UserPermissionOverride(Base):
 
 
 class Invite(Base):
-    """A one-time, expiring invitation. The roles are chosen by the inviter. Only the token's
-    SHA-256 is stored. "Expired" is derived from expires_at, not stored."""
+    """Roles a super admin set for an email before that person first signs in. Applied once, on their first
+    sign-in (instead of the default Viewer role). No link, no token."""
 
     __tablename__ = "invites"
     __table_args__ = (
@@ -309,9 +309,7 @@ class Invite(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     email: Mapped[str]  # stored lower-case
     roles: Mapped[list[str]] = mapped_column(ARRAY(String))
-    token_hash: Mapped[str] = mapped_column(unique=True)
     status: Mapped[str] = mapped_column(server_default=text("'pending'"))
-    expires_at: Mapped[datetime]
     created_by: Mapped[str | None] = mapped_column(ForeignKey("user.user_id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     accepted_at: Mapped[datetime | None]

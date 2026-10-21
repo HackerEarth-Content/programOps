@@ -12,17 +12,18 @@ export type AdminUser = {
   grants: string[];
   revokes: string[];
   permissions: string[];
+  created_at: string; // first sign-in
+  hubspot_csm_programs: number; // programs where HubSpot names this email as CSM
 };
-export type InviteStatus = "pending" | "accepted" | "expired" | "revoked";
+export type InviteStatus = "pending" | "accepted" | "revoked";
 export type Invite = {
   id: string;
   email: string;
   roles: UserRole[];
   status: InviteStatus;
-  expires_at: string;
   created_at: string;
 };
-export type InviteLink = { invite: Invite; link: string };
+export type InvitesResult = { created: Invite[]; skipped: { email: string; reason: string }[] };
 
 export const adminUsersQuery = queryOptions({
   queryKey: ["admin", "users"],
@@ -33,12 +34,9 @@ export const invitesQuery = queryOptions({
   queryFn: () => apiFetch<Invite[]>("/admin/invites"),
 });
 
-export const createInvite = (email: string, roles: UserRole[]) =>
-  sendJson<InviteLink>("POST", "/admin/invites", { email, roles });
-export const resendInvite = (id: string) =>
-  sendJson<InviteLink>("POST", `/admin/invites/${id}/resend`);
+export const createInvites = (emails: string[], roles: UserRole[]) =>
+  sendJson<InvitesResult>("POST", "/admin/invites", { emails, roles });
 export const revokeInvite = (id: string) => sendJson<Invite>("POST", `/admin/invites/${id}/revoke`);
-export const deleteInvite = (id: string) => sendJson<void>("DELETE", `/admin/invites/${id}`);
 export const patchUser = (id: string, body: { roles?: UserRole[]; is_active?: boolean }) =>
   sendJson<AdminUser>("PATCH", `/admin/users/${id}`, body);
 export const setUserPermissions = (id: string, grants: string[], revokes: string[]) =>

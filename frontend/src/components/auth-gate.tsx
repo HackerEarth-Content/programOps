@@ -3,23 +3,13 @@ import { useRouterState } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
-import {
-  GOOGLE_LOGIN_URL,
-  ROLE_LABELS,
-  currentUserQueryOptions,
-  fetchInvitePreview,
-  logout,
-} from "@/lib/api";
+import { GOOGLE_LOGIN_URL, currentUserQueryOptions, logout } from "@/lib/api";
 
 // Why a Google sign-in was refused: the backend redirects back with ?auth_error=<code>.
 const AUTH_ERRORS: Record<string, string> = {
-  not_invited: "ProgramOps is invite-only. Ask a super admin to invite you.",
-  invite_invalid: "That invite link isn't valid. Ask a super admin for a new one.",
-  invite_expired: "That invite link has expired. Ask a super admin for a new one.",
-  invite_email_mismatch: "Sign in with the Google account the invite was sent to.",
+  outside_domain:
+    "ProgramOps is for HackerEarth accounts. Sign in with your @hackerearth.com Google account.",
 };
-
-const INVITE_PATH = /^\/invite\/([^/]+)/;
 
 function CenteredScreen({ children }: { children: ReactNode }) {
   return (
@@ -56,8 +46,7 @@ function SignInScreen({ errorCode }: { errorCode: string | null }) {
       <div className="workspace-panel space-y-4 p-6 text-center">
         <h1 className="font-display text-xl font-semibold">Sign in to continue</h1>
         <p className="text-sm text-muted-foreground">
-          ProgramOps is internal to HackerEarth and invite-only. Sign in with the Google account you
-          were invited with.
+          ProgramOps is internal to HackerEarth. Sign in with your @hackerearth.com Google account.
         </p>
         {error && <p className="text-sm text-destructive">{error}</p>}
         {/* Real navigation, not a fetch/Link -- the backend sets a first-party
@@ -65,41 +54,6 @@ function SignInScreen({ errorCode }: { errorCode: string | null }) {
         <a href={GOOGLE_LOGIN_URL}>
           <Button className="w-full">Sign in with Google</Button>
         </a>
-      </div>
-    </CenteredScreen>
-  );
-}
-
-function InviteScreen({ token }: { token: string }) {
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["invite", token],
-    queryFn: () => fetchInvitePreview(token),
-    retry: false,
-  });
-  if (isLoading) return <Spinner />;
-  return (
-    <CenteredScreen>
-      <div className="workspace-panel space-y-4 p-6 text-center">
-        {data ? (
-          <>
-            <h1 className="font-display text-xl font-semibold">You're invited</h1>
-            <p className="text-sm text-muted-foreground">
-              Join ProgramOps as <b>{data.roles.map((role) => ROLE_LABELS[role]).join(" + ")}</b>.
-              Sign in with the Google account for <b>{data.email_hint}</b>.
-            </p>
-            <a href={`${GOOGLE_LOGIN_URL}?invite=${encodeURIComponent(token)}`}>
-              <Button className="w-full">Continue with Google</Button>
-            </a>
-          </>
-        ) : (
-          <>
-            <h1 className="font-display text-xl font-semibold">Invite not valid</h1>
-            <p className="text-sm text-destructive">
-              {error instanceof Error ? error.message : "This invite link is not valid."}
-            </p>
-            <p className="text-sm text-muted-foreground">Ask a super admin for a new link.</p>
-          </>
-        )}
       </div>
     </CenteredScreen>
   );
@@ -132,12 +86,8 @@ function PendingScreen({ name }: { name: string | null }) {
 }
 
 export function AuthGate({ children }: { children: ReactNode }) {
-  const { pathname, searchStr } = useRouterState({ select: (s) => s.location });
+  const { searchStr } = useRouterState({ select: (s) => s.location });
   const { data: user, isLoading } = useQuery(currentUserQueryOptions);
-
-  // The invite page is public: the person isn't signed in yet.
-  const invite = INVITE_PATH.exec(pathname);
-  if (invite?.[1]) return <InviteScreen token={decodeURIComponent(invite[1])} />;
 
   if (isLoading) return <Spinner />;
   if (!user) return <SignInScreen errorCode={new URLSearchParams(searchStr).get("auth_error")} />;

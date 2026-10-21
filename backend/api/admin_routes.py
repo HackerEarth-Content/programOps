@@ -1,4 +1,4 @@
-"""Super-admin surface: users, roles, per-user permissions, invites. Plus the audit log reader."""
+"""Super-admin surface: users, roles, per-user permissions, pre-granted access. Plus the audit log reader."""
 
 from __future__ import annotations
 
@@ -8,22 +8,20 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import audit, invites
 from core.access import Access, current_access, require_permission
-from core.config import settings
 from core.database import get_session
 from core.errors import DomainError
 from core.invites import InviteStatus
-from core.orm import Invite, ProgramEvent, User, UserPermissionOverride, UserRoleAssignment
+from core.orm import Invite, Program, ProgramEvent, User, UserPermissionOverride, UserRoleAssignment
 from core.permissions import Permission, Role, effective_permissions
 
 router = APIRouter(
     prefix="/admin", tags=["admin"], dependencies=[Depends(require_permission(Permission.USERS_MANAGE))]
 )
-invites_public = APIRouter(tags=["invites"])
 audit_router = APIRouter(
     prefix="/audit", tags=["audit"], dependencies=[Depends(require_permission(Permission.AUDIT_VIEW))]
 )
@@ -41,6 +39,8 @@ class UserOut(BaseModel):
     grants: list[Permission]  # individually added on top of the roles
     revokes: list[Permission]  # individually removed from the roles
     permissions: list[Permission]  # the effective set
+    created_at: datetime  # first sign-in
+    hubspot_csm_programs: int  # programs where HubSpot names this email as the CSM: a hint to grant the CSM role
 
 
 class UserPatch(BaseModel):
@@ -60,7 +60,7 @@ class PermissionsIn(BaseModel):
 
 
 class InviteIn(BaseModel):
-    email: EmailStr
+    emails: list[EmailStr] = Field(min_length=1, max_length=200)
     roles: list[Role] = Field(min_length=1)
 
 
@@ -69,18 +69,17 @@ class InviteOut(BaseModel):
     email: str
     roles: list[Role]
     status: InviteStatus
-    expires_at: datetime
     created_at: datetime
 
 
-class InviteLinkOut(BaseModel):
-    invite: InviteOut
-    link: str  # shown once: only a hash of the token is stored
+class InviteSkip(BaseModel):
+    email: str
+    reason: str
 
 
-class InvitePreview(BaseModel):
-    email_hint: str
-    roles: list[Role]
+class InvitesOut(BaseModel):
+    created: list[InviteOut]
+    skipped: list[InviteSkip]
 
 
 class EventOut(BaseModel):
@@ -126,6 +125,15 @@ async def _user_outs(session: AsyncSession, users: list[User]) -> list[UserOut]:
         )
     ).all():
         (grants if granted else revokes)[user_id].add(Permission(permission))
+    csm_counts = dict(
+        (
+            await session.execute(
+                select(func.lower(Program.csm_email), func.count())
+                .where(func.lower(Program.csm_email).in_([u.email.lower() for u in users]))
+                .group_by(func.lower(Program.csm_email))
+            )
+        ).all()
+    )
     return [
         UserOut(
             id=u.id,
@@ -136,6 +144,8 @@ async def _user_outs(session: AsyncSession, users: list[User]) -> list[UserOut]:
             grants=sorted(grants[u.id]),
             revokes=sorted(revokes[u.id]),
             permissions=sorted(effective_permissions(roles[u.id], grants[u.id], revokes[u.id])),
+            created_at=u.created_at,
+            hubspot_csm_programs=csm_counts.get(u.email.lower(), 0),
         )
         for u in users
     ]
@@ -175,14 +185,9 @@ def _invite_out(invite: Invite) -> InviteOut:
         id=invite.id,
         email=invite.email,
         roles=[Role(r) for r in invite.roles],
-        status=invites.status_of(invite),
-        expires_at=invite.expires_at,
+        status=InviteStatus(invite.status),
         created_at=invite.created_at,
     )
-
-
-def _link(token: str) -> str:
-    return f"{settings.FRONTEND_URL.rstrip('/')}/invite/{token}"
 
 
 # ---- users -----------------------------------------------------------------
@@ -225,6 +230,8 @@ async def patch_user(
         ).all()
     }
     new_roles = set(body.roles) if body.roles is not None else current
+    if body.roles is not None:  # Viewer is the "no other role" default: never alongside a real role
+        new_roles = (new_roles - {Role.VIEWER}) or {Role.VIEWER}
     new_active = target.is_active if body.is_active is None else body.is_active
     await _guard_last_super_admin(
         session, target, keeps_super_admin=Role.SUPER_ADMIN in new_roles and new_active
@@ -284,28 +291,27 @@ async def list_invites(session: AsyncSession = Depends(get_session)) -> list[Inv
     return [_invite_out(i) for i in rows.all()]
 
 
-@router.post("/invites", status_code=201, response_model=InviteLinkOut)
-async def create_invite(
+@router.post("/invites", status_code=201, response_model=InvitesOut)
+async def create_invites(
     body: InviteIn, access: Access = Depends(current_access), session: AsyncSession = Depends(get_session)
-) -> InviteLinkOut:
-    issued = await invites.issue(session, email=body.email, roles=body.roles, created_by=access.user)
-    audit.record(
-        session, access.user, entity="invite", entity_id=issued.invite.id, action="invite_created",
-        new={"email": issued.invite.email, "roles": issued.invite.roles},
-    )
+) -> InvitesOut:
+    """Pre-grant roles to one or many emails. Each person gets them on their first sign-in; anyone who can't be
+    pre-granted (already has an account, outside the company domain) is reported back, not an error."""
+    created: list[Invite] = []
+    skipped: list[InviteSkip] = []
+    for email in dict.fromkeys(e.strip().lower() for e in body.emails):
+        try:
+            invite = await invites.issue(session, email=email, roles=body.roles, created_by=access.user)
+        except DomainError as error:
+            skipped.append(InviteSkip(email=email, reason=error.code))
+            continue
+        created.append(invite)
+        audit.record(
+            session, access.user, entity="invite", entity_id=invite.id, action="invite_created",
+            new={"email": invite.email, "roles": invite.roles},
+        )
     await session.commit()
-    return InviteLinkOut(invite=_invite_out(issued.invite), link=_link(issued.token))
-
-
-@router.post("/invites/{invite_id}/resend", response_model=InviteLinkOut)
-async def resend_invite(
-    invite_id: str, access: Access = Depends(current_access), session: AsyncSession = Depends(get_session)
-) -> InviteLinkOut:
-    """New link and a fresh expiry; the old link stops working. Also what "Copy link" calls."""
-    issued = await invites.renew(session, invite_id)
-    audit.record(session, access.user, entity="invite", entity_id=invite_id, action="invite_resent")
-    await session.commit()
-    return InviteLinkOut(invite=_invite_out(issued.invite), link=_link(issued.token))
+    return InvitesOut(created=[_invite_out(i) for i in created], skipped=skipped)
 
 
 @router.post("/invites/{invite_id}/revoke", response_model=InviteOut)
@@ -326,14 +332,6 @@ async def delete_invite(
     audit.record(session, access.user, entity="invite", entity_id=invite_id, action="invite_deleted")
     await session.commit()
     return Response(status_code=204)
-
-
-@invites_public.get("/invites/{token}", response_model=InvitePreview)
-async def preview_invite(token: str, session: AsyncSession = Depends(get_session)) -> InvitePreview:
-    """What the invite page shows before "Continue with Google". Public; the token is the secret."""
-    invite = await invites.find_valid(session, token)
-    local, _, domain = invite.email.partition("@")
-    return InvitePreview(email_hint=f"{local[:1]}***@{domain}", roles=[Role(r) for r in invite.roles])
 
 
 # ---- audit -----------------------------------------------------------------
