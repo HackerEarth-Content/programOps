@@ -20,7 +20,7 @@ async def run_query(query_id: str, parameters: dict[str, Any] | None = None,
                     poll_interval: float = 2, max_wait: float = 300, max_age: int = 0) -> dict[str, Any]:
     """Params use the query's parameter names, without the `p_` browser-URL prefix."""
     if not settings.REDASH_API_KEY:
-        raise RedashError("Redash isn't configured (REDASH_API_KEY is not set).")
+        raise RedashError("Redash isn't connected yet. Ask an admin to connect it.")
     try:
         async with httpx.AsyncClient(
             base_url=settings.REDASH_BASE_URL.rstrip("/"),

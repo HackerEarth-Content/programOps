@@ -1,23 +1,26 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouterState } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import logoUrl from "@/assets/hackerearth_logo_light.png";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   GOOGLE_LOGIN_URL,
+  ROLE_LABELS,
   currentUserQueryOptions,
-  updateUserRole,
-  type UserRole,
+  fetchInvitePreview,
+  logout,
 } from "@/lib/api";
 
-const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
-  { value: "account_manager", label: "Account Manager" },
-  { value: "csm", label: "CSM" },
-  { value: "manager", label: "Manager" },
-  { value: "other", label: "Other" },
-];
+// Why a Google sign-in was refused: the backend redirects back with ?auth_error=<code>.
+const AUTH_ERRORS: Record<string, string> = {
+  not_invited: "ProgramOps is invite-only. Ask a super admin to invite you.",
+  invite_invalid: "That invite link isn't valid. Ask a super admin for a new one.",
+  invite_expired: "That invite link has expired. Ask a super admin for a new one.",
+  invite_email_mismatch: "Sign in with the Google account the invite was sent to.",
+};
+
+const INVITE_PATH = /^\/invite\/([^/]+)/;
 
 function CenteredScreen({ children }: { children: ReactNode }) {
   return (
@@ -35,15 +38,27 @@ function CenteredScreen({ children }: { children: ReactNode }) {
   );
 }
 
-function SignInScreen() {
+function Spinner() {
+  return (
+    <CenteredScreen>
+      <div className="flex justify-center py-8">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      </div>
+    </CenteredScreen>
+  );
+}
+
+function SignInScreen({ errorCode }: { errorCode: string | null }) {
+  const error = errorCode ? (AUTH_ERRORS[errorCode] ?? "Sign-in failed. Try again.") : null;
   return (
     <CenteredScreen>
       <div className="workspace-panel space-y-4 p-6 text-center">
         <h1 className="font-display text-xl font-semibold">Sign in to continue</h1>
         <p className="text-sm text-muted-foreground">
-          ProgramOps is internal to HackerEarth -- sign in with your Google account to view the
-          pipeline.
+          ProgramOps is internal to HackerEarth and invite-only. Sign in with the Google account you
+          were invited with.
         </p>
+        {error && <p className="text-sm text-destructive">{error}</p>}
         {/* Real navigation, not a fetch/Link -- the backend sets a first-party
             CSRF cookie on this request, which a client-side fetch can't do. */}
         <a href={GOOGLE_LOGIN_URL}>
@@ -54,48 +69,61 @@ function SignInScreen() {
   );
 }
 
-function RoleSelectScreen({ currentName }: { currentName: string | null }) {
-  const queryClient = useQueryClient();
-  const [role, setRole] = useState<UserRole | null>(null);
-  const mutation = useMutation({
-    mutationFn: (value: UserRole) => updateUserRole(value),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
-    },
+function InviteScreen({ token }: { token: string }) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["invite", token],
+    queryFn: () => fetchInvitePreview(token),
+    retry: false,
   });
-
+  if (isLoading) return <Spinner />;
   return (
     <CenteredScreen>
-      <div className="workspace-panel space-y-5 p-6">
-        <div className="text-center">
-          <h1 className="font-display text-xl font-semibold">
-            {currentName ? `Welcome, ${currentName}` : "Welcome"}
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">One-time setup -- what's your role?</p>
-        </div>
-        <RadioGroup value={role} onValueChange={(value) => setRole(value as UserRole)}>
-          {ROLE_OPTIONS.map((option) => (
-            <label
-              key={option.value}
-              htmlFor={option.value}
-              className="flex cursor-pointer items-center gap-3 rounded-md border border-border px-3 py-2.5 text-sm transition-colors hover:bg-secondary/60"
-            >
-              <RadioGroupItem value={option.value} id={option.value} />
-              <Label htmlFor={option.value} className="cursor-pointer">
-                {option.label}
-              </Label>
-            </label>
-          ))}
-        </RadioGroup>
-        {mutation.isError && (
-          <p className="text-xs text-destructive">Couldn't save your role -- try again.</p>
+      <div className="workspace-panel space-y-4 p-6 text-center">
+        {data ? (
+          <>
+            <h1 className="font-display text-xl font-semibold">You're invited</h1>
+            <p className="text-sm text-muted-foreground">
+              Join ProgramOps as <b>{data.roles.map((role) => ROLE_LABELS[role]).join(" + ")}</b>.
+              Sign in with the Google account for <b>{data.email_hint}</b>.
+            </p>
+            <a href={`${GOOGLE_LOGIN_URL}?invite=${encodeURIComponent(token)}`}>
+              <Button className="w-full">Continue with Google</Button>
+            </a>
+          </>
+        ) : (
+          <>
+            <h1 className="font-display text-xl font-semibold">Invite not valid</h1>
+            <p className="text-sm text-destructive">
+              {error instanceof Error ? error.message : "This invite link is not valid."}
+            </p>
+            <p className="text-sm text-muted-foreground">Ask a super admin for a new link.</p>
+          </>
         )}
+      </div>
+    </CenteredScreen>
+  );
+}
+
+function PendingScreen({ name }: { name: string | null }) {
+  const queryClient = useQueryClient();
+  return (
+    <CenteredScreen>
+      <div className="workspace-panel space-y-4 p-6 text-center">
+        <h1 className="font-display text-xl font-semibold">
+          {name ? `Welcome, ${name}` : "Welcome"}
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          You're signed in, but you don't have a role yet. A super admin needs to give you access.
+        </p>
         <Button
+          variant="outline"
           className="w-full"
-          disabled={!role || mutation.isPending}
-          onClick={() => role && mutation.mutate(role)}
+          onClick={async () => {
+            await logout();
+            await queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+          }}
         >
-          {mutation.isPending ? <Loader2 className="size-4 animate-spin" /> : "Continue"}
+          Sign out
         </Button>
       </div>
     </CenteredScreen>
@@ -103,20 +131,16 @@ function RoleSelectScreen({ currentName }: { currentName: string | null }) {
 }
 
 export function AuthGate({ children }: { children: ReactNode }) {
+  const { pathname, searchStr } = useRouterState({ select: (s) => s.location });
   const { data: user, isLoading } = useQuery(currentUserQueryOptions);
 
-  if (isLoading) {
-    return (
-      <CenteredScreen>
-        <div className="flex justify-center py-8">
-          <Loader2 className="size-6 animate-spin text-muted-foreground" />
-        </div>
-      </CenteredScreen>
-    );
-  }
+  // The invite page is public: the person isn't signed in yet.
+  const invite = INVITE_PATH.exec(pathname);
+  if (invite?.[1]) return <InviteScreen token={decodeURIComponent(invite[1])} />;
 
-  if (!user) return <SignInScreen />;
-  if (!user.role) return <RoleSelectScreen currentName={user.name} />;
+  if (isLoading) return <Spinner />;
+  if (!user) return <SignInScreen errorCode={new URLSearchParams(searchStr).get("auth_error")} />;
+  if (user.pending) return <PendingScreen name={user.name} />;
 
   return <>{children}</>;
 }

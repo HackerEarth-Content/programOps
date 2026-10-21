@@ -28,7 +28,7 @@ def _friendly(error: str) -> str:
 
 async def _call(method: str, payload: dict) -> tuple[bool, dict | str]:
     if not settings.SLACK_BOT_TOKEN:
-        return False, "Slack isn't configured (SLACK_BOT_TOKEN is not set)."
+        return False, "Slack isn't connected yet. Ask an admin to connect it."
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             for _ in range(2):  # one retry on rate limit

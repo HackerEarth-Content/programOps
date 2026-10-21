@@ -12,19 +12,24 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import redash, redash_sync, slack
+from core import audit, redash, redash_sync, relevant, slack
+from core.access import Access, require_permission
 from core.config import settings
 from core.database import get_session
+from core.registration_window import estimate_window, program_estimate  # noqa: F401  (estimate_window: self-check below)
 from core.orm import Program, ProgramDocument, ProgramRegistration, ProgramRegistrationSettings
-from core.users import current_active_user
+from core.permissions import Permission
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(
     prefix="/programs/{ticket_id}",
     tags=["registrations"],
-    dependencies=[Depends(current_active_user)],
+    dependencies=[Depends(require_permission(Permission.PROGRAM_VIEW))],
 )
+
+_MANAGE = Depends(require_permission(Permission.REGISTRATIONS_MANAGE))
+_LINK = Depends(require_permission(Permission.INTEGRATIONS_LINK))
 
 
 class EntryIn(BaseModel):
@@ -92,23 +97,6 @@ def _redash_view(s: ProgramRegistrationSettings | None) -> dict:
     }
 
 
-def estimate_window(
-    start: date | None, end: date | None, weeks_min: int | None, weeks_max: int | None, target: int | None
-) -> dict:
-    """The expected registration window. `end` is the real event end when known
-    (Redash), otherwise start + the SOW's stated weeks; `end_min` is the optimistic end."""
-    end_est = end or (start + timedelta(weeks=weeks_max) if start and weeks_max else None)
-    return {
-        "start": start,
-        "end": end_est,
-        "end_min": start + timedelta(weeks=weeks_min) if start and weeks_min else None,
-        "end_is_actual": bool(end),
-        "weeks_min": weeks_min,
-        "weeks_max": weeks_max,
-        "target": target,
-    }
-
-
 @router.get("/registrations")
 async def get_registrations(ticket_id: str, session: AsyncSession = Depends(get_session)):
     program = await _program(session, ticket_id)
@@ -134,26 +122,11 @@ async def get_registrations(ticket_id: str, session: AsyncSession = Depends(get_
             )
         )
     ).scalar() or {}
-    poa_start = date.fromisoformat(poa["window_start"]) if poa.get("window_start") else None
-    linked = bool(cfg and cfg.redash_auto and cfg.redash_event_start)
-    start = (cfg.redash_event_start if linked else None) or program.registration_start_date or (
-        min((r.date for r in rows), default=None)
-    ) or poa_start  # last resort: the campaign window the POA itself states
-    estimate = estimate_window(
-        start,
-        (cfg.redash_event_end if linked else None),
-        sow.get("registration_window_weeks_min"),
-        sow.get("registration_window_weeks_max"),
-        sow.get("registration_target"),
-    )
-    estimate["start_source"] = (
-        "event" if linked
-        else "hubspot" if program.registration_start_date
-        else "first entry" if rows
-        else "POA window" if start else None
-    )
+    estimate = program_estimate(program, cfg, (r.date for r in rows), sow, poa)
     return {
         "estimate": estimate,
+        "raw_total": sum(r.registrations for r in rows),  # Redash and manual daily counts
+        "relevant_total": relevant.total(await relevant.current(session, ticket_id)),  # the CSM's own number, kept apart
         "roles": cfg.roles if cfg else [],
         "fields": cfg.fields if cfg else [],
         "entries": [
@@ -168,17 +141,26 @@ async def get_registrations(ticket_id: str, session: AsyncSession = Depends(get_
 
 
 @router.put("/registrations/config")
-async def put_config(ticket_id: str, payload: ConfigIn, session: AsyncSession = Depends(get_session)):
+async def put_config(
+    ticket_id: str, payload: ConfigIn, session: AsyncSession = Depends(get_session), access: Access = _MANAGE
+):
     await _program(session, ticket_id)
     cfg = await _settings(session, ticket_id)
+    old = {"roles": cfg.roles, "fields": cfg.fields}
     cfg.roles = list(dict.fromkeys(r.strip() for r in payload.roles if r.strip()))
     cfg.fields = list(dict.fromkeys(f.strip() for f in payload.fields if f.strip()))
+    audit.record(
+        session, access.user, entity="registration_config", entity_id=ticket_id, ticket_id=ticket_id,
+        action="config_changed", old=old, new={"roles": cfg.roles, "fields": cfg.fields},
+    )
     await session.commit()
     return {"roles": cfg.roles, "fields": cfg.fields}
 
 
 @router.post("/registrations")
-async def add_entries(ticket_id: str, payload: EntriesIn, session: AsyncSession = Depends(get_session)):
+async def add_entries(
+    ticket_id: str, payload: EntriesIn, session: AsyncSession = Depends(get_session), access: Access = _MANAGE
+):
     """Upsert day counts (same date+role replaces). One Slack summary per call,
     so a CSV import is a single message. Slack trouble never fails the save."""
     program = await _program(session, ticket_id)
@@ -199,6 +181,10 @@ async def add_entries(ticket_id: str, payload: EntriesIn, session: AsyncSession 
             constraint="uq_program_registrations",
             set_={c: getattr(stmt.excluded, c) for c in ("registrations", "relevant", "extra")},
         )
+    )
+    audit.record(
+        session, access.user, entity="registrations", entity_id=ticket_id, ticket_id=ticket_id,
+        action="entries_saved", new={"days": len(rows)},
     )
     await session.commit()
 
@@ -230,7 +216,7 @@ async def redash_events(ticket_id: str):
         raise HTTPException(502, str(e)) from e
 
 
-@router.post("/registrations/redash/check")
+@router.post("/registrations/redash/check", dependencies=[_LINK])
 async def check_redash(ticket_id: str, payload: RedashIn, session: AsyncSession = Depends(get_session)):
     """Confirm a slug: what Redash returns for it, without saving anything."""
     await _program(session, ticket_id)
@@ -242,7 +228,9 @@ async def check_redash(ticket_id: str, payload: RedashIn, session: AsyncSession 
 
 
 @router.put("/registrations/redash")
-async def put_redash(ticket_id: str, payload: RedashIn, session: AsyncSession = Depends(get_session)):
+async def put_redash(
+    ticket_id: str, payload: RedashIn, session: AsyncSession = Depends(get_session), access: Access = _LINK
+):
     """Set the slug and/or switch mode. Switching to auto re-checks the slug against Redash."""
     await _program(session, ticket_id)
     cfg = await _settings(session, ticket_id)
@@ -259,11 +247,15 @@ async def put_redash(ticket_id: str, payload: RedashIn, session: AsyncSession = 
         cfg.redash_event_start, cfg.redash_event_end = redash_sync.event_dates(info)
     if payload.auto is not None:
         cfg.redash_auto = payload.auto
+    audit.record(
+        session, access.user, entity="redash_link", entity_id=ticket_id, ticket_id=ticket_id,
+        action="redash_changed", new={"event_slug": cfg.redash_event_slug, "auto": cfg.redash_auto},
+    )
     await session.commit()
     return _redash_view(cfg)
 
 
-@router.post("/registrations/redash/run")
+@router.post("/registrations/redash/run", dependencies=[_LINK])
 async def run_redash(ticket_id: str, session: AsyncSession = Depends(get_session)):
     """Fetch the event's daily counts and save new/changed days. Slack gets one summary
     of just those days (when Notify Slack is on), never the whole history."""
@@ -283,10 +275,17 @@ async def run_redash(ticket_id: str, session: AsyncSession = Depends(get_session
 
 
 @router.delete("/registrations/{entry_id}", status_code=204)
-async def delete_entry(ticket_id: str, entry_id: int, session: AsyncSession = Depends(get_session)):
+async def delete_entry(
+    ticket_id: str, entry_id: int, session: AsyncSession = Depends(get_session), access: Access = _MANAGE
+):
     row = await session.get(ProgramRegistration, entry_id)
     if row is None or row.ticket_id != ticket_id:
         raise HTTPException(404, "Entry not found")
+    audit.record(
+        session, access.user, entity="registrations", entity_id=ticket_id, ticket_id=ticket_id,
+        action="entry_deleted",
+        old={"date": row.date.isoformat(), "role": row.role, "registrations": row.registrations, "relevant": row.relevant},
+    )
     await session.delete(row)
     await session.commit()
 
@@ -301,7 +300,9 @@ async def lookup_channel(ticket_id: str, channel_id: str):
 
 
 @router.put("/slack")
-async def put_slack(ticket_id: str, payload: SlackIn, session: AsyncSession = Depends(get_session)):
+async def put_slack(
+    ticket_id: str, payload: SlackIn, session: AsyncSession = Depends(get_session), access: Access = _LINK
+):
     await _program(session, ticket_id)
     cfg = await _settings(session, ticket_id)
     if payload.channel_id is not None:
@@ -315,11 +316,15 @@ async def put_slack(ticket_id: str, payload: SlackIn, session: AsyncSession = De
             cfg.slack_channel_id = cfg.slack_channel_name = None
     if payload.notify is not None:
         cfg.notify_slack = payload.notify
+    audit.record(
+        session, access.user, entity="slack_link", entity_id=ticket_id, ticket_id=ticket_id,
+        action="slack_changed", new={"channel": cfg.slack_channel_name, "notify": cfg.notify_slack},
+    )
     await session.commit()
     return _slack_view(cfg)
 
 
-@router.post("/slack/test")
+@router.post("/slack/test", dependencies=[_LINK])
 async def test_slack(ticket_id: str, session: AsyncSession = Depends(get_session)):
     program = await _program(session, ticket_id)
     cfg = await session.get(ProgramRegistrationSettings, ticket_id)
@@ -393,7 +398,7 @@ async def _summary(session: AsyncSession, program: Program, rows: list[dict]) ->
     return format_summary(_label(program), rows, total, activities)
 
 
-@router.post("/registrations/preview")
+@router.post("/registrations/preview", dependencies=[_MANAGE])
 async def preview_message(ticket_id: str, payload: EntriesIn, session: AsyncSession = Depends(get_session)):
     """The exact Slack text that saving these entries would post."""
     program = await _program(session, ticket_id)

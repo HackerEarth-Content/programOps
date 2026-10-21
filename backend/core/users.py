@@ -1,5 +1,6 @@
 from typing import Any
 
+import jwt
 from fastapi import Depends, Request
 from fastapi_users import BaseUserManager, FastAPIUsers
 from fastapi.responses import RedirectResponse
@@ -9,8 +10,12 @@ from fastapi_users.authentication import (
     JWTStrategy,
 )
 from fastapi_users.db import SQLAlchemyUserDatabase
+from fastapi_users.jwt import decode_jwt
+from fastapi_users.router.oauth import STATE_TOKEN_AUDIENCE
 from httpx_oauth.clients.google import GoogleOAuth2
+from sqlalchemy import func, select
 
+from core import invites
 from core.config import settings
 from core.database import get_session
 from core.orm import User, OAuthAccount
@@ -34,6 +39,19 @@ google_oauth_client = CustomGoogleOAuth2(
 )
 
 
+def _invite_token(request: Request | None) -> str | None:
+    """The invite token carried in the signed OAuth `state` (set by /api/auth/google/login?invite=...)."""
+    state = request.query_params.get("state") if request else None
+    if not state:
+        return None
+    try:
+        data = decode_jwt(state, SECRET, [STATE_TOKEN_AUDIENCE])
+    except jwt.PyJWTError:
+        return None
+    token = data.get("invite")
+    return token if isinstance(token, str) else None
+
+
 class UserManager(BaseUserManager[User, str]):
     reset_password_token_secret = SECRET
     verification_token_secret = SECRET
@@ -54,6 +72,13 @@ class UserManager(BaseUserManager[User, str]):
         associate_by_email: bool = False,
         is_verified_by_default: bool = False,
     ):
+        # Invite-only: a first-time sign-in needs a valid invite for this exact email. Existing
+        # users (including the bootstrapped super admin) just sign in.
+        session = self.user_db.session
+        email = account_email.strip().lower()
+        known = await session.scalar(select(User.id).where(func.lower(User.email) == email))
+        invite = None if known else await invites.find_valid(session, _invite_token(request), email=email)
+
         result = await super().oauth_callback(
             oauth_name,
             access_token,
@@ -70,6 +95,9 @@ class UserManager(BaseUserManager[User, str]):
         if not result.name and result.email:
             result = await self.user_db.update(result, {"name": result.email.split("@")[0]})
 
+        if invite is not None:
+            await invites.accept(session, invite, result)
+            await session.commit()
         return result
 
 

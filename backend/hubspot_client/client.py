@@ -148,6 +148,19 @@ class HubSpotClient:
         stages = {s["id"]: s["label"] for s in data.get("stages", [])}
         return {"label": data["label"], "stages": stages}
 
+    async def read_ticket_properties(self, ticket_id: str, names: list[str]) -> dict[str, str | None]:
+        """The current value of some properties of one ticket (used to detect a conflicting edit)."""
+        url = f"{_BASE}/crm/v3/objects/tickets/{ticket_id}"
+        async with _session() as session:
+            data = await _request(session, "GET", url, params={"properties": ",".join(names)})
+        return data.get("properties", {})
+
+    async def update_ticket_properties(self, ticket_id: str, properties: dict[str, str]) -> None:
+        """Write properties to one ticket. Needs the ticket-update scope on the token."""
+        url = f"{_BASE}/crm/v3/objects/tickets/{ticket_id}"
+        async with _session() as session:
+            await _request(session, "PATCH", url, json={"properties": properties})
+
     async def _owner_records(self) -> list[dict]:
         """All HubSpot owner records. Best-effort: [] rather than failing the
         whole run if the token lacks the owners-read scope or HubSpot is
@@ -182,6 +195,10 @@ class HubSpotClient:
     async def fetch_owners(self) -> dict[str, str]:
         """Returns {owner_id: full_name}."""
         return {o["id"]: self._owner_name(o) for o in await self._owner_records()}
+
+    async def fetch_owner_emails(self) -> dict[str, str]:
+        """Returns {owner_id: lower-case email}: how a signed-in user is matched to the programs they own."""
+        return {o["id"]: o["email"].strip().lower() for o in await self._owner_records() if o.get("email")}
 
     async def fetch_user_names(self) -> dict[int, str]:
         """Returns {hubspot_user_id: full_name}. Audit-trail/note authors are

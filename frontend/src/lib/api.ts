@@ -1,4 +1,4 @@
-import { queryOptions } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 
 export const API_BASE_URL = import.meta.env["VITE_API_BASE_URL"] ?? "http://localhost:8000";
 // Frontend navigates here directly (not fetch) so the backend's CSRF cookie
@@ -21,6 +21,8 @@ export type Program = {
   stage: Stage;
   campaign_type: string | null;
   event_name: string | null;
+  display_name: string; // the name to show: program name, else subject, else "Untitled program (client)"
+  untitled: boolean;
   platform_details: string | null;
   blackops_account_name: string | null;
   company_name: string | null;
@@ -33,6 +35,22 @@ export type Program = {
   created_at: string | null;
   last_modified_at: string | null;
 };
+
+/** Each person once, with every role they hold: "Priya · CSM, AM". */
+export function peopleByName(program: Program): { name: string; roles: string[] }[] {
+  const entries: [string, string | null][] = [
+    ["Owner", program.owner_name],
+    ["AM", program.account_manager_name],
+    ["CSM", program.csm_name],
+    ["Content", program.content_poc_name],
+  ];
+  const byName = new Map<string, string[]>();
+  for (const [role, name] of entries) {
+    if (!name) continue;
+    byName.set(name, [...(byName.get(name) ?? []), role]);
+  }
+  return [...byName].map(([name, roles]) => ({ name, roles }));
+}
 
 export type StageFunnelEntry = { stage: Stage; count: number };
 export type ChecklistStatus = {
@@ -89,22 +107,42 @@ export async function apiFetch<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export type UserRole = "account_manager" | "csm" | "manager" | "other";
+export type UserRole = "super_admin" | "csm" | "marketing" | "account_manager";
+
+export const ROLE_LABELS: Record<UserRole, string> = {
+  super_admin: "Super Admin",
+  csm: "CSM",
+  marketing: "Marketing",
+  account_manager: "Account Manager",
+};
+
+export type InvitePreview = { email_hint: string; roles: UserRole[] };
+
+// Public: the invite token is the secret. Rejects with the backend's reason (invalid or expired link).
+export async function fetchInvitePreview(token: string): Promise<InvitePreview> {
+  const response = await fetch(`${API_BASE_URL}/invites/${encodeURIComponent(token)}`);
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(body?.detail ?? "This invite link is not valid.");
+  }
+  return response.json() as Promise<InvitePreview>;
+}
 
 export type CurrentUser = {
   id: string;
   email: string;
   name: string | null;
-  role: UserRole | null;
-  is_active: boolean;
+  roles: UserRole[];
+  permissions: string[]; // the backend's effective permissions, e.g. "registrations.manage"
+  pending: boolean; // signed in, but a super admin hasn't given them a role yet
 };
 
 // Returns null on 401 (signed out) instead of throwing, so a plain useQuery
 // can represent "not signed in" as data rather than an error state.
 export async function fetchCurrentUser(): Promise<CurrentUser | null> {
-  const response = await fetch(`${API_BASE_URL}/users/me`, { credentials: "include" });
+  const response = await fetch(`${API_BASE_URL}/me`, { credentials: "include" });
   if (response.status === 401) return null;
-  if (!response.ok) throw new Error(`GET /users/me failed: ${response.status}`);
+  if (!response.ok) throw new Error(`GET /me failed: ${response.status}`);
   return response.json() as Promise<CurrentUser>;
 }
 
@@ -113,15 +151,10 @@ export const currentUserQueryOptions = queryOptions({
   queryFn: fetchCurrentUser,
 });
 
-export async function updateUserRole(role: UserRole): Promise<CurrentUser> {
-  const response = await fetch(`${API_BASE_URL}/users/me`, {
-    method: "PATCH",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ role }),
-  });
-  if (!response.ok) throw new Error(`Failed to save role: ${response.status}`);
-  return response.json() as Promise<CurrentUser>;
+// Hides controls the backend would refuse. The backend still enforces every permission.
+export function useCan(permission: string): boolean {
+  const { data } = useQuery(currentUserQueryOptions);
+  return data?.permissions.includes(permission) ?? false;
 }
 
 export async function logout(): Promise<void> {
@@ -197,16 +230,13 @@ export const notesQueryOptions = (ticketId: string) =>
 
 // Local-only comment (see backend api/program_routes.py's create_program_note
 // docstring for why this doesn't write through to HubSpot).
-export async function createNote(
-  ticketId: string,
-  body: string,
-  authorName: string,
-): Promise<Note> {
+export async function createNote(ticketId: string, body: string): Promise<Note> {
+  // The author is the signed-in user; the backend takes it from the session.
   const response = await fetch(`${API_BASE_URL}/programs/${ticketId}/notes`, {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ body, author_name: authorName }),
+    body: JSON.stringify({ body }),
   });
   if (!response.ok) {
     const detail = await response.json().catch(() => null);
@@ -275,7 +305,7 @@ export const registrationsQueryOptions = (ticketId: string) =>
   });
 
 // JSON write helper; surfaces the backend's `detail` message (e.g. Slack errors).
-async function sendJson<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function sendJson<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method,
     credentials: "include",

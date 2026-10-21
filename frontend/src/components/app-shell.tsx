@@ -1,336 +1,332 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useRouterState } from "@tanstack/react-router";
-import {
-  Bell,
-  BriefcaseBusiness,
-  ChevronDown,
-  ChevronRight,
-  Code2,
-  Command,
-  LayoutDashboard,
-  LogOut,
-  Moon,
-  RefreshCw,
-  Search,
-  Sun,
-  X,
-} from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import logoUrl from "@/assets/hackerearth_logo_light.png";
-import { currentUserQueryOptions, logout, programsQueryOptions, syncPrograms, syncRegistrations, type UserRole } from "@/lib/api";
-import { Button } from "@/components/ui/button";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { LogOut, Moon, RefreshCw, Search, Sun, X } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Chip, SyncStatus, useHotkey } from "@/components/kit";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  ROLE_LABELS,
+  currentUserQueryOptions,
+  logout,
+  syncPrograms,
+  syncRegistrations,
+  useCan,
+} from "@/lib/api";
+import { timeAgo } from "@/lib/format";
+import { csmQueueQuery, marketingQueueQuery } from "@/lib/ops-api";
+import { searchQuery, systemStatusQuery } from "@/lib/system-api";
+import { currentTheme, setTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
-const ROLE_LABELS: Record<UserRole, string> = {
-  account_manager: "Account Manager",
-  csm: "CSM",
-  manager: "Manager",
-  other: "Other",
-};
-
-const VIEW_OPTIONS = [
-  { id: "all", label: "All programs", search: {} as { view?: "hackathons" | "hiring" } },
-  { id: "hackathons", label: "Hackathons", icon: Code2, search: { view: "hackathons" as const } },
+const NAV = [
   {
-    id: "hiring",
-    label: "Hiring Challenges",
-    icon: BriefcaseBusiness,
-    search: { view: "hiring" as const },
+    to: "/",
+    label: "Programs",
+    match: (p: string) => p === "/" || p.startsWith("/programs"),
+    key: "d",
+    admin: false,
+  },
+  {
+    to: "/queue/csm",
+    label: "CSM queue",
+    match: (p: string) => p.startsWith("/queue/csm"),
+    key: "c",
+    admin: false,
+    count: "csm",
+  },
+  {
+    to: "/queue/marketing",
+    label: "Marketing queue",
+    match: (p: string) => p.startsWith("/queue/marketing"),
+    key: "m",
+    admin: false,
+    count: "marketing",
+  },
+  {
+    to: "/admin",
+    label: "Admin",
+    match: (p: string) => p.startsWith("/admin"),
+    key: "a",
+    admin: true,
   },
 ] as const;
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
-  // Only "/" declares a view search param -- other routes' location.search
-  // won't have it, hence the cast/optional-chaining below.
-  const routeSearch = useRouterState({ select: (state) => state.location.search }) as
-    { view?: "hackathons" | "hiring" } | undefined;
-  const activeView = routeSearch?.view;
-  const [query, setQuery] = useState("");
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [dark, setDark] = useState(false);
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
   const queryClient = useQueryClient();
+  const canAdmin = useCan("users.manage");
+  const canSync = useCan("integrations.link");
+  const { data: me } = useQuery(currentUserQueryOptions);
+  const { data: status } = useQuery(systemStatusQuery);
+  const { data: csm } = useQuery(csmQueueQuery("mine"));
+  const { data: marketing } = useQuery(marketingQueueQuery);
+  const counts = { csm: csm?.items.length, marketing: marketing?.items.length };
+
+  // "g" then a letter jumps between the main screens: g d directory, g c CSM queue, g m marketing queue, g a admin.
+  const navigate = useNavigate();
+  useEffect(() => {
+    let armedAt = 0;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable)) return;
+      if (e.key === "g") {
+        armedAt = Date.now();
+        return;
+      }
+      if (!armedAt || Date.now() - armedAt > 1200) return;
+      armedAt = 0;
+      if (e.key === "d") void navigate({ to: "/" });
+      else if (e.key === "c") void navigate({ to: "/queue/csm" });
+      else if (e.key === "m") void navigate({ to: "/queue/marketing" });
+      else if (e.key === "a" && canAdmin) void navigate({ to: "/admin" });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [navigate, canAdmin]);
+
+  const [dark, setDark] = useState(false);
+  useEffect(() => setDark(currentTheme() === "dark"), []);
+  const toggleTheme = () => {
+    const next = !dark;
+    setDark(next);
+    setTheme(next ? "dark" : "light");
+  };
+
   const sync = useMutation({
     mutationFn: syncPrograms,
     onSuccess: () => queryClient.invalidateQueries(),
   });
-  const reloadRegistrations = useMutation({
+  const reload = useMutation({
     mutationFn: syncRegistrations,
     onSuccess: () => queryClient.invalidateQueries(),
   });
-  const { data: currentUser } = useQuery(currentUserQueryOptions);
-  const logoutMutation = useMutation({
+  const signOut = useMutation({
     mutationFn: logout,
-    onSuccess: () => {
-      setUserMenuOpen(false);
-      queryClient.setQueryData(["auth", "me"], null);
-    },
+    onSuccess: () => queryClient.setQueryData(["auth", "me"], null),
   });
-  const initials = currentUser?.name
-    ? currentUser.name
-        .split(/\s+/)
-        .map((part) => part[0])
-        .slice(0, 2)
-        .join("")
-        .toUpperCase()
-    : (currentUser?.email[0]?.toUpperCase() ?? "?");
-  // Search only needs data once it's already loaded elsewhere (dashboard/detail
-  // loaders prefetch it) -- a plain useQuery here reads that cache without
-  // triggering its own fetch or suspending the whole shell if it hasn't landed yet.
-  const { data: programs = [] } = useQuery(programsQueryOptions);
-  const results = useMemo(
-    () =>
-      query.trim()
-        ? programs
-            .filter((p) =>
-              `${p.subject} ${p.company_name ?? ""} ${p.ticket_id}`
-                .toLowerCase()
-                .includes(query.toLowerCase()),
-            )
-            .slice(0, 5)
-        : [],
-    [query, programs],
-  );
+  const busy = sync.isPending || reload.isPending;
 
-  useEffect(() => {
-    const saved = window.localStorage.getItem("programops-theme");
-    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    const useDark = saved ? saved === "dark" : prefersDark;
-    setDark(useDark);
-    document.documentElement.classList.toggle("dark", useDark);
-  }, []);
+  const initials = (me?.name ?? me?.email ?? "?")
+    .split(/[\s@.]+/)
+    .filter(Boolean)
+    .map((p) => p[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+  const stale = status?.hubspot_synced_at
+    ? Date.now() -
+        new Date(
+          status.hubspot_synced_at + (status.hubspot_synced_at.endsWith("Z") ? "" : "Z"),
+        ).getTime() >
+      30 * 60000
+    : false;
 
-  const toggleTheme = () => {
-    const next = !dark;
-    setDark(next);
-    document.documentElement.classList.toggle("dark", next);
-    window.localStorage.setItem("programops-theme", next ? "dark" : "light");
-  };
+  const syncDetail = [
+    `HubSpot: ${timeAgo(status?.hubspot_synced_at)}`,
+    `Redash: ${timeAgo(status?.redash_registrations_synced_at)}`,
+    `Sources: ${timeAgo(status?.sources_fetched_at)}`,
+  ].join("\n");
+  const syncLabel = `Synced ${timeAgo(status?.hubspot_synced_at)}`;
 
   return (
-    <div className="relative min-h-screen bg-background text-foreground">
-      <header className="sticky top-0 z-50 border-b border-border/70 bg-background/80 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-4 px-4 sm:px-6 lg:px-8">
-          <Link
-            to="/"
-            className="flex shrink-0 items-center gap-3"
-            aria-label="ProgramOps dashboard"
-          >
-            <span className="flex size-9 items-center justify-center overflow-hidden rounded-lg bg-brand-panel ring-1 ring-border">
-              <img src={logoUrl} alt="HackerEarth" className="brand-logo size-6 object-contain" />
-            </span>
-            <span className="hidden sm:block">
-              <span className="block font-display text-sm font-semibold text-foreground">
-                ProgramOps
-              </span>
-              <span className="block text-[10px] font-medium uppercase text-muted-foreground">
-                HackerEarth
-              </span>
-            </span>
+    <div className="flex min-h-screen flex-col bg-background text-foreground">
+      <header className="sticky top-0 z-50 border-b border-border bg-surface">
+        <div className="mx-auto flex max-w-[1360px] flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 lg:px-8">
+          <Link to="/" className="flex shrink-0 items-center gap-2.5" aria-label="ProgramOps home">
+            <img
+              src="/favicon.png"
+              alt=""
+              className="size-[30px] rounded-[8px] bg-surface object-contain ring-1 ring-border"
+            />
+            <span className="text-[15px] font-semibold">ProgramOps</span>
           </Link>
 
-          <nav className="ml-2 hidden items-center md:flex">
-            <div className="relative">
-              <button
-                onClick={() => setMenuOpen((open) => !open)}
-                aria-expanded={menuOpen}
-                className={cn(
-                  "flex h-9 items-center gap-2 rounded-md px-3 text-sm transition-colors",
-                  pathname === "/"
-                    ? "bg-secondary text-foreground"
-                    : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground",
-                )}
-              >
-                <LayoutDashboard className="size-4" />
-                {VIEW_OPTIONS.find((option) => option.id === (activeView ?? "all"))?.label ??
-                  "Overview"}
-                <ChevronDown
+          <nav aria-label="Primary" className="flex flex-wrap items-center gap-1">
+            {NAV.filter((n) => !n.admin || canAdmin).map((n) => {
+              const active = n.match(pathname);
+              const count = "count" in n ? counts[n.count] : undefined;
+              return (
+                <Link
+                  key={n.to}
+                  to={n.to}
+                  aria-current={active ? "page" : undefined}
+                  title={`${n.label} (press g, then ${n.key})`}
                   className={cn(
-                    "size-3.5 transition-transform duration-200",
-                    menuOpen && "rotate-180",
+                    "flex items-center gap-1.5 rounded-[8px] px-3 py-1.5 text-[14px]",
+                    active
+                      ? "bg-raised font-medium text-foreground"
+                      : "text-ink-2 hover:text-foreground",
                   )}
-                />
-              </button>
-              {menuOpen && (
-                <>
-                  <button
-                    aria-hidden="true"
-                    tabIndex={-1}
-                    onClick={() => setMenuOpen(false)}
-                    className="fixed inset-0 z-40 cursor-default"
-                  />
-                  <div className="absolute left-0 top-11 z-50 w-56 overflow-hidden rounded-md border border-border bg-popover py-1.5 shadow-2xl">
-                    <p className="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                      Program type
-                    </p>
-                    {VIEW_OPTIONS.map((option) => {
-                      const Icon = "icon" in option ? option.icon : undefined;
-                      const active = (activeView ?? "all") === option.id;
-                      return (
-                        <Link
-                          key={option.id}
-                          to="/"
-                          search={option.search}
-                          onClick={() => setMenuOpen(false)}
-                          className={cn(
-                            "flex items-center gap-2.5 px-3 py-2 text-sm transition-colors",
-                            active
-                              ? "bg-secondary text-foreground"
-                              : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground",
-                          )}
-                        >
-                          {Icon ? (
-                            <Icon className="size-4" />
-                          ) : (
-                            <LayoutDashboard className="size-4" />
-                          )}{" "}
-                          {option.label}
-                          {active && <span className="ml-auto size-1.5 rounded-full bg-primary" />}
-                        </Link>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </div>
+                >
+                  {n.label}
+                  {count !== undefined && count > 0 && (
+                    <span className="rounded-full bg-accent-bg px-1.5 text-[12px] font-medium text-primary">
+                      {count}
+                    </span>
+                  )}
+                </Link>
+              );
+            })}
           </nav>
 
-          <div className="relative ml-auto w-full max-w-sm">
-            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search programs, accounts…"
-              className="h-9 w-full rounded-md border border-border bg-secondary/50 pl-9 pr-16 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
-            />
-            {query ? (
-              <button
-                aria-label="Clear search"
-                onClick={() => setQuery("")}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
-                <X className="size-4" />
-              </button>
+          <div className="flex min-w-0 flex-1 basis-52 items-center justify-end gap-3">
+            <GlobalSearch />
+            {canSync ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  aria-label="Sync status and actions"
+                  title={syncDetail}
+                  className="hidden rounded-[8px] px-1 py-1 hover:bg-raised md:inline-flex"
+                >
+                  <SyncStatus
+                    label={syncLabel}
+                    stale={stale}
+                    live={!busy}
+                    detail={syncDetail}
+                    trailing={<RefreshCw className={cn("size-3", busy && "animate-spin")} />}
+                  />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="text-[14px]">
+                  <DropdownMenuItem disabled={sync.isPending} onSelect={() => sync.mutate()}>
+                    Sync HubSpot now{" "}
+                    <span className="ml-3 text-[12px] text-muted-foreground">auto 10 min</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={reload.isPending} onSelect={() => reload.mutate()}>
+                    Reload registrations{" "}
+                    <span className="ml-3 text-[12px] text-muted-foreground">auto 6 h</span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             ) : (
-              <span className="absolute right-3 top-1/2 hidden -translate-y-1/2 items-center gap-1 text-[10px] text-muted-foreground sm:flex">
-                <Command className="size-3" />K
+              <span className="hidden md:inline-flex">
+                <SyncStatus label={syncLabel} stale={stale} live detail={syncDetail} />
               </span>
             )}
-            {results.length > 0 && (
-              <div className="absolute top-11 right-0 left-0 overflow-hidden rounded-md border border-border bg-popover shadow-2xl">
-                {results.map((program) => (
-                  <Link
-                    key={program.ticket_id}
-                    to="/programs/$ticketId"
-                    params={{ ticketId: program.ticket_id }}
-                    onClick={() => setQuery("")}
-                    className="flex items-center justify-between border-b border-border/60 px-3 py-3 last:border-0 hover:bg-secondary/70"
-                  >
-                    <span>
-                      <span className="block text-sm font-medium">{program.subject}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {program.company_name} · {program.ticket_id}
-                      </span>
-                    </span>
-                    <ChevronRight className="size-4 text-muted-foreground" />
-                  </Link>
-                ))}
-              </div>
+            {!!status?.outbox_failed && (
+              <Chip tone="critical">{status.outbox_failed} Slack failed</Chip>
             )}
-          </div>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger className="hidden items-center gap-2 rounded-md border border-success/20 bg-success/10 px-2.5 py-1.5 text-xs font-medium text-success lg:flex">
-              <span className="size-1.5 rounded-full bg-success animate-pulse" />
-              Live from HubSpot
-              <ChevronDown className="size-3" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem disabled={sync.isPending} onSelect={() => sync.mutate()}>
-                <RefreshCw className={cn("size-4", sync.isPending && "animate-spin")} />
-                {sync.isPending ? "Syncing..." : sync.isError ? "Sync failed - retry" : "Sync HubSpot now"}
-                <span className="ml-2 text-[10px] text-muted-foreground">auto every 10 min</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={reloadRegistrations.isPending}
-                onSelect={() => reloadRegistrations.mutate()}
-              >
-                <RefreshCw className={cn("size-4", reloadRegistrations.isPending && "animate-spin")} />
-                {reloadRegistrations.isPending
-                  ? "Reloading registrations..."
-                  : reloadRegistrations.isError
-                    ? "Reload failed - retry"
-                    : "Reload registrations now"}
-                <span className="ml-2 text-[10px] text-muted-foreground">auto every 6 h</span>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={`Switch to ${dark ? "light" : "dark"} theme`}
-            onClick={toggleTheme}
-            title={`Switch to ${dark ? "light" : "dark"} theme`}
-          >
-            {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
-          </Button>
-          <Button variant="ghost" size="icon" aria-label="Notifications" className="relative">
-            <Bell className="size-4" />
-            <span className="absolute right-2 top-2 size-1.5 rounded-full bg-accent-vivid" />
-          </Button>
-          <div className="relative">
             <button
-              onClick={() => setUserMenuOpen((open) => !open)}
-              aria-expanded={userMenuOpen}
-              aria-label="Account menu"
-              className="flex size-8 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground transition-opacity hover:opacity-90"
+              onClick={toggleTheme}
+              aria-label={`Switch to ${dark ? "light" : "dark"} theme`}
+              className="flex size-9 shrink-0 items-center justify-center rounded-[8px] border border-border text-ink-2 hover:bg-raised"
             >
-              {initials}
+              {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
             </button>
-            {userMenuOpen && (
-              <>
-                <button
-                  aria-hidden="true"
-                  tabIndex={-1}
-                  onClick={() => setUserMenuOpen(false)}
-                  className="fixed inset-0 z-40 cursor-default"
-                />
-                <div className="absolute right-0 top-11 z-50 w-56 overflow-hidden rounded-md border border-border bg-popover py-1.5 shadow-2xl">
-                  <div className="px-3 py-2">
-                    <p className="truncate text-sm font-medium text-foreground">
-                      {currentUser?.name ?? currentUser?.email}
-                    </p>
-                    <p className="truncate text-xs text-muted-foreground">{currentUser?.email}</p>
-                    {currentUser?.role && (
-                      <p className="mt-1 text-[10px] font-semibold uppercase text-primary">
-                        {ROLE_LABELS[currentUser.role]}
-                      </p>
-                    )}
+
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                aria-label="Account menu"
+                className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent-bg text-[12px] font-semibold text-primary"
+              >
+                {initials || "?"}
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-60">
+                <div className="px-2 py-2">
+                  <p className="truncate text-[14px] font-medium">{me?.name ?? me?.email}</p>
+                  <p className="truncate text-[12px] text-muted-foreground">{me?.email}</p>
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {me?.roles.map((r) => (
+                      <Chip key={r}>{ROLE_LABELS[r]}</Chip>
+                    ))}
                   </div>
-                  <div className="my-1 h-px bg-border" />
-                  <button
-                    onClick={() => logoutMutation.mutate()}
-                    disabled={logoutMutation.isPending}
-                    className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-50"
-                  >
-                    <LogOut className="size-4" /> Sign out
-                  </button>
                 </div>
-              </>
-            )}
+                <DropdownMenuItem onSelect={() => signOut.mutate()} className="gap-2 text-[14px]">
+                  <LogOut className="size-3.5" /> Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </header>
-      <main className="relative z-10 mx-auto max-w-[1500px] px-4 py-7 sm:px-6 lg:px-10 lg:py-10">
+
+      <main
+        key={pathname.split("/").slice(0, 3).join("/")}
+        className="page-in mx-auto w-full max-w-[1360px] flex-1 px-4 py-6 lg:px-8"
+      >
         {children}
       </main>
+
+      <footer className="border-t border-border">
+        <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-2 px-4 py-3  text-[12px] text-muted-foreground lg:px-6">
+          <span>ProgramOps · internal program operations</span>
+          <span>© HackerEarth</span>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+function GlobalSearch() {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  useHotkey("/", () => input.current?.focus());
+  const { data: hits = [], isFetching } = useQuery(searchQuery(q));
+  return (
+    <div className="relative w-full max-w-[320px]">
+      <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+      <input
+        ref={input}
+        value={q}
+        onChange={(e) => {
+          setQ(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 120)}
+        onKeyDown={(e) => e.key === "Escape" && (setQ(""), input.current?.blur())}
+        placeholder="Search tickets, programs, teams…"
+        aria-label="Search programs"
+        className="h-9 w-full rounded-[8px] bg-raised pl-8 pr-8 text-[13px] placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+      />
+      {q ? (
+        <button
+          aria-label="Clear search"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setQ("")}
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+        >
+          <X className="size-3.5" />
+        </button>
+      ) : (
+        <kbd className="absolute right-2 top-1/2 -translate-y-1/2 rounded border border-border px-1.5 text-[11px] text-muted-foreground">
+          /
+        </kbd>
+      )}
+      {open && q.trim().length >= 2 && (
+        <div className="drawer-in absolute left-0 right-0 top-10 z-50 overflow-hidden rounded-xl border border-border bg-popover">
+          {hits.map((h) => (
+            <Link
+              key={h.ticket_id}
+              to="/programs/$ticketId"
+              params={{ ticketId: h.ticket_id }}
+              search={{ tab: "overview" }}
+              onClick={() => setQ("")}
+              className="flex items-center justify-between gap-3 border-b border-border px-3 py-2 last:border-0 hover:bg-secondary"
+            >
+              <span className="min-w-0">
+                <span className="block truncate text-[14px] font-medium">{h.name}</span>
+                <span className="block truncate text-[13px] text-muted-foreground">
+                  {h.client ?? "No client"} · <span className="font-mono">{h.ticket_id}</span>
+                </span>
+              </span>
+              <Chip>{h.stage}</Chip>
+            </Link>
+          ))}
+          {!hits.length && (
+            <p className="px-3 py-3 text-[13px] text-muted-foreground">
+              {isFetching ? "Searching…" : "No programs match."}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

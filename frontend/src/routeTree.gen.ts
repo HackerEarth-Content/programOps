@@ -10,11 +10,19 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AdminRouteImport } from './routes/admin'
 import { Route as ProgramsTicketIdRouteImport } from './routes/programs.$ticketId'
+import { Route as QueueCsmRouteImport } from './routes/queue.csm'
+import { Route as QueueMarketingRouteImport } from './routes/queue.marketing'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminRoute = AdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProgramsTicketIdRoute = ProgramsTicketIdRouteImport.update({
@@ -22,31 +30,60 @@ const ProgramsTicketIdRoute = ProgramsTicketIdRouteImport.update({
   path: '/programs/$ticketId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const QueueCsmRoute = QueueCsmRouteImport.update({
+  id: '/queue/csm',
+  path: '/queue/csm',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const QueueMarketingRoute = QueueMarketingRouteImport.update({
+  id: '/queue/marketing',
+  path: '/queue/marketing',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
   '/programs/$ticketId': typeof ProgramsTicketIdRoute
+  '/queue/csm': typeof QueueCsmRoute
+  '/queue/marketing': typeof QueueMarketingRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
   '/programs/$ticketId': typeof ProgramsTicketIdRoute
+  '/queue/csm': typeof QueueCsmRoute
+  '/queue/marketing': typeof QueueMarketingRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
   '/programs/$ticketId': typeof ProgramsTicketIdRoute
+  '/queue/csm': typeof QueueCsmRoute
+  '/queue/marketing': typeof QueueMarketingRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/programs/$ticketId'
+  fullPaths:
+    '/' | '/admin' | '/programs/$ticketId' | '/queue/csm' | '/queue/marketing'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/programs/$ticketId'
-  id: '__root__' | '/' | '/programs/$ticketId'
+  to: '/' | '/admin' | '/programs/$ticketId' | '/queue/csm' | '/queue/marketing'
+  id:
+    | '__root__'
+    | '/'
+    | '/admin'
+    | '/programs/$ticketId'
+    | '/queue/csm'
+    | '/queue/marketing'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AdminRoute: typeof AdminRoute
   ProgramsTicketIdRoute: typeof ProgramsTicketIdRoute
+  QueueCsmRoute: typeof QueueCsmRoute
+  QueueMarketingRoute: typeof QueueMarketingRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -58,6 +95,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin': {
+      id: '/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AdminRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/programs/$ticketId': {
       id: '/programs/$ticketId'
       path: '/programs/$ticketId'
@@ -65,12 +109,29 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProgramsTicketIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/queue/csm': {
+      id: '/queue/csm'
+      path: '/queue/csm'
+      fullPath: '/queue/csm'
+      preLoaderRoute: typeof QueueCsmRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/queue/marketing': {
+      id: '/queue/marketing'
+      path: '/queue/marketing'
+      fullPath: '/queue/marketing'
+      preLoaderRoute: typeof QueueMarketingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AdminRoute: AdminRoute,
   ProgramsTicketIdRoute: ProgramsTicketIdRoute,
+  QueueCsmRoute: QueueCsmRoute,
+  QueueMarketingRoute: QueueMarketingRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
