@@ -1403,6 +1403,7 @@ function SlackChannelField({
 
 function RaiseRequest({ ticketId, onChanged }: { ticketId: string; onChanged: () => void }) {
   const { data: templates = [] } = useQuery(requestTemplatesQuery);
+  const canLink = useCan("integrations.link"); // sending updates to a Slack channel takes the same permission as linking one
   const [open, setOpen] = useState(false);
   const [templateId, setTemplateId] = useState("");
   const [detail, setDetail] = useState("");
@@ -1467,12 +1468,14 @@ function RaiseRequest({ ticketId, onChanged }: { ticketId: string; onChanged: ()
             placeholder="What does the client need?"
           />
         </Field>
-        <SlackChannelField
-          ticketId={ticketId}
-          value={channel}
-          onChange={setChannel}
-          onCheck={setChannelCheck}
-        />
+        {canLink && (
+          <SlackChannelField
+            ticketId={ticketId}
+            value={channel}
+            onChange={setChannel}
+            onCheck={setChannelCheck}
+          />
+        )}
         <div className="flex items-center gap-2">
           <Button
             type="submit"

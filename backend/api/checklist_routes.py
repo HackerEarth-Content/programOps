@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import checklists, slack, slack_outbox
+from core import audit, checklists, slack, slack_outbox
 from core.access import Access, require_permission
 from core.checklists import ChecklistKind, ChecklistStatus, ItemSpec
 from core.database import get_session
@@ -207,11 +207,16 @@ async def list_requests(ticket_id: str, session: AsyncSession = Depends(get_sess
     return [_checklist_out(c, i) for c, i in await checklists.list_checklists(session, ticket_id, kind=ChecklistKind.REQUEST)]
 
 
-async def _resolve_channel(channel_id: str | None) -> tuple[str | None, str | None]:
-    """The channel id and its name as Slack reports it; nothing is saved against an id Slack doesn't know."""
+async def _resolve_channel(channel_id: str | None, access: Access) -> tuple[str | None, str | None]:
+    """The channel id and its name as Slack reports it; nothing is saved against an id Slack doesn't know. Pointing
+    the bot at a channel takes the same permission as linking a program's Slack channel; clearing one needs none."""
     channel_id = (channel_id or "").strip()
     if not channel_id:
         return None, None
+    if Permission.INTEGRATIONS_LINK not in access.permissions:
+        raise DomainError(
+            "slack_channel_not_allowed", "Only someone who can link integrations can send a request's updates to a Slack channel.", 403
+        )
     ok, value = await slack.channel_name(channel_id)
     if not ok:
         raise DomainError("slack_channel_invalid", value, 422)
@@ -236,11 +241,16 @@ async def create_request(
     session: AsyncSession = Depends(get_session),
     access: Access = Depends(require_permission(Permission.REQUEST_CREATE)),
 ) -> ChecklistOut:
-    channel_id, channel_name = await _resolve_channel(body.slack_channel_id)
+    channel_id, channel_name = await _resolve_channel(body.slack_channel_id, access)
     checklist = await checklists.create_request(
         session, access.user, ticket_id, template_id=body.template_id, title=body.title, detail=body.detail,
         owner_id=body.owner_id, due_at=body.due_at, slack_channel_id=channel_id, slack_channel_name=channel_name,
     )
+    if channel_id:
+        audit.record(
+            session, access.user, entity="checklist", entity_id=str(checklist.id), ticket_id=ticket_id,
+            action="request_updated", field="slack_channel_id", old=None, new=f"{channel_id} (#{channel_name})",
+        )
     due = f"\nDue: {checklist.due_at:%d %b %Y}" if checklist.due_at else ""
     await _notify(
         session, checklist, f"New special request: {checklist.title}{due}\nRaised by {access.user.name or access.user.email}"
@@ -261,7 +271,7 @@ async def patch_request(
     checklist = await checklists.get(session, ticket_id, checklist_id)
     changes = body.model_dump(exclude_unset=True)
     if "slack_channel_id" in changes:
-        changes["slack_channel_id"], changes["slack_channel_name"] = await _resolve_channel(changes["slack_channel_id"])
+        changes["slack_channel_id"], changes["slack_channel_name"] = await _resolve_channel(changes["slack_channel_id"], access)
     before = checklist.status
     await checklists.update_request(session, access.user, checklist, changes)
     if checklist.status != before:
