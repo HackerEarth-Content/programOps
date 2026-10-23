@@ -30,17 +30,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { HIRING_CAMPAIGN_TYPE, programsQueryOptions, STAGES, type Program } from "@/lib/api";
-import { HEALTH_REASONS, type Health } from "@/lib/ops-api";
+import { csmQueueQuery, HEALTH_REASONS, type Health } from "@/lib/ops-api";
 import { portfolioFullQuery, type Portfolio, type PortfolioProgram } from "@/lib/portfolio-api";
 import type { ProgramTab } from "@/lib/program-tabs";
 import { usePersistentState } from "@/lib/utils";
+import { NewInternalProgram } from "@/components/new-internal-program";
 import { WeeklyBriefButton } from "@/components/weekly-brief";
 import { systemStatusQuery } from "@/lib/system-api";
 
 type Row = { program: Program; card: PortfolioProgram | undefined };
 type View = "cards" | "matrix";
 type Sort = "urgency" | "registrations" | "name";
-type Kind = "all" | "hackathon" | "hiring";
+type Kind = "all" | "hackathon" | "hiring" | "internal";
 
 const HEALTH_TONE: Record<Health, Tone> = {
   good: "good",
@@ -59,12 +60,14 @@ const idx = (n: number) => ({ "--i": n }) as CSSProperties;
 const nameOf = (r: Row) => r.card?.name ?? r.program.display_name;
 const clientOf = (r: Row) => r.card?.client ?? r.program.company_name;
 const stageOf = (r: Row) => r.program.stage;
-const kindOf = (r: Row): Kind | "other" =>
+const kindOf = (r: Row): "hackathon" | "hiring" | "other" =>
   r.program.campaign_type === "Hackathon"
     ? "hackathon"
     : r.program.campaign_type === HIRING_CAMPAIGN_TYPE
       ? "hiring"
       : "other";
+const inTab = (r: Row, k: Kind) =>
+  k === "all" || (k === "internal" ? r.program.origin === "internal" : kindOf(r) === k);
 const isLive = (r: Row) => stageOf(r) === "Ongoing"; // ponytail: live = Ongoing stage; Redash "Is Live" is the precise upgrade
 const isOpen = (r: Row) => stageOf(r) !== "Closed";
 const regsOf = (r: Row) => r.card?.registrations ?? r.program.registrations ?? 0;
@@ -143,8 +146,9 @@ function HealthChip({ card }: { card: PortfolioProgram | undefined }) {
 }
 
 function Kpis({ data, rows, onKind }: { data: Portfolio; rows: Row[]; onKind: (k: Kind) => void }) {
+  const mine = useQuery(csmQueueQuery("mine")).data?.items.length;
   const live = rows.filter(isLive);
-  const liveBy = (k: Kind) => live.filter((r) => kindOf(r) === k).length;
+  const liveBy = (k: "hackathon" | "hiring") => live.filter((r) => kindOf(r) === k).length;
   const { health, action_items: ai } = data;
   const total = data.active_programs || 1;
   const stages = STAGES.filter((s) => data.stage_distribution[s]);
@@ -253,18 +257,18 @@ function Kpis({ data, rows, onKind }: { data: Portfolio; rows: Row[]; onKind: (k
       </Card>
       <Card interactive className="rise p-[18px]" style={idx(4)}>
         <div className="flex justify-between">
-          <MonoLabel>Escalations</MonoLabel>
+          <MonoLabel>Needs attention</MonoLabel>
           {ai.control_breaches > 0 && <Chip tone="critical">Triage required</Chip>}
         </div>
         <div className="mt-2 flex items-baseline gap-1.5">
-          <span className={`t-data-lg ${data.escalations ? "" : toneText("good")}`}>
-            <Num value={data.escalations} />
+          <span className={`t-data-lg ${data.open_items ? "" : toneText("good")}`}>
+            <Num value={data.open_items} />
           </span>
-          <span className="t-data-sm text-muted-foreground">items need you</span>
+          <span className="t-data-sm text-muted-foreground">open in the CSM queue</span>
         </div>
         <div className="mt-3 t-data-sm text-muted-foreground">
-          Across {data.programs.filter((p) => p.needs > 0).length} of {data.active_programs}{" "}
-          programs
+          {mine === undefined ? "All programs" : `${mine} on your programs`} · across{" "}
+          {data.programs.filter((p) => p.open_items > 0).length} of {data.active_programs} programs
           {ai.control_breaches ? ` · ${ai.control_breaches} control breaches` : ""}
         </div>
         <Link
@@ -450,7 +454,9 @@ export function ProgramsDirectory() {
   const [csm, setCsm] = usePersistentState("programops.directory.csm", "all");
   const [stage, setStage] = usePersistentState("programops.directory.stage", "all");
   const [kindValue, setKind] = usePersistentState("programops.directory.kind", "all");
-  const kind = (["hackathon", "hiring"].includes(kindValue) ? kindValue : "all") as Kind;
+  const kind = (
+    ["hackathon", "hiring", "internal"].includes(kindValue) ? kindValue : "all"
+  ) as Kind;
   const [sortValue, setSort] = usePersistentState("programops.directory.sort", "urgency");
   const sort = (
     ["urgency", "registrations", "name"].includes(sortValue) ? sortValue : "urgency"
@@ -473,12 +479,8 @@ export function ProgramsDirectory() {
     }));
   }, [programs.data, portfolio.data]);
   // The type tab scopes everything below it; Closed programs only show under the Closed stage pill.
-  const inKind = useMemo(
-    () => (kind === "all" ? rows : rows.filter((r) => kindOf(r) === kind)),
-    [rows, kind],
-  );
-  const kindCount = (k: Kind) =>
-    rows.filter((r) => isOpen(r) && (k === "all" || kindOf(r) === k)).length;
+  const inKind = useMemo(() => rows.filter((r) => inTab(r, kind)), [rows, kind]);
+  const kindCount = (k: Kind) => rows.filter((r) => isOpen(r) && inTab(r, k)).length;
   const csms = useMemo(
     () =>
       [...new Set(inKind.map((r) => r.program.csm_name).filter((c): c is string => !!c))].sort(),
@@ -526,6 +528,7 @@ export function ProgramsDirectory() {
         subtitle="Every active hackathon and hiring challenge, and what needs you on each."
         actions={
           <>
+            <NewInternalProgram />
             <WeeklyBriefButton />
             <Button variant="outline" disabled={!rows.length} onClick={() => exportCsv(shown)}>
               <Download /> Export portfolio CSV
@@ -573,6 +576,7 @@ export function ProgramsDirectory() {
                 ["all", "All programs"],
                 ["hackathon", "Hackathons"],
                 ["hiring", "Hiring challenges"],
+                ["internal", "Internal"],
               ] as const
             ).map(([id, label]) => ({ id, label: `${label} · ${kindCount(id)}` }))}
             renderLink={(t, props) => (

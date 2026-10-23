@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -152,9 +152,17 @@ def event_dates(info: dict) -> tuple[date | None, date | None]:
     return d(info.get("start")), d(info.get("end"))
 
 
+# Redash keeps filling in the last day or two after an event closes, so the final counts are fetched for a few more days.
+GRACE_DAYS_AFTER_END = 3
+
+
 def in_registration_period(estimate: dict, today: date) -> bool:
-    """Both ends must be known: a program with no dates is skipped rather than fetched forever."""
-    return bool(estimate["start"] and estimate["end"] and estimate["start"] <= today <= estimate["end"])
+    """From the start to GRACE_DAYS_AFTER_END after the end. Both ends must be known: a program with no dates is
+    skipped rather than fetched forever."""
+    return bool(
+        estimate["start"] and estimate["end"]
+        and estimate["start"] <= today <= estimate["end"] + timedelta(days=GRACE_DAYS_AFTER_END)
+    )
 
 
 async def _post_today(session, program: Program, cfg: ProgramRegistrationSettings, changed: list[dict], today: date) -> bool:

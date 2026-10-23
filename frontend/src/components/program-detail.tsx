@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import {
   ApiError,
   apiFetch,
+  checklistStatusQueryOptions,
   HIRING_CAMPAIGN_TYPE,
   peopleByName,
   programQueryOptions,
@@ -124,6 +125,9 @@ function Header({ program, full }: { program: Program; full: boolean }) {
   const { data: health } = useQuery(healthQuery(ticketId));
   const needs = useQuery(needsQuery(ticketId)).data;
   const sow = useQuery(programDocumentsQueryOptions(ticketId)).data?.sow?.details;
+  const stages = useQuery(checklistStatusQueryOptions).data?.find(
+    (c) => c.ticket_id === ticketId,
+  )?.stages;
   const canPost = useCan("update.post");
   const title = program.display_name;
   const linkedClient = program.company_name ?? program.blackops_account_name;
@@ -182,8 +186,12 @@ function Header({ program, full }: { program: Program; full: boolean }) {
           </div>
           <p className="text-[14px] text-ink-2">
             {[program.campaign_type, client].filter(Boolean).join(" · ")} ·{" "}
-            <span className="font-mono text-[12px]">HS-{ticketId}</span> · Updated{" "}
-            {formatDay(program.last_modified_at)}
+            {program.origin === "internal" ? (
+              <span className="text-[12px] font-medium">Internal</span>
+            ) : (
+              <span className="font-mono text-[12px]">HS-{ticketId}</span>
+            )}{" "}
+            · Updated {formatDay(program.last_modified_at)}
           </p>
           <p className="text-[14px]">
             {top ? `${top.title}.` : needs ? "Nothing needs you today." : "\u00a0"}
@@ -212,7 +220,11 @@ function Header({ program, full }: { program: Program; full: boolean }) {
           )}
         </div>
       </div>
-      <StageBar current={stageIndex(program.stage)} />
+      <StageBar
+        current={stageIndex(program.stage)}
+        progress={stages}
+        from={program.origin === "internal" ? 2 : 0}
+      />
     </header>
   );
 }

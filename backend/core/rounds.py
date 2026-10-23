@@ -1,7 +1,6 @@
 """Rounds of selection and their counts. Any program shape: the CSM adds, renames, reorders and removes rounds.
 
-Counts are append-only (a correction supersedes the old row), the latest standing row per round is "current",
-and every new round gets an assessment-readiness checklist from the readiness template.
+Counts are append-only (a correction supersedes the old row) and the latest standing row per round is "current".
 """
 
 from __future__ import annotations
@@ -15,10 +14,9 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import audit, checklists
-from core.checklists import ChecklistKind
+from core import audit
 from core.errors import DomainError
-from core.orm import ProgramDocument, ProgramRound, RoundCount, User
+from core.orm import ProgramDocument, ProgramRegistration, ProgramRound, RoundCount, User
 
 
 class RoundKind(StrEnum):
@@ -42,7 +40,6 @@ class RoundSource(StrEnum):
 
 
 ROUND_EDITABLE = frozenset({"name", "kind", "starts_on", "ends_on", "cutoff_rule", "cutoff_value", "status"})
-READINESS_TEMPLATE = "assessment_readiness"
 
 
 def _check_dates(starts_on: date | None, ends_on: date | None) -> None:
@@ -89,11 +86,6 @@ async def create_round(
     await session.flush()
     audit.record(session, actor, entity="round", entity_id=str(row.id), ticket_id=ticket_id,
                  action="round_added", new={"name": row.name, "kind": row.kind, "seq": seq})
-    template = await checklists.template_by_key(session, READINESS_TEMPLATE)
-    if template is not None:
-        await checklists.create_checklist(
-            session, actor, ticket_id=ticket_id, template=template, title=f"{row.name} readiness", round_id=row.id
-        )
     return row
 
 
@@ -106,6 +98,8 @@ async def update_round(session: AsyncSession, actor: User, row: ProgramRound, ch
         value = value.value if isinstance(value, StrEnum) else value
         if isinstance(value, str):
             value = value.strip() or None
+        if field == "name" and value is None:
+            raise DomainError("round_name_required", "A round needs a name.", 422)
         old = getattr(row, field)
         if old != value:
             audit.record(session, actor, entity="round", entity_id=str(row.id), ticket_id=row.ticket_id,
@@ -141,15 +135,57 @@ async def reorder(session: AsyncSession, actor: User, ticket_id: str, ordered_id
 # ---- counts --------------------------------------------------------------------
 
 
-def validate_counts(invited: int | None, attempted: int | None, submitted: int | None, cleared: int | None) -> None:
-    """Each step can't exceed the one before it: attempted <= invited, cleared and submitted <= attempted."""
+def validate_counts(invited: int | None, attempted: int | None, cleared: int | None, shortlisted: int | None) -> None:
+    """Each step can't exceed the one before it: attempted <= invited, cleared <= attempted, and shortlisted <= cleared
+    (or <= attempted / invited when the earlier steps weren't entered)."""
+    shortlist_cap, cap_label = next(
+        ((v, label) for v, label in ((cleared, "cleared"), (attempted, "attempted"), (invited, "invited")) if v is not None),
+        (None, ""),
+    )
     for label, part, whole, whole_label in (
         ("attempted", attempted, invited, "invited"),
         ("cleared", cleared, attempted, "attempted"),
-        ("submitted", submitted, attempted, "attempted"),
+        ("shortlisted", shortlisted, shortlist_cap, cap_label),
     ):
         if part is not None and whole is not None and part > whole:
             raise DomainError("counts_inconsistent", f"{label.capitalize()} ({part}) can't exceed {whole_label} ({whole}).", 422)
+
+
+async def _check_across_rounds(
+    session: AsyncSession, row: ProgramRound, invited: int | None, shortlisted: int | None
+) -> None:
+    """Rounds feed each other: a round can only invite people the round before shortlisted (the first round only
+    people who registered), and a shortlist can't drop below what the next round already invited."""
+    ordered = await list_rounds(session, row.ticket_id)
+    at = next((i for i, r in enumerate(ordered) if r.id == row.id), None)
+    if at is None:
+        return
+    before = ordered[at - 1] if at > 0 else None
+    after = ordered[at + 1] if at + 1 < len(ordered) else None
+    latest = await latest_counts(session, [r.id for r in (before, after) if r])
+    previous = latest.get(before.id) if before else None
+    following = latest.get(after.id) if after else None
+    if invited is not None:
+        if previous is not None and previous.shortlisted is not None and invited > previous.shortlisted:
+            raise DomainError(
+                "invited_exceeds_previous_shortlist",
+                f"Invited ({invited}) can't exceed the {previous.shortlisted} shortlisted in {before.name}.", 422,
+            )
+        if before is None:
+            registered = await session.scalar(
+                select(func.coalesce(func.sum(ProgramRegistration.registrations), 0)).where(ProgramRegistration.ticket_id == row.ticket_id)
+            )
+            if registered and invited > registered:
+                raise DomainError(
+                    "invited_exceeds_registrations",
+                    f"Invited ({invited}) can't exceed the {registered} registrations recorded for this program.", 422,
+                )
+    if shortlisted is not None and following is not None and following.invited is not None and shortlisted < following.invited:
+        raise DomainError(
+            "shortlist_below_next_invited",
+            f"{after.name} already invited {following.invited}, so shortlisted can't be {shortlisted}. "
+            f"Correct {after.name} first.", 422,
+        )
 
 
 async def add_counts(
@@ -160,15 +196,15 @@ async def add_counts(
     as_of: date,
     invited: int | None,
     attempted: int | None,
-    submitted: int | None,
     cleared: int | None,
     shortlisted: int | None,
     note: str | None,
     supersedes_id: int | None = None,
 ) -> RoundCount:
-    validate_counts(invited, attempted, submitted, cleared)
+    validate_counts(invited, attempted, cleared, shortlisted)
+    await _check_across_rounds(session, row, invited, shortlisted)
     entry = RoundCount(
-        round_id=row.id, as_of=as_of, invited=invited, attempted=attempted, submitted=submitted, cleared=cleared,
+        round_id=row.id, as_of=as_of, invited=invited, attempted=attempted, cleared=cleared,
         shortlisted=shortlisted, note=note, entered_by=actor.id, entered_by_name=actor.name or actor.email,
         supersedes_id=supersedes_id,
     )
@@ -178,7 +214,7 @@ async def add_counts(
         session, actor, entity="round_counts", entity_id=str(entry.id), ticket_id=row.ticket_id,
         action="counts_corrected" if supersedes_id else "counts_added",
         new={"round": row.name, "as_of": as_of.isoformat(), "invited": invited, "attempted": attempted,
-             "submitted": submitted, "cleared": cleared, "shortlisted": shortlisted},
+             "cleared": cleared, "shortlisted": shortlisted},
     )
     return entry
 
@@ -230,7 +266,6 @@ class FunnelStep:
     as_of: date | None
     invited: int | None
     attempted: int | None
-    submitted: int | None
     cleared: int | None
     shortlisted: int | None
     participation_pct: float | None  # attempted / invited
@@ -247,7 +282,7 @@ def funnel(rounds: Sequence[ProgramRound], counts: Mapping[int, RoundCount]) -> 
             FunnelStep(
                 round_id=r.id, name=r.name, seq=r.seq, status=r.status, as_of=c.as_of if c else None,
                 invited=c.invited if c else None, attempted=c.attempted if c else None,
-                submitted=c.submitted if c else None, cleared=c.cleared if c else None,
+                cleared=c.cleared if c else None,
                 shortlisted=c.shortlisted if c else None,
                 participation_pct=_pct(c.attempted, c.invited) if c else None,
                 clearance_pct=_pct(c.cleared, c.attempted) if c else None,

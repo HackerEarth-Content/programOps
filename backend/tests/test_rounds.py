@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from sqlalchemy import func, select
 
-from core.orm import Checklist, ProgramDocument, ProgramEvent, RoundCount
+from core.orm import Checklist, ProgramDocument, ProgramEvent, ProgramRegistration, RoundCount
 from core.permissions import Role
 
 
@@ -34,20 +36,6 @@ async def test_rounds_are_numbered_in_the_order_they_are_added(client_for, make_
     assert [r["seq"] for r in (first, second, finale)] == [1, 2, 3]
     assert first["cutoff_rule"] == "Score at least 60%" and first["cutoff_value"] == 60
     assert [r["name"] for r in (await client.get("/programs/t1/rounds")).json()] == ["Assessment", "Project", "Finale"]
-
-
-async def test_every_round_gets_a_readiness_checklist(client_for, make_user, make_program, templates, db):
-    await make_program("t1")
-    created = await add_round(await csm_client(client_for, make_user), "Assessment")
-    assert created["readiness"]["total"] == 5 and created["readiness"]["done"] == 0
-    async with db() as session:
-        gate = await session.scalar(select(Checklist).where(Checklist.round_id == created["id"]))
-    assert gate.kind == "readiness" and gate.title == "Assessment readiness"
-
-
-async def test_without_the_readiness_template_a_round_still_works(client_for, make_user, make_program):
-    await make_program("t1")
-    assert (await add_round(await csm_client(client_for, make_user)))["readiness"] is None
 
 
 async def test_a_round_cannot_end_before_it_starts(client_for, make_user, make_program):
@@ -81,14 +69,23 @@ async def test_editing_a_round_is_audited_per_field(client_for, make_user, make_
     assert sorted(e.field for e in events) == ["name", "status"]
 
 
-async def test_deleting_a_round_closes_the_gap_and_removes_its_readiness(client_for, make_user, make_program, templates, db):
+async def test_a_round_can_be_renamed_but_not_to_a_blank_name(client_for, make_user, make_program):
+    await make_program("t1")
+    client = await csm_client(client_for, make_user)
+    made = await add_round(client, "Round 1")
+    renamed = await client.patch(f"/programs/t1/rounds/{made['id']}", json={"name": "  Coding assessment  ", "kind": "assessment"})
+    assert renamed.status_code == 200 and renamed.json()["name"] == "Coding assessment"
+    blank = await client.patch(f"/programs/t1/rounds/{made['id']}", json={"name": "   "})
+    assert (blank.status_code, blank.json()["code"]) == (422, "round_name_required")
+    assert (await client.get("/programs/t1/rounds")).json()[0]["name"] == "Coding assessment"
+
+
+async def test_deleting_a_round_closes_the_gap_in_the_numbering(client_for, make_user, make_program):
     await make_program("t1")
     client = await csm_client(client_for, make_user)
     first, second, third = [await add_round(client, n) for n in ("A", "B", "C")]
     assert (await client.delete(f"/programs/t1/rounds/{second['id']}")).status_code == 204
     assert [(r["name"], r["seq"]) for r in (await client.get("/programs/t1/rounds")).json()] == [("A", 1), ("C", 2)]
-    async with db() as session:
-        assert await session.scalar(select(func.count()).select_from(Checklist).where(Checklist.round_id == second["id"])) == 0
 
 
 async def test_rounds_can_be_reordered_but_only_with_every_round(client_for, make_user, make_program):
@@ -128,10 +125,46 @@ async def test_each_step_cannot_exceed_the_one_before(client_for, make_user, mak
     await make_program("t1")
     client = await csm_client(client_for, make_user)
     made = await add_round(client)
-    for fields in ({"invited": 10, "attempted": 11}, {"attempted": 10, "cleared": 11}, {"attempted": 10, "submitted": 11}):
+    for fields in (
+        {"invited": 10, "attempted": 11}, {"attempted": 10, "cleared": 11}, {"attempted": 10, "shortlisted": 11},
+        {"attempted": 10, "cleared": 5, "shortlisted": 6}, {"invited": 10, "shortlisted": 11},
+    ):
         response = await add_counts(client, made["id"], **fields)
-        assert (response.status_code, response.json()["code"]) == (422, "counts_inconsistent")
+        assert (response.status_code, response.json()["code"]) == (422, "counts_inconsistent"), fields
     assert (await add_counts(client, made["id"], invited=-1)).status_code == 422
+    assert (await add_counts(client, made["id"], invited=10, attempted=9, cleared=5, shortlisted=5)).status_code == 201
+
+
+async def test_a_round_can_only_invite_who_the_previous_round_shortlisted(client_for, make_user, make_program):
+    await make_program("t1")
+    client = await csm_client(client_for, make_user)
+    first, second = await add_round(client, "Assessment"), await add_round(client, "Project")
+    await add_counts(client, first["id"], invited=1000, attempted=800, cleared=200, shortlisted=100)
+    too_many = await add_counts(client, second["id"], invited=101)
+    assert (too_many.status_code, too_many.json()["code"]) == (422, "invited_exceeds_previous_shortlist")
+    assert (await add_counts(client, second["id"], invited=100)).status_code == 201
+
+
+async def test_a_shortlist_cannot_drop_below_what_the_next_round_invited(client_for, make_user, make_program):
+    await make_program("t1")
+    client = await csm_client(client_for, make_user)
+    first, second = await add_round(client, "Assessment"), await add_round(client, "Project")
+    entry = (await add_counts(client, first["id"], invited=1000, attempted=800, cleared=200, shortlisted=100)).json()
+    await add_counts(client, second["id"], invited=100)
+    bad = await client.post(f"/programs/t1/rounds/{first['id']}/counts/{entry['id']}/supersede", json={"invited": 1000, "attempted": 800, "cleared": 200, "shortlisted": 90})
+    assert (bad.status_code, bad.json()["code"]) == (422, "shortlist_below_next_invited")
+
+
+async def test_the_first_round_cannot_invite_more_than_registered(client_for, make_user, make_program, db):
+    await make_program("t1")
+    async with db() as session:
+        session.add(ProgramRegistration(ticket_id="t1", date=date(2026, 10, 18), role="", registrations=500))
+        await session.commit()
+    client = await csm_client(client_for, make_user)
+    made = await add_round(client)
+    too_many = await add_counts(client, made["id"], invited=501)
+    assert (too_many.status_code, too_many.json()["code"]) == (422, "invited_exceeds_registrations")
+    assert (await add_counts(client, made["id"], invited=500)).status_code == 201
 
 
 async def test_only_a_csm_enters_counts(client_for, make_user, make_program):

@@ -127,7 +127,26 @@ function MoreButton({ onClick, children }: { onClick: () => void; children: Reac
 
 function NeedsToday({ ticketId }: { ticketId: string }) {
   const { data, isLoading, isError, refetch } = useQuery(needsQuery(ticketId));
-  const items = data ?? [];
+  const all = data ?? [];
+  const items = all.filter((i) => i.group !== "check");
+  const checks = all.filter((i) => i.group === "check");
+  const row = (i: (typeof all)[number]) => (
+    <ActionItem
+      key={i.id}
+      tone={i.severity}
+      title={i.title}
+      detail={i.detail}
+      action={
+        i.action ? (
+          <Button asChild size="sm" variant="outline" className="shrink-0">
+            <Link to="/programs/$ticketId" params={{ ticketId }} search={{ tab: parseTab(i.tab) }}>
+              {i.action}
+            </Link>
+          </Button>
+        ) : undefined
+      }
+    />
+  );
   return (
     <Section
       title="Needs you today"
@@ -139,32 +158,22 @@ function NeedsToday({ ticketId }: { ticketId: string }) {
         <Button size="sm" variant="outline" onClick={() => refetch()}>
           Couldn't load this list. Retry
         </Button>
-      ) : items.length === 0 ? (
-        <p className="text-[14px] text-ink-2">Nothing needs you today. All clear.</p>
       ) : (
-        <div className="flex flex-col gap-2">
-          {items.map((i) => (
-            <ActionItem
-              key={i.id}
-              tone={i.severity}
-              title={i.title}
-              detail={i.detail}
-              action={
-                i.action ? (
-                  <Button asChild size="sm" variant="outline" className="shrink-0">
-                    <Link
-                      to="/programs/$ticketId"
-                      params={{ ticketId }}
-                      search={{ tab: parseTab(i.tab) }}
-                    >
-                      {i.action}
-                    </Link>
-                  </Button>
-                ) : undefined
-              }
-            />
-          ))}
-        </div>
+        <>
+          {items.length === 0 ? (
+            <p className="text-[14px] text-ink-2">Nothing needs you today. All clear.</p>
+          ) : (
+            <div className="flex flex-col gap-2">{items.map(row)}</div>
+          )}
+          {checks.length > 0 && (
+            <div className="mt-4 space-y-2">
+              <p className="text-[12px] text-ink-3">
+                Data checks · the numbers disagree, nobody is waiting on these
+              </p>
+              <div className="flex flex-col gap-2">{checks.map(row)}</div>
+            </div>
+          )}
+        </>
       )}
     </Section>
   );
@@ -187,13 +196,13 @@ function Kpis({ ticketId }: { ticketId: string }) {
   if (!r) {
     return (
       <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
-        {[0, 1, 2, 3, 4].map((i) => (
+        {[0, 1, 2, 3].map((i) => (
           <Skeleton key={i} className="h-[112px]" />
         ))}
       </div>
     );
   }
-  const { registrations: reg, operations: ops, marketing: m } = r;
+  const { registrations: reg, marketing: m } = r;
   const screening = r.funnel.find((s) => s.as_of !== null);
   const attempted = screening?.attempted ?? null;
   const invited = screening?.invited ?? null;
@@ -248,16 +257,6 @@ function Kpis({ ticketId }: { ticketId: string }) {
         note={noneApproved ? "None approved yet" : `${m.approved} approved`}
         noteTone={noneApproved ? "warn" : "neutral"}
       />
-      <KpiTile
-        label="Delivery"
-        value={`${ops.phases_done} / ${ops.phases_total}`}
-        pct={ops.phases_total ? (100 * ops.phases_done) / ops.phases_total : 0}
-        bar={ops.projected_slip_days ? "warn" : "ok"}
-        note={
-          ops.projected_slip_days ? `${ops.projected_slip_days}d projected slip` : "Phases done"
-        }
-        noteTone={ops.projected_slip_days ? "warn" : "neutral"}
-      />
     </section>
   );
 }
@@ -268,21 +267,71 @@ function roundStatus(r: Round): { text: string; tone: StatusTone } {
   if (r.status === "done") return { text: "Done", tone: "ok" };
   const dates = r.starts_on || r.ends_on ? formatRange(r.starts_on, r.ends_on) : null;
   if (!dates) return { text: "Not scheduled", tone: "neutral" };
-  const gate = r.readiness;
   if (r.status === "live") return { text: `${dates} · live`, tone: "ok" };
   if (r.status === "evaluating") return { text: `${dates} · evaluating`, tone: "neutral" };
-  if (!gate) return { text: dates, tone: "neutral" };
-  if (gate.status === "ready" || gate.status === "done")
-    return { text: `${dates} · ready`, tone: "ok" };
-  const daysToStart = r.starts_on
-    ? Math.round((new Date(`${r.starts_on}T00:00:00+05:30`).getTime() - Date.now()) / 864e5)
-    : null;
-  return daysToStart !== null && daysToStart <= 3
-    ? { text: `${dates} · not ready`, tone: "danger" }
-    : { text: `${dates} · readiness ${gate.done}/${gate.total}`, tone: "neutral" };
+  return { text: dates, tone: "neutral" };
 }
 
-type Tile = { key: string; n: number; name: string; status: string; tone: StatusTone };
+type Tile = {
+  key: string;
+  n: number;
+  name: string;
+  status: string;
+  tone: StatusTone;
+  round?: Round;
+};
+
+const COUNT_LABELS = [
+  ["invited", "Invited"],
+  ["attempted", "Attempted"],
+  ["cleared", "Cleared"],
+  ["shortlisted", "Shortlisted"],
+] as const;
+
+/** One round: its status and the latest counts (or a flag that they are missing). */
+function RoundCard({ tile }: { tile: Tile }) {
+  const r = tile.round;
+  const c = r?.latest_counts ?? null;
+  const ended =
+    !!r &&
+    (r.status === "evaluating" || r.status === "done" || (!!r.ends_on && r.ends_on < today()));
+  return (
+    <div className="flex flex-col gap-2 rounded-[10px] bg-raised p-3.5">
+      <div>
+        <p className="text-[12px] text-ink-3">Round {tile.n}</p>
+        <p className="font-medium">{tile.name}</p>
+      </div>
+      <StatusDot tone={tile.tone} label={tile.status} hollow={tile.tone === "neutral"} />
+      {r && (
+        <>
+          {c ? (
+            <dl className="grid grid-cols-4 gap-1 border-t border-border pt-2">
+              {COUNT_LABELS.map(([key, label]) => (
+                <div key={key} className="min-w-0">
+                  <dt className="truncate text-[11px] text-ink-3">{label}</dt>
+                  <dd className="t-data-sm font-medium">
+                    {c[key] == null ? "–" : c[key].toLocaleString("en-US")}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : (
+            <p
+              className={cn(
+                "border-t border-border pt-2 text-[12px]",
+                ended ? "text-warn" : "text-ink-3",
+              )}
+            >
+              {ended ? "Counts missing: this round has ended" : "No counts yet"}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+const today = () => new Date().toISOString().slice(0, 10);
 
 function RoundPlan({ ticketId }: { ticketId: string }) {
   const rounds = useQuery(roundsQuery(ticketId));
@@ -294,7 +343,14 @@ function RoundPlan({ ticketId }: { ticketId: string }) {
     planned.length > 0
       ? planned.map((r, i) => {
           const s = roundStatus(r);
-          return { key: `round-${r.id}`, n: i + 1, name: r.name, status: s.text, tone: s.tone };
+          return {
+            key: `round-${r.id}`,
+            n: i + 1,
+            name: r.name,
+            status: s.text,
+            tone: s.tone,
+            round: r,
+          };
         })
       : (sow?.rounds ?? []).map((r, i) => ({
           key: `sow-${i}`,
@@ -317,7 +373,7 @@ function RoundPlan({ ticketId }: { ticketId: string }) {
     .filter(Boolean)
     .join(" · ");
   return (
-    <Section title="Round plan" meta={meta || undefined}>
+    <Section title="Rounds" meta={meta || undefined}>
       {rounds.isLoading ? (
         <Skeleton className="h-20" />
       ) : tiles.length === 0 ? (
@@ -325,13 +381,9 @@ function RoundPlan({ ticketId }: { ticketId: string }) {
           No rounds yet. Add them in the Rounds tab, or upload the SOW in Documents.
         </p>
       ) : (
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-2.5">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-2.5">
           {tiles.map((t) => (
-            <div key={t.key} className="flex flex-col gap-1.5 rounded-[10px] bg-raised p-3.5">
-              <p className="text-[12px] text-ink-3">Stage {t.n}</p>
-              <p className="font-medium">{t.name}</p>
-              <StatusDot tone={t.tone} label={t.status} hollow={t.tone === "neutral"} />
-            </div>
+            <RoundCard key={t.key} tile={t} />
           ))}
         </div>
       )}
@@ -346,10 +398,12 @@ type PendingWrite = { change: string; run: () => Promise<unknown> };
 /** Every change to the live HubSpot ticket goes through this: say what will change, ask, then run it. */
 function HubspotConfirm({
   pending,
+  internal,
   onClose,
   onDone,
 }: {
   pending: PendingWrite | null;
+  internal: boolean;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -364,10 +418,15 @@ function HubspotConfirm({
     <AlertDialog open={pending !== null} onOpenChange={(open) => !open && close()}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Change the HubSpot ticket?</AlertDialogTitle>
+          <AlertDialogTitle>
+            {internal ? "Change this program?" : "Change the HubSpot ticket?"}
+          </AlertDialogTitle>
           <AlertDialogDescription>
-            This will change the live ticket in HubSpot: <strong>{pending?.change}</strong>. It is
-            recorded in the audit log under your name. Are you sure you want to make this move?
+            {internal
+              ? "This will change the program in ProgramOps"
+              : "This will change the live ticket in HubSpot"}
+            : <strong>{pending?.change}</strong>. It is recorded in the audit log under your name.
+            Are you sure you want to make this move?
           </AlertDialogDescription>
         </AlertDialogHeader>
         {error && <p className="text-[13px] text-danger">{error}</p>}
@@ -390,7 +449,7 @@ function HubspotConfirm({
             }}
           >
             {busy && <Loader2 className="size-4 animate-spin" />}
-            Yes, change HubSpot
+            {internal ? "Yes, change it" : "Yes, change HubSpot"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -404,14 +463,17 @@ function StageChecklist({ ticketId, program }: { ticketId: string; program: Prog
   const qc = useQueryClient();
   const { data, isLoading, isError, refetch } = useQuery(checklistStatusQueryOptions);
   const status = useQuery(systemStatusQuery);
-  const canWrite = useCan("hubspot.write") && status.data?.hubspot_writeback_enabled === true;
+  const internal = program.origin === "internal";
+  // An internal hackathon has no ticket: its changes are saved in ProgramOps, so the HubSpot switch doesn't apply.
+  const canWrite =
+    useCan("hubspot.write") && (internal || status.data?.hubspot_writeback_enabled === true);
   const [pending, setPending] = useState<PendingWrite | null>(null);
   const [target, setTarget] = useState("");
   const [showAll, setShowAll] = useState(false);
   const c = data?.find((i) => i.ticket_id === ticketId);
   const current = stageKey(program.stage);
-  // What HubSpot itself has ticked: the completed list minus items we only infer from the SOW.
-  const ticked = c ? c.completed_items.filter((i) => !c.derived_items.includes(i)) : [];
+  // What HubSpot itself has ticked: the ticket's properties are the only source.
+  const ticked = c ? c.completed_items : [];
   const rows = c
     ? [
         ...c.completed_items.map((label) => ({ label, done: true })),
@@ -433,7 +495,11 @@ function StageChecklist({ ticketId, program }: { ticketId: string; program: Prog
   return (
     <Section
       title={`${program.stage} stage checklist`}
-      meta={c && rows.length > 0 ? `${c.completed_items.length} of ${rows.length} done` : undefined}
+      meta={
+        c && rows.length > 0
+          ? `${c.completed_items.length} of ${rows.length} done · ${Math.round((100 * c.completed_items.length) / rows.length)}%`
+          : undefined
+      }
     >
       {isLoading ? (
         <Skeleton className="h-28" />
@@ -446,7 +512,7 @@ function StageChecklist({ ticketId, program }: { ticketId: string; program: Prog
       ) : (
         <>
           <div
-            className="mb-3 h-1.5 overflow-hidden rounded-full bg-raised"
+            className="mb-3 h-2.5 overflow-hidden rounded-full bg-raised"
             role="progressbar"
             aria-label="Checklist progress"
             aria-valuenow={Math.round((100 * c.completed_items.length) / rows.length)}
@@ -454,14 +520,13 @@ function StageChecklist({ ticketId, program }: { ticketId: string; program: Prog
             aria-valuemax={100}
           >
             <div
-              className="h-1.5 rounded-full bg-ok"
+              className="h-2.5 rounded-full bg-ok transition-[width]"
               style={{ width: `${(100 * c.completed_items.length) / rows.length}%` }}
             />
           </div>
           <ul>
             {visible.map((row) => {
-              const fromSow = c.derived_items.includes(row.label);
-              const editable = canWrite && !fromSow;
+              const editable = canWrite;
               return (
                 <li key={row.label} className="border-t border-border">
                   <label
@@ -479,7 +544,6 @@ function StageChecklist({ ticketId, program }: { ticketId: string; program: Prog
                       className="size-[18px] accent-ok"
                     />
                     <span className="flex-1">{row.label}</span>
-                    {fromSow && <span className="text-[12px] text-ink-3">From the SOW</span>}
                     {!row.done && row.label === c.pending_items[0] && (
                       <span className="text-[12px] text-ink-3">Next</span>
                     )}
@@ -507,7 +571,9 @@ function StageChecklist({ ticketId, program }: { ticketId: string; program: Prog
             className="h-8 rounded-[8px] border border-border bg-surface px-2 text-[13px]"
           >
             <option value="">Choose a stage…</option>
-            {STAGES.filter((s) => s !== program.stage).map((s) => (
+            {STAGES.filter(
+              (s) => s !== program.stage && !(internal && (s === "New" || s === "Pre Sales")),
+            ).map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>
@@ -532,7 +598,12 @@ function StageChecklist({ ticketId, program }: { ticketId: string; program: Prog
           </Button>
         </div>
       )}
-      <HubspotConfirm pending={pending} onClose={() => setPending(null)} onDone={refresh} />
+      <HubspotConfirm
+        pending={pending}
+        internal={internal}
+        onClose={() => setPending(null)}
+        onDone={refresh}
+      />
     </Section>
   );
 }

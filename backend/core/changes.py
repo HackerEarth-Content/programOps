@@ -1,5 +1,5 @@
 """Change management for the timeline: a recorded change to a planned date, with the original, the revised date, the
-reason, who proposed it and who approved it. Approving applies the revised date to the round, phase or activity and
+reason, who proposed it and who approved it. Approving applies the revised date to the round or activity and
 opens the downstream tasks. The original date is never overwritten: it stays on the change record and in the audit trail.
 """
 
@@ -14,14 +14,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import audit, rounds
-from core.checklists import ChecklistStatus, Phase
 from core.communications import CommStatus
 from core.errors import DomainError
 from core.orm import (
-    Checklist,
     ParticipantComm,
     ProgramActivity,
-    ProgramPhase,
     ProgramRound,
     TimelineChange,
     TimelineChangeTask,
@@ -31,7 +28,6 @@ from core.orm import (
 
 class SubjectType(StrEnum):
     ROUND = "round"
-    PHASE = "phase"
     ACTIVITY = "activity"
 
 
@@ -44,7 +40,6 @@ class ChangeStatus(StrEnum):
 # Which date fields of each subject can be changed.
 FIELDS: dict[SubjectType, frozenset[str]] = {
     SubjectType.ROUND: frozenset({"starts_on", "ends_on"}),
-    SubjectType.PHASE: frozenset({"starts_on", "due_on"}),
     SubjectType.ACTIVITY: frozenset({"planned_date"}),
 }
 
@@ -55,7 +50,7 @@ def _now() -> datetime:
 
 @dataclass(frozen=True)
 class _Subject:
-    obj: ProgramRound | ProgramPhase | ProgramActivity
+    obj: ProgramRound | ProgramActivity
     label: str
 
 
@@ -66,13 +61,6 @@ async def _subject(session: AsyncSession, ticket_id: str, kind: SubjectType, sub
         if row is None or row.ticket_id != ticket_id:
             raise missing
         return _Subject(row, row.name)
-    if kind == SubjectType.PHASE:
-        if subject_id not in {p.value for p in Phase}:
-            raise missing
-        phase = await session.get(ProgramPhase, (ticket_id, subject_id))
-        if phase is None:
-            raise DomainError("phase_not_found", "Open the program's lifecycle first.", 404)
-        return _Subject(phase, subject_id.replace("_", " ").capitalize())
     row = await session.get(ProgramActivity, int(subject_id)) if subject_id.isdigit() else None
     if row is None or row.ticket_id != ticket_id:
         raise missing
@@ -132,7 +120,7 @@ async def propose(
 
 
 async def _downstream_tasks(session: AsyncSession, change: TimelineChange) -> list[TimelineChangeTask]:
-    """What a round's new dates put in question: its communications not yet sent and its readiness checklist."""
+    """What a round's new dates put in question: its communications not yet sent."""
     if change.subject_type != SubjectType.ROUND:
         return []
     round_id = int(change.subject_id)
@@ -144,16 +132,6 @@ async def _downstream_tasks(session: AsyncSession, change: TimelineChange) -> li
     ).all():
         tasks.append(TimelineChangeTask(
             change_id=change.id, label=f"Re-time the {comm.kind} for {comm.audience}", ref_type="communication", ref_id=str(comm.id)))
-    for gate in (
-        await session.scalars(
-            select(Checklist).where(
-                Checklist.round_id == round_id, Checklist.kind == "readiness",
-                Checklist.status.not_in([ChecklistStatus.READY.value, ChecklistStatus.DONE.value]),
-            )
-        )
-    ).all():
-        tasks.append(TimelineChangeTask(
-            change_id=change.id, label=f"Re-check {gate.title.lower()}", ref_type="checklist", ref_id=str(gate.id)))
     return tasks
 
 

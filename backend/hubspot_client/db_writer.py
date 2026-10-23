@@ -147,7 +147,8 @@ async def delete_missing_programs(hubspot_ids: set[str]) -> list[str]:
     Returns the deleted ticket ids; [] if the safety guard tripped."""
     session_factory = db_manager.session_factory()
     async with session_factory() as session:
-        existing = set((await session.execute(select(Program.ticket_id))).scalars())
+        # Internal hackathons have no ticket in HubSpot, so they are never "missing" from it.
+        existing = set((await session.execute(select(Program.ticket_id).where(Program.origin == "hubspot"))).scalars())
         gone = sorted(existing - hubspot_ids)
         if not gone:
             return []

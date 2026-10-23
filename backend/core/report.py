@@ -12,10 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import activities, channel_sync, checklists, communications, dependencies, relevant, rounds
 from core.channel_sync import ActivityRef
-from core.checklists import ChecklistKind, ChecklistStatus, Phase, PhaseStatus
+from core.checklists import ChecklistKind, ChecklistStatus
 from core.health import Health, health_of
-from core.needs import needs_for
+from core.csm_queue import items_for as queue_items_for
 from core.registration_window import load_estimate
+from hubspot_client.stage_checklist import pending_items
 from core.orm import (
     ParticipantComm,
     Program,
@@ -36,7 +37,6 @@ class FunnelStepOut(BaseModel):
     as_of: dt.date | None
     invited: int | None
     attempted: int | None
-    submitted: int | None
     cleared: int | None
     shortlisted: int | None
     participation_pct: float | None
@@ -83,8 +83,6 @@ class OperationsPart(BaseModel):
     projected_slip_days: int
     communications_planned: int
     communications_overdue: int
-    phases_done: int  # done or skipped
-    phases_total: int
     changes_proposed: int
     changes_approved: int
 
@@ -131,7 +129,6 @@ async def build_report(session: AsyncSession, ticket_id: str) -> ReportOut:
 
     deps = dependencies.impact(await dependencies.list_for(session, ticket_id), now.date())
     comms = await communications.list_for(session, ticket_id)
-    phases = await checklists.lifecycle(session, ticket_id)
     health = await health_of(session, ticket_id)
     changes = (await session.scalars(select(TimelineChange.status).where(TimelineChange.ticket_id == ticket_id))).all()
     open_requests = len(
@@ -167,8 +164,6 @@ async def build_report(session: AsyncSession, ticket_id: str) -> ReportOut:
             dependencies_open=deps.open, dependencies_overdue=deps.overdue, projected_slip_days=deps.projected_slip_days,
             communications_planned=sum(c.status == communications.CommStatus.PLANNED for c in comms),
             communications_overdue=sum(communications.is_overdue(c, now) for c in comms),
-            phases_done=sum(p.phase.status in (PhaseStatus.DONE, PhaseStatus.SKIPPED) for p in phases),
-            phases_total=len(phases),
             changes_proposed=sum(s == "proposed" for s in changes),
             changes_approved=sum(s == "approved" for s in changes),
         ),
@@ -180,7 +175,7 @@ async def build_report(session: AsyncSession, ticket_id: str) -> ReportOut:
 
 
 class OutstandingKind(StrEnum):
-    GATE_ITEM = "gate_item"  # a required closure checklist item not yet confirmed
+    GATE_ITEM = "gate_item"  # a Post Campaign checklist item HubSpot has not ticked yet
     REQUEST = "request"
     DEPENDENCY = "dependency"
 
@@ -199,19 +194,14 @@ class ClosureOut(BaseModel):
 
 
 async def build_closure(session: AsyncSession, ticket_id: str) -> ClosureOut:
-    """Ready to close when the closure gate is ready, no client dependency is open and no request is open."""
-    await checklists.ensure_lifecycle(session, ticket_id)
+    """Ready to close when HubSpot's Post Campaign checklist is fully ticked, no client dependency is open and no
+    request is open."""
     outstanding: list[OutstandingItem] = []
 
-    closure = next((p for p in await checklists.lifecycle(session, ticket_id) if p.phase.phase == Phase.CLOSURE.value), None)
-    gate_ready = True
-    if closure and closure.checklist is not None and closure.phase.status != PhaseStatus.SKIPPED:
-        for item in closure.items:
-            if item.required and item.confirmed_at is None:
-                outstanding.append(OutstandingItem(kind=OutstandingKind.GATE_ITEM, title=item.label, detail=item.instruction or None, ref_id=item.id))
-        gate_ready = closure.checklist.status in (ChecklistStatus.READY, ChecklistStatus.DONE) or not any(
-            i.required for i in closure.items
-        )
+    ticked = set(await session.scalar(select(Program.post_campaign_status).where(Program.ticket_id == ticket_id)) or [])
+    for label in pending_items("post_campaign", list(ticked)):
+        outstanding.append(OutstandingItem(kind=OutstandingKind.GATE_ITEM, title=label, detail="Post Campaign checklist in HubSpot"))
+    gate_ready = not any(o.kind == OutstandingKind.GATE_ITEM for o in outstanding)
 
     for checklist, _items in await checklists.list_checklists(session, ticket_id, kind=ChecklistKind.REQUEST):
         if checklist.status in (ChecklistStatus.OPEN, ChecklistStatus.IN_PROGRESS, ChecklistStatus.READY):
@@ -239,7 +229,7 @@ class PortfolioProgram(BaseModel):
     registrations: int
     target: int | None
     on_target: bool | None  # None: no target set; otherwise at or above the pace the window asks for
-    needs: int  # how many items the program's "needs you today" list holds
+    open_items: int  # this program's items in the CSM queue
 
 
 class ActionItems(BaseModel):
@@ -256,7 +246,7 @@ class PortfolioOut(BaseModel):
     stage_distribution: dict[str, int]
     programs_with_target: int
     programs_on_target: int
-    escalations: int  # the sum of every program's needs items, so it always matches the per-program lists
+    open_items: int  # the CSM queue's items across every open program (= its "All programs" count)
     action_items: ActionItems
     programs: list[PortfolioProgram]
 
@@ -279,7 +269,8 @@ async def build_portfolio(session: AsyncSession) -> PortfolioOut:
     cards: list[PortfolioProgram] = []
     stages: dict[str, int] = {}
     health_counts: dict[Health, int] = {h: 0 for h in Health}
-    breaches = pending = missing_utm = escalations = 0
+    breaches = pending = missing_utm = open_items = 0
+    now = dt.datetime.now(dt.timezone.utc)
     for program in programs:
         plan = await activities.list_for(session, program.ticket_id)
         summary = activities.summarize(plan)
@@ -299,8 +290,8 @@ async def build_portfolio(session: AsyncSession) -> PortfolioOut:
         pending += sum(a.status == activities.ActivityStatus.WIP and a.approved_at is None for a in plan)
         missing_utm += sum(a.utm is None and a.status in (activities.ActivityStatus.WIP, activities.ActivityStatus.LIVE) for a in plan)
         target = (cfg.target if cfg and cfg.target else None) or sow.get("registration_target")
-        needs = await needs_for(session, program)
-        escalations += len(needs)
+        queue = await queue_items_for(session, program, now)
+        open_items += len(queue)
         cards.append(
             PortfolioProgram(
                 ticket_id=program.ticket_id, name=program.display_name, client=program.company_name,
@@ -308,14 +299,14 @@ async def build_portfolio(session: AsyncSession) -> PortfolioOut:
                 marketing_live=summary.live, marketing_total=summary.total, awaiting_approval=summary.awaiting_approval,
                 registrations=registrations, target=target,
                 on_target=_on_target(registrations, target, await load_estimate(session, program), dt.datetime.now(dt.timezone.utc).date()),
-                needs=len(needs),
+                open_items=len(queue),
             )
         )
     targets = [c.target for c in cards if c.target]
     return PortfolioOut(
         active_programs=len(cards), health=health_counts, registrations_total=sum(c.registrations for c in cards),
         target_total=sum(targets) if targets else None, stage_distribution=stages,
-        programs_with_target=len(targets), programs_on_target=sum(c.on_target is True for c in cards), escalations=escalations,
+        programs_with_target=len(targets), programs_on_target=sum(c.on_target is True for c in cards), open_items=open_items,
         action_items=ActionItems(control_breaches=breaches, pending_approvals=pending, missing_utm=missing_utm),
         programs=cards,
     )

@@ -17,6 +17,7 @@ export type Stage = (typeof STAGES)[number];
 
 export type Program = {
   ticket_id: string;
+  origin: "hubspot" | "internal"; // internal: an internal hackathon made in ProgramOps, no HubSpot ticket
   subject: string;
   stage: Stage;
   campaign_type: string | null;
@@ -58,8 +59,9 @@ export type ChecklistStatus = {
   subject: string;
   stage: Stage;
   completed_items: string[];
-  derived_items: string[]; // done because of an uploaded document, not a HubSpot tick
   pending_items: string[];
+  /** How far each stage's HubSpot checklist is, in pipeline order (New and Closed have no checklist: total 0). */
+  stages: { key: string; label: string; done: number; total: number }[];
 };
 export type CampaignTypeCount = { campaign_type: string; count: number };
 export type EventCount = { event_name: string; stage: Stage; count: number };

@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from core import activities, dependencies
 from core.dependencies import DependencyStatus
-from core.orm import ClientDependency, ProgramActivity, ProgramEvent
+from core.orm import ClientDependency, Program, ProgramActivity, ProgramEvent
 from core.permissions import Role
 
 NOW = datetime.now(timezone.utc)
@@ -54,24 +54,24 @@ async def test_a_dependency_records_who_owes_it_who_follows_up_and_what_it_block
     client, user = await csm_client(client_for, make_user)
     response = await client.post("/programs/t1/dependencies", json={
         "title": "Brand guidelines", "kind": "asset", "client_owner": "Meera J. (client AM)", "owner_id": user.id,
-        "due_on": days(-5), "blocks_phase": "content_approval", "notes": "Needed for the email template",
+        "due_on": days(-5), "blocks_round_id": None, "notes": "Needed for the email template",
     })
     body = response.json()
     assert response.status_code == 201
-    assert (body["owner_name"], body["client_owner"], body["blocks_phase"]) == ("Priya S.", "Meera J. (client AM)", "content_approval")
+    assert (body["owner_name"], body["client_owner"]) == ("Priya S.", "Meera J. (client AM)")
     assert (body["overdue"], body["delay_days"], body["status"]) == (True, 5, "open")
 
 
 async def test_the_dependency_list_shows_the_impact_on_the_timeline(client_for, make_user, make_program):
     await make_program("t1")
     client, _ = await csm_client(client_for, make_user)
-    await client.post("/programs/t1/dependencies", json={"title": "Late asset", "due_on": days(-5), "blocks_phase": "content_approval"})
+    await client.post("/programs/t1/dependencies", json={"title": "Late asset", "due_on": days(-5)})
     await client.post("/programs/t1/dependencies", json={"title": "Later decision", "due_on": days(4)})
     body = (await client.get("/programs/t1/dependencies")).json()
     assert [i["title"] for i in body["items"]] == ["Late asset", "Later decision"]  # open, soonest due first
     assert body["impact"] == {
         "open": 2, "overdue": 1, "max_delay_days": 5, "projected_slip_days": 5,
-        "blocked_phases": ["content_approval"], "blocked_round_ids": [],
+        "blocked_round_ids": [],
     }
 
 
@@ -207,7 +207,7 @@ async def test_only_a_csm_approves_and_approving_applies_the_date_and_opens_down
     approved = (await client.post(f"/programs/t1/timeline-changes/{change['id']}/approve")).json()
     assert (approved["status"], approved["decided_by_name"], approved["original"]) == ("approved", "Priya S.", days(10))  # the original stays
     assert sorted(t["label"] for t in approved["tasks"]) == [
-        "Re-check assessment readiness", "Re-time the invitation for All registrants", "Update the landing page date",
+        "Re-time the invitation for All registrants", "Update the landing page date",
     ]
     assert (await client.get("/programs/t1/rounds")).json()[0]["starts_on"] == days(11)
 
@@ -257,19 +257,6 @@ async def test_approving_a_change_that_would_end_a_round_before_it_starts_is_ref
     assert (await client.get(f"/programs/t1/timeline-changes")).json()[0]["status"] == "proposed"
 
 
-async def test_a_phase_date_can_be_changed(client_for, make_user, make_program, templates):
-    await make_program("t1")
-    client, _ = await csm_client(client_for, make_user)
-    await client.patch("/programs/t1/lifecycle/launch_readiness", json={"due_on": days(5)})
-    change = (await client.post("/programs/t1/timeline-changes", json={
-        "subject_type": "phase", "subject_id": "launch_readiness", "field": "due_on", "revised": days(12), "reason": "Dry run slipped",
-    })).json()
-    assert (change["original"], change["label"]) == (days(5), "Launch readiness")
-    await client.post(f"/programs/t1/timeline-changes/{change['id']}/approve")
-    launch = next(p for p in (await client.get("/programs/t1/lifecycle")).json() if p["phase"] == "launch_readiness")
-    assert launch["due_on"] == days(12)
-
-
 async def test_an_activity_date_change_protects_the_row_from_a_poa_reread(client_for, make_user, make_program, db):
     await make_program("t1")
     async with db() as session:
@@ -315,38 +302,36 @@ async def test_the_change_history_is_audited(client_for, make_user, make_program
 # ---- closure ------------------------------------------------------------------------
 
 
-async def closure_gate(client):
-    return next(p for p in (await client.get("/programs/t1/lifecycle")).json() if p["phase"] == "closure")["gate"]
+POST_CAMPAIGN = ["Winners Announced", "Rewards Distribution", "Report Shared", "Feedback & Retro"]
 
 
-async def confirm_closure(client):
-    gate = await closure_gate(client)
-    for item in gate["items"]:
-        await client.put(f"/programs/t1/checklists/{gate['id']}/items/{item['id']}", json={"confirmed": True, "detail": "done"})
+async def tick_post_campaign(db, items):
+    async with db() as session:
+        (await session.get(Program, "t1")).post_campaign_status = items
+        await session.commit()
 
 
-async def test_a_new_program_is_not_ready_to_close_and_lists_what_is_outstanding(client_for, make_user, make_program, templates):
+async def test_a_new_program_is_not_ready_to_close_and_lists_what_hubspot_still_needs(client_for, make_user, make_program):
     await make_program("t1")
     client, _ = await csm_client(client_for, make_user)
     body = (await client.get("/programs/t1/closure")).json()
     assert body["ready_to_close"] is False and body["gate_ready"] is False
-    assert [o["title"] for o in body["outstanding"]] == [
-        "Final report shared with the client", "Winners confirmed with the client", "Prizes and rewards follow-ups raised",
-        "Feedback and retro held", "Outstanding deliverables cleared",
-    ]
+    assert [o["title"] for o in body["outstanding"]] == POST_CAMPAIGN
 
 
-async def test_confirming_the_closure_gate_makes_it_ready_when_nothing_else_is_open(client_for, make_user, make_program, templates):
+async def test_ticking_the_post_campaign_checklist_in_hubspot_makes_closure_ready(client_for, make_user, make_program, db):
     await make_program("t1")
     client, _ = await csm_client(client_for, make_user)
-    await confirm_closure(client)
+    await tick_post_campaign(db, POST_CAMPAIGN[:3])
+    assert [o["title"] for o in (await client.get("/programs/t1/closure")).json()["outstanding"]] == ["Feedback & Retro"]
+    await tick_post_campaign(db, POST_CAMPAIGN)
     assert (await client.get("/programs/t1/closure")).json() == {"ready_to_close": True, "gate_ready": True, "outstanding": []}
 
 
-async def test_an_open_request_or_client_dependency_blocks_closure(client_for, make_user, make_program, templates):
+async def test_an_open_request_or_client_dependency_blocks_closure(client_for, make_user, make_program, templates, db):
     await make_program("t1")
     client, _ = await csm_client(client_for, make_user)
-    await confirm_closure(client)
+    await tick_post_campaign(db, POST_CAMPAIGN)
     template = next(t for t in (await client.get("/checklist-templates")).json() if t["key"] == "content_to_marketing")
     request = (await client.post("/programs/t1/requests", json={"template_id": template["id"], "title": "Prize banner"})).json()
     blocker = (await client.post("/programs/t1/dependencies", json={"title": "Winner list sign-off", "client_owner": "Meera"})).json()
@@ -355,14 +340,6 @@ async def test_an_open_request_or_client_dependency_blocks_closure(client_for, m
     assert {(o["kind"], o["title"]) for o in body["outstanding"]} == {("request", "Prize banner"), ("dependency", "Winner list sign-off")}
     await client.patch(f"/programs/t1/requests/{request['id']}", json={"status": "declined"})
     await client.patch(f"/programs/t1/dependencies/{blocker['id']}", json={"status": "received"})
-    assert (await client.get("/programs/t1/closure")).json()["ready_to_close"] is True
-
-
-async def test_a_skipped_closure_phase_does_not_hold_the_program_open(client_for, make_user, make_program, templates):
-    await make_program("t1")
-    client, _ = await csm_client(client_for, make_user)
-    await client.get("/programs/t1/lifecycle")
-    await client.patch("/programs/t1/lifecycle/closure", json={"status": "skipped", "skip_reason": "Closed by account management"})
     assert (await client.get("/programs/t1/closure")).json()["ready_to_close"] is True
 
 

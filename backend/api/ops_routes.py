@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core import audit, changes, checklists, communications, dependencies
 from core.access import Access, require_permission
 from core.changes import ChangeStatus, SubjectType
-from core.checklists import Phase
 from core.communications import CommKind, CommStatus
 from core.database import get_session
 from core.deps import program_or_404
@@ -53,7 +52,6 @@ class DependencyIn(BaseModel):
     client_owner: str | None = None
     owner_id: str | None = None
     due_on: dt.date | None = None
-    blocks_phase: Phase | None = None
     blocks_round_id: int | None = None
     notes: str | None = None
 
@@ -67,7 +65,6 @@ class DependencyPatch(BaseModel):
     owner_id: str | None = None
     due_on: dt.date | None = None
     status: DependencyStatus | None = None
-    blocks_phase: Phase | None = None
     blocks_round_id: int | None = None
     notes: str | None = None
 
@@ -81,7 +78,6 @@ class DependencyOut(BaseModel):
     owner_name: str | None
     due_on: dt.date | None
     status: DependencyStatus
-    blocks_phase: str | None
     blocks_round_id: int | None
     notes: str | None
     received_at: dt.datetime | None
@@ -94,7 +90,6 @@ class ImpactOut(BaseModel):
     overdue: int
     max_delay_days: int
     projected_slip_days: int
-    blocked_phases: list[str]
     blocked_round_ids: list[int]
 
 
@@ -107,7 +102,7 @@ def _dep_out(dep: ClientDependency, today: dt.date) -> DependencyOut:
     delay = dependencies.delay_days(dep, today)
     return DependencyOut(
         id=dep.id, title=dep.title, kind=DependencyKind(dep.kind), client_owner=dep.client_owner, owner_id=dep.owner_id,
-        owner_name=dep.owner_name, due_on=dep.due_on, status=DependencyStatus(dep.status), blocks_phase=dep.blocks_phase,
+        owner_name=dep.owner_name, due_on=dep.due_on, status=DependencyStatus(dep.status),
         blocks_round_id=dep.blocks_round_id, notes=dep.notes, received_at=dep.received_at, overdue=delay > 0, delay_days=delay,
     )
 
@@ -226,7 +221,7 @@ async def patch_communication(
 
 class ChangeIn(BaseModel):
     subject_type: SubjectType
-    subject_id: str  # a round id, a phase key (e.g. "launch_readiness") or an activity id
+    subject_id: str  # a round id or an activity id
     field: str  # starts_on, ends_on, due_on or planned_date
     revised: dt.date
     reason: str = Field(min_length=1)
@@ -330,8 +325,6 @@ async def patch_change_task(
 async def get_report(ticket_id: str, session: AsyncSession = Depends(get_session)) -> ReportOut:
     """One view: registrations, relevant registrations, participation, submissions, shortlisting conversion,
     drop-offs, marketing control and operational health."""
-    await checklists.ensure_lifecycle(session, ticket_id)
-    await session.commit()
     return await build_report(session, ticket_id)
 
 

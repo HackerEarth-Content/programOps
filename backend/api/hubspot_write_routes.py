@@ -7,11 +7,12 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import audit
+from core import audit, internal_programs
 from core.access import Access, require_permission
 from core.database import get_session
 from core.deps import program_or_404
 from core.errors import DomainError
+from core.orm import Program
 from core.permissions import Permission
 from hubspot_client import writer
 from hubspot_client.stage_checklist import PROGRAM_STAGES
@@ -64,7 +65,15 @@ async def set_checklist_item(
     session: AsyncSession = Depends(get_session),
     access: Access = Depends(require_permission(Permission.HUBSPOT_WRITE)),
 ) -> ChecklistOut:
-    """Tick or untick a checklist item on the HubSpot ticket. 409 `hubspot_conflict` (with `current`) if it changed there."""
+    """Tick or untick a checklist item on the HubSpot ticket. 409 `hubspot_conflict` (with `current`) if it changed there.
+    An internal hackathon has no ticket: the change is saved in the portal instead (409 `program_conflict`)."""
+    program = await session.get(Program, ticket_id)
+    if program is not None and internal_programs.is_internal(program):
+        selected = internal_programs.set_checklist_item(
+            session, access.user, program, stage_key=body.stage_key, item=body.item, done=body.done, expected=body.expected
+        )
+        await session.commit()
+        return ChecklistOut(selected=selected)
     logger.info("hubspot_write_requested", ticket_id=ticket_id, user=access.user.email, action="checklist_item_set",
                 stage=body.stage_key, item=body.item, done=body.done)
     try:
@@ -86,7 +95,15 @@ async def move_stage(
     session: AsyncSession = Depends(get_session),
     access: Access = Depends(require_permission(Permission.HUBSPOT_WRITE)),
 ) -> StageOut:
-    """Move the HubSpot ticket to another stage. 409 `hubspot_conflict` (with `current_stage`) if it moved there."""
+    """Move the HubSpot ticket to another stage. 409 `hubspot_conflict` (with `current_stage`) if it moved there.
+    An internal hackathon has no ticket: the move is saved in the portal instead (409 `program_conflict`)."""
+    program = await session.get(Program, ticket_id)
+    if program is not None and internal_programs.is_internal(program):
+        stage_key = internal_programs.move_stage(
+            session, access.user, program, stage_key=body.stage_key, expected_stage_key=body.expected_stage_key
+        )
+        await session.commit()
+        return StageOut(stage_key=stage_key, stage_label=PROGRAM_STAGES[stage_key]["label"])
     logger.info("hubspot_write_requested", ticket_id=ticket_id, user=access.user.email, action="stage_moved",
                 old=body.expected_stage_key, new=body.stage_key)
     try:

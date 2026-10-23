@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
     await db_manager.initialize()
     async with db_manager.session_factory()() as session:
         await bootstrap_super_admins(session, settings.SUPER_ADMIN_EMAILS.split(","))
-        await ensure_default_templates(session)  # starter checklists: phase gates, readiness, content request
+        await ensure_default_templates(session)  # starter checklists: the content request
         await session.commit()
     scheduler = start_scheduler()
     yield

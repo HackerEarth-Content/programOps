@@ -45,6 +45,7 @@ export const setUserPermissions = (id: string, grants: string[], revokes: string
 // Mirrors core/permissions.py: label per permission, grouped for the editor.
 export const PERMISSION_LABELS: Record<string, string> = {
   "program.view": "View programs",
+  "program.create": "Start internal hackathons",
   "audit.view": "View audit log",
   "comment.add": "Add comments",
   "request.create": "Raise requests",
@@ -94,7 +95,6 @@ export type CsmKind =
   | "slack_unlinked"
   | "dependency_overdue"
   | "comm_overdue"
-  | "readiness_incomplete"
   | "change_awaiting_approval";
 export type Queue<K extends string> = { counts: Partial<Record<K, number>>; items: QueueItem<K>[] };
 
@@ -112,7 +112,6 @@ export const KIND_LABELS: Record<MarketingKind | CsmKind, string> = {
   slack_unlinked: "Slack not linked",
   dependency_overdue: "Dependency overdue",
   comm_overdue: "Communication overdue",
-  readiness_incomplete: "Readiness incomplete",
   change_awaiting_approval: "Change awaiting approval",
 };
 
@@ -193,7 +192,6 @@ export type FunnelStep = {
   as_of: string | null;
   invited: number | null;
   attempted: number | null;
-  submitted: number | null;
   cleared: number | null;
   shortlisted: number | null;
   participation_pct: number | null;
@@ -231,8 +229,6 @@ export type Report = {
     projected_slip_days: number;
     communications_planned: number;
     communications_overdue: number;
-    phases_done: number;
-    phases_total: number;
     changes_proposed: number;
     changes_approved: number;
   };
@@ -252,6 +248,7 @@ export type NeedsItem = {
   detail: string;
   action: string | null;
   tab: string;
+  group: "action" | "check"; // a check is a contradiction in the data, not work somebody is waiting on
 };
 export const needsQuery = (ticketId: string) =>
   queryOptions({
@@ -269,7 +266,6 @@ export const HEALTH_REASONS: Record<string, string> = {
   round_counts_missing: "A round has no counts",
   dependency_overdue: "A client dependency is overdue",
   communication_overdue: "A participant communication is overdue",
-  readiness_incomplete: "A round's readiness checklist is incomplete",
   change_awaiting_approval: "A timeline change awaits approval",
 };
 
@@ -279,7 +275,6 @@ export type Counts = {
   as_of: string;
   invited: number | null;
   attempted: number | null;
-  submitted: number | null;
   cleared: number | null;
   shortlisted: number | null;
   note: string | null;
@@ -298,7 +293,6 @@ export type Round = {
   status: "planned" | "live" | "evaluating" | "done";
   source: "sow" | "manual";
   latest_counts: Counts | null;
-  readiness: { checklist_id: number; status: string; done: number; total: number } | null;
 };
 export const roundsQuery = (ticketId: string) =>
   queryOptions({
@@ -309,7 +303,6 @@ export type CountsInput = {
   as_of: string;
   invited?: number;
   attempted?: number;
-  submitted?: number;
   cleared?: number;
   shortlisted?: number;
 };
