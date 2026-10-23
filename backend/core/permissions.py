@@ -16,6 +16,7 @@ class Role(StrEnum):
 
 class Permission(StrEnum):
     PROGRAM_VIEW = "program.view"
+    PROGRAM_CREATE = "program.create"  # start an internal hackathon
     AUDIT_VIEW = "audit.view"
     COMMENT_ADD = "comment.add"
     REQUEST_CREATE = "request.create"
@@ -46,7 +47,7 @@ ROLE_DEFAULTS: dict[Role, frozenset[Permission]] = {
     | {
         P.UPDATE_POST, P.ACTIVITY_EDIT, P.ACTIVITY_ADD_CHANNEL, P.ACTIVITY_APPROVE, P.METRICS_ENTER,
         P.RELEVANT_ENTER, P.REGISTRATIONS_MANAGE, P.ROUNDS_EDIT, P.COUNTS_ENTER, P.REQUEST_MANAGE,
-        P.REQUEST_TYPES_EDIT, P.HUBSPOT_WRITE, P.INTEGRATIONS_LINK,
+        P.REQUEST_TYPES_EDIT, P.HUBSPOT_WRITE, P.INTEGRATIONS_LINK, P.PROGRAM_CREATE,
     },
     Role.MARKETING: _INTERNAL_BASE
     | {P.UPDATE_POST, P.ACTIVITY_EDIT, P.ACTIVITY_ADD_CHANNEL, P.METRICS_ENTER},

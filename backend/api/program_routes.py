@@ -7,7 +7,7 @@ import time
 import uuid
 from urllib.parse import quote
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -27,12 +27,13 @@ from core.orm import (
     ProgramStageHistory,
 )
 from core.permissions import Permission
-from core import audit, redash_sync
+from core import audit, internal_programs, redash_sync
 from hubspot_client import pipeline
 from hubspot_client.client import get_user_names
 from hubspot_client.stage_checklist import (
     PROGRAM_STAGES,
     PROPERTY_LABELS,
+    STAGE_CHECKLISTS,
     pending_items,
     resolve_history_value,
 )
@@ -60,7 +61,27 @@ async def sync_status():
     return pipeline.state
 
 
-SOW_ITEMS = ("SOW Shared", "SOW Signed")  # Pre Sales checklist items an uploaded SOW satisfies
+class InternalProgramIn(BaseModel):
+    name: str = Field(min_length=1)
+    registration_start_date: date | None = None
+    event_end_date: date | None = None
+
+
+@router.post("/internal", status_code=201)
+async def create_internal_program(
+    body: InternalProgramIn,
+    session: AsyncSession = Depends(get_session),
+    access: Access = Depends(require_permission(Permission.PROGRAM_CREATE)),
+):
+    """Start an internal hackathon: a program with no HubSpot ticket and no feasibility step. It starts at Onboarding."""
+    program = await internal_programs.create_internal(
+        session, access.user, name=body.name, campaign_type="Hackathon",
+        registration_start_date=body.registration_start_date, event_end_date=body.event_end_date,
+    )
+    await session.commit()
+    return _serialize(program)
+
+
 @router.post("/redash/sync", status_code=202, dependencies=[Depends(require_permission(Permission.INTEGRATIONS_LINK))])
 async def redash_sync_now():
     """Reload registrations for every program in auto mode right now (override of the
@@ -91,6 +112,7 @@ async def list_programs(session: AsyncSession = Depends(get_session)):
         .options(
             load_only(
                 Program.ticket_id,
+                Program.origin,
                 Program.subject,
                 Program.stage_label,
                 Program.campaign_type,
@@ -235,8 +257,9 @@ async def stage_funnel(session: AsyncSession = Depends(get_session)):
 
 @router.get("/analytics/checklist-status")
 async def checklist_status(session: AsyncSession = Depends(get_session)):
-    """For each in-progress program, which checklist items are done vs.
-    still pending for its current stage -- answers "what is it pending on"."""
+    """For each program: the items HubSpot has ticked vs. still pending for its current stage ("what is it pending
+    on"), and `stages`: how far each stage's HubSpot checklist is (done / total), for the stage progress bar.
+    HubSpot's ticket properties are the only source."""
     rows = await session.execute(
         select(
             Program.ticket_id,
@@ -248,30 +271,24 @@ async def checklist_status(session: AsyncSession = Depends(get_session)):
             Program.post_campaign_status,
         )
     )
-    has_sow = set(
-        (await session.execute(select(ProgramDocument.ticket_id).where(ProgramDocument.kind == "sow"))).scalars()
-    )
     results = []
-    for ticket_id, subject, stage_label, pre_sales, onboarding, ongoing, post_campaign in rows.all():
+    for ticket_id, subject, stage_label, *ticked in rows.all():
+        by_stage = dict(zip(("pre_sales", "onboarding", "ongoing", "post_campaign"), ticked))
         stage_key = _STAGE_KEY_BY_LABEL.get(stage_label)
-        selected = {
-            "pre_sales": pre_sales,
-            "onboarding": onboarding,
-            "ongoing": ongoing,
-            "post_campaign": post_campaign,
-        }.get(stage_key, [])
-        # An uploaded SOW is evidence it was shared and signed, even when nobody
-        # ticked the HubSpot checkboxes -- count those items as done (flagged as derived).
-        derived = [i for i in SOW_ITEMS if stage_key == "pre_sales" and ticket_id in has_sow and i not in selected]
-        selected = [*selected, *derived]
+        selected = by_stage.get(stage_key) or []
+        stages = []
+        for key, stage in PROGRAM_STAGES.items():
+            labels = [label for label, _ in STAGE_CHECKLISTS[key][1]] if key in STAGE_CHECKLISTS else []
+            done = len(set(labels) & set(by_stage.get(key) or []))
+            stages.append({"key": key, "label": stage["label"], "done": done, "total": len(labels)})
         results.append(
             {
                 "ticket_id": ticket_id,
                 "subject": subject,
                 "stage": stage_label,
                 "completed_items": selected,
-                "derived_items": derived,
                 "pending_items": pending_items(stage_key, selected) if stage_key else [],
+                "stages": stages,
             }
         )
     return results
@@ -327,6 +344,7 @@ async def events(session: AsyncSession = Depends(get_session)):
 def _serialize(p: Program) -> dict:
     return {
         "ticket_id": p.ticket_id,
+        "origin": p.origin,
         "subject": p.subject,
         "stage": p.stage_label,
         "campaign_type": p.campaign_type,

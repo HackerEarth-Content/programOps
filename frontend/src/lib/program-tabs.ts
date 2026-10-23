@@ -22,7 +22,6 @@ const TAB_BY_KIND: Record<string, ProgramTab> = {
   control_breach: "marketing",
   approval_waiting: "marketing",
   counts_missing: "rounds",
-  readiness_incomplete: "rounds",
   request_due: "requests",
   update_due: "requests",
   slack_unlinked: "registrations",

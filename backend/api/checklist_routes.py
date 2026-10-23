@@ -1,4 +1,4 @@
-"""Checklist templates, special requests, item confirmation (any checklist), and the program lifecycle."""
+"""Checklist templates, special requests, and item confirmation (any checklist)."""
 
 from __future__ import annotations
 
@@ -9,12 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import checklists
+from core import checklists, slack, slack_outbox
 from core.access import Access, require_permission
-from core.checklists import ChecklistKind, ChecklistStatus, ItemSpec, Phase, PhaseStatus, phase_title
+from core.checklists import ChecklistKind, ChecklistStatus, ItemSpec
 from core.database import get_session
 from core.deps import program_or_404
-from core.orm import Checklist, ChecklistItem, ChecklistTemplate, ProgramPhase
+from core.errors import DomainError
+from core.orm import Checklist, ChecklistItem, ChecklistTemplate, Program
 from core.permissions import Permission
 
 templates_router = APIRouter(
@@ -92,14 +93,14 @@ class ChecklistOut(BaseModel):
     kind: ChecklistKind
     title: str
     status: ChecklistStatus
-    round_id: int | None
-    phase: str | None
     owner_id: str | None
     owner_name: str | None
     due_at: dt.datetime | None
     requested_by_name: str | None
     detail: str | None
     resolution: str | None
+    slack_channel_id: str | None
+    slack_channel_name: str | None
     created_at: dt.datetime
     updated_at: dt.datetime
     progress: ProgressOut
@@ -112,6 +113,7 @@ class RequestIn(BaseModel):
     detail: str | None = None
     owner_id: str | None = None
     due_at: dt.datetime | None = None
+    slack_channel_id: str | None = None  # updates for this request are posted there
 
 
 class RequestPatch(BaseModel):
@@ -123,6 +125,7 @@ class RequestPatch(BaseModel):
     due_at: dt.datetime | None = None
     resolution: str | None = None
     status: ChecklistStatus | None = None
+    slack_channel_id: str | None = None  # empty clears it
 
 
 class ConfirmIn(BaseModel):
@@ -130,32 +133,14 @@ class ConfirmIn(BaseModel):
     detail: str | None = None  # required for items marked needs_detail
 
 
-class PhaseOut(BaseModel):
-    phase: Phase
-    title: str
-    status: PhaseStatus
-    starts_on: dt.date | None
-    due_on: dt.date | None
-    completed_at: dt.datetime | None
-    completed_by_name: str | None
-    skip_reason: str | None
-    gate: ChecklistOut | None
-
-
-class PhasePatch(BaseModel):
-    status: PhaseStatus | None = None
-    starts_on: dt.date | None = None
-    due_on: dt.date | None = None
-    skip_reason: str | None = None
-
-
 def _checklist_out(checklist: Checklist, items: list[ChecklistItem]) -> ChecklistOut:
     p = checklists.progress(items)
     return ChecklistOut(
         id=checklist.id, kind=ChecklistKind(checklist.kind), title=checklist.title,
-        status=ChecklistStatus(checklist.status), round_id=checklist.round_id, phase=checklist.phase,
+        status=ChecklistStatus(checklist.status),
         owner_id=checklist.owner_id, owner_name=checklist.owner_name, due_at=checklist.due_at,
         requested_by_name=checklist.requested_by_name, detail=checklist.detail, resolution=checklist.resolution,
+        slack_channel_id=checklist.slack_channel_id, slack_channel_name=checklist.slack_channel_name,
         created_at=checklist.created_at, updated_at=checklist.updated_at, progress=ProgressOut(done=p.done, total=p.total),
         items=[ItemOut.model_validate(i) for i in items],
     )
@@ -222,6 +207,28 @@ async def list_requests(ticket_id: str, session: AsyncSession = Depends(get_sess
     return [_checklist_out(c, i) for c, i in await checklists.list_checklists(session, ticket_id, kind=ChecklistKind.REQUEST)]
 
 
+async def _resolve_channel(channel_id: str | None) -> tuple[str | None, str | None]:
+    """The channel id and its name as Slack reports it; nothing is saved against an id Slack doesn't know."""
+    channel_id = (channel_id or "").strip()
+    if not channel_id:
+        return None, None
+    ok, value = await slack.channel_name(channel_id)
+    if not ok:
+        raise DomainError("slack_channel_invalid", value, 422)
+    return channel_id, value
+
+
+async def _notify(session: AsyncSession, checklist: Checklist, text: str, key: str) -> None:
+    """Post to the request's own channel. Nothing is posted for a request with no channel."""
+    if not checklist.slack_channel_id:
+        return
+    program = await session.get(Program, checklist.ticket_id)
+    await slack_outbox.enqueue(
+        session, ticket_id=checklist.ticket_id, kind="request", body=f"{text}\nProgram: {program.display_name if program else checklist.ticket_id}",
+        dedupe_key=f"request:{checklist.id}:{key}", channel_id=checklist.slack_channel_id,
+    )
+
+
 @router.post("/requests", status_code=201, response_model=ChecklistOut)
 async def create_request(
     ticket_id: str,
@@ -229,9 +236,15 @@ async def create_request(
     session: AsyncSession = Depends(get_session),
     access: Access = Depends(require_permission(Permission.REQUEST_CREATE)),
 ) -> ChecklistOut:
+    channel_id, channel_name = await _resolve_channel(body.slack_channel_id)
     checklist = await checklists.create_request(
         session, access.user, ticket_id, template_id=body.template_id, title=body.title, detail=body.detail,
-        owner_id=body.owner_id, due_at=body.due_at,
+        owner_id=body.owner_id, due_at=body.due_at, slack_channel_id=channel_id, slack_channel_name=channel_name,
+    )
+    due = f"\nDue: {checklist.due_at:%d %b %Y}" if checklist.due_at else ""
+    await _notify(
+        session, checklist, f"New special request: {checklist.title}{due}\nRaised by {access.user.name or access.user.email}"
+        + (f"\n{checklist.detail}" if checklist.detail else ""), "created",
     )
     await session.commit()
     return _checklist_out(checklist, await checklists.items_of(session, checklist.id))
@@ -246,7 +259,18 @@ async def patch_request(
     access: Access = Depends(require_permission(Permission.REQUEST_MANAGE)),
 ) -> ChecklistOut:
     checklist = await checklists.get(session, ticket_id, checklist_id)
-    await checklists.update_request(session, access.user, checklist, body.model_dump(exclude_unset=True))
+    changes = body.model_dump(exclude_unset=True)
+    if "slack_channel_id" in changes:
+        changes["slack_channel_id"], changes["slack_channel_name"] = await _resolve_channel(changes["slack_channel_id"])
+    before = checklist.status
+    await checklists.update_request(session, access.user, checklist, changes)
+    if checklist.status != before:
+        await _notify(
+            session, checklist,
+            f"Special request {checklist.title} is now {checklist.status.replace('_', ' ')}"
+            + (f"\n{checklist.resolution}" if checklist.resolution else ""),
+            f"status:{checklist.status}:{checklist.updated_at.isoformat()}",
+        )
     await session.commit()
     return _checklist_out(checklist, await checklists.items_of(session, checklist.id))
 
@@ -260,43 +284,8 @@ async def confirm_item(
     session: AsyncSession = Depends(get_session),
     access: Access = Depends(require_permission(Permission.REQUEST_MANAGE)),
 ) -> ChecklistOut:
-    """Confirm (or take back) one item of any checklist: a request, a phase gate or a round's readiness."""
+    """Confirm (or take back) one item of any checklist: a special request's."""
     checklist = await checklists.get(session, ticket_id, checklist_id)
     await checklists.confirm_item(session, access.user, checklist, item_id, confirmed=body.confirmed, detail=body.detail)
     await session.commit()
     return _checklist_out(checklist, await checklists.items_of(session, checklist.id))
-
-
-# ---- lifecycle ---------------------------------------------------------------
-
-
-def _phase_out(view: checklists.PhaseView) -> PhaseOut:
-    phase: ProgramPhase = view.phase
-    return PhaseOut(
-        phase=Phase(phase.phase), title=phase_title(Phase(phase.phase)), status=PhaseStatus(phase.status),
-        starts_on=phase.starts_on, due_on=phase.due_on, completed_at=phase.completed_at,
-        completed_by_name=phase.completed_by_name, skip_reason=phase.skip_reason,
-        gate=_checklist_out(view.checklist, view.items) if view.checklist else None,
-    )
-
-
-@router.get("/lifecycle", response_model=list[PhaseOut])
-async def get_lifecycle(ticket_id: str, session: AsyncSession = Depends(get_session)) -> list[PhaseOut]:
-    """The seven phases in order, each with its gate checklist. The first call creates them."""
-    await checklists.ensure_lifecycle(session, ticket_id)
-    await session.commit()
-    return [_phase_out(v) for v in await checklists.lifecycle(session, ticket_id)]
-
-
-@router.patch("/lifecycle/{phase}", response_model=PhaseOut)
-async def patch_phase(
-    ticket_id: str,
-    phase: Phase,
-    body: PhasePatch,
-    session: AsyncSession = Depends(get_session),
-    access: Access = Depends(require_permission(Permission.REQUEST_MANAGE)),
-) -> PhaseOut:
-    await checklists.ensure_lifecycle(session, ticket_id)
-    await checklists.update_phase(session, access.user, ticket_id, phase, body.model_dump(exclude_unset=True))
-    await session.commit()
-    return next(_phase_out(v) for v in await checklists.lifecycle(session, ticket_id) if v.phase.phase == phase.value)

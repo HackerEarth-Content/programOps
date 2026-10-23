@@ -16,7 +16,7 @@ export type PortfolioProgram = {
   registrations: number;
   target: number | null;
   on_target: boolean | null;
-  needs: number;
+  open_items: number; // this program's items in the CSM queue
 };
 export type PortfolioActionItems = {
   control_breaches: number;
@@ -31,7 +31,7 @@ export type Portfolio = {
   stage_distribution: Record<string, number>;
   programs_with_target: number;
   programs_on_target: number;
-  escalations: number; // the sum of every program's needs items
+  open_items: number; // the CSM queue's items across every open program
   action_items: PortfolioActionItems;
   programs: PortfolioProgram[];
 };

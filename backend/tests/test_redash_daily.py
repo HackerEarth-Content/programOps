@@ -1,5 +1,5 @@
-"""The scheduled Redash fetch: once a day at the super admin's time, only programs in their registration period,
-today's count only, one Slack message per program per day."""
+"""The scheduled Redash fetch: once a day at the super admin's time, only programs in their registration period (and a
+few days after it, while the last counts settle), today's count only, one Slack message per program per day."""
 
 from __future__ import annotations
 
@@ -60,6 +60,35 @@ async def test_skips_programs_outside_the_registration_period_or_without_dates(d
     await redash_sync.run_all(NOW)
     assert await outbox(db) == [] and redash_sync.state["skipped"] == 1
     assert not redash_sync.in_registration_period({"start": None, "end": None}, TODAY)
+
+
+async def test_an_event_that_just_ended_is_still_refreshed_so_its_last_days_settle(db, make_program, monkeypatch):
+    await make_program("t1")
+    await link(db, start=date(2026, 10, 1), end=date(2026, 10, 17))  # ended two days ago
+    fake_fetch(monkeypatch, {date(2026, 10, 16): 844 + 1348, date(2026, 10, 17): 1009})
+    await redash_sync.run_all(NOW)
+    assert redash_sync.state["programs"] == 1 and redash_sync.state["skipped"] == 0
+    async with db() as session:
+        stored = {r.date: r.registrations for r in (await session.scalars(select(ProgramRegistration))).all()}
+    assert stored == {date(2026, 10, 16): 2192, date(2026, 10, 17): 1009}  # the late numbers arrive
+    assert await outbox(db) == []  # nothing is announced for a day that isn't today
+
+
+async def test_the_refresh_stops_after_the_grace_days(db, make_program, monkeypatch):
+    await make_program("t1")
+    await link(db, start=date(2026, 10, 1), end=date(2026, 10, 15))  # grace ran to 18 Oct; today is 19 Oct
+    fake_fetch(monkeypatch, {date(2026, 10, 15): 5})
+    await redash_sync.run_all(NOW)
+    assert redash_sync.state["programs"] == 0 and redash_sync.state["skipped"] == 1
+
+
+def test_the_period_runs_from_the_start_to_a_few_days_after_the_end():
+    window = {"start": date(2026, 10, 1), "end": date(2026, 10, 10)}
+    in_period = redash_sync.in_registration_period
+    assert not in_period(window, date(2026, 9, 30))
+    assert in_period(window, date(2026, 10, 1)) and in_period(window, date(2026, 10, 10))
+    assert in_period(window, date(2026, 10, 13))  # the last grace day
+    assert not in_period(window, date(2026, 10, 14))
 
 
 async def test_no_post_when_notify_is_off_or_today_is_unchanged(db, make_program, monkeypatch):

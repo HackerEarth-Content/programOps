@@ -10,7 +10,9 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Hash,
   History,
+  Pencil,
   Plus,
   RefreshCw,
   Trash2,
@@ -41,7 +43,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { useCan } from "@/lib/api";
+import { lookupSlackChannel, useCan } from "@/lib/api";
 import { assignmentsQuery } from "@/lib/marketing-api";
 import { formatDate, formatDateTime, timeAgo } from "@/lib/format";
 import {
@@ -69,10 +71,8 @@ import {
   decideChange,
   deleteRound,
   dependenciesQuery,
-  lifecycleQuery,
   patchCommunication,
   patchDependency,
-  patchPhase,
   patchRequest,
   patchRound,
   recordCounts,
@@ -94,8 +94,6 @@ import {
   roundsFullQuery,
   requestsFullQuery,
   type Dependency,
-  type Phase,
-  type PhaseStatus,
   type RequestStatus,
   type RoundKind,
   type RoundStatus,
@@ -209,13 +207,6 @@ const REQUEST_TONE: Record<RequestStatus, Tone> = {
   done: "good",
   declined: "serious",
 };
-const PHASE_TONE: Record<PhaseStatus, Tone> = {
-  not_started: "neutral",
-  in_progress: "info",
-  done: "good",
-  skipped: "serious",
-};
-
 function ErrorBox({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
   return (
     <div
@@ -294,8 +285,8 @@ export function ReportStrip({ ticketId }: { ticketId: string }) {
   const { data: r, isLoading, isError, error, refetch } = useQuery(reportQuery(ticketId));
   if (isLoading)
     return (
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5" aria-busy="true">
-        {Array.from({ length: 5 }, (_, i) => (
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4" aria-busy="true">
+        {Array.from({ length: 4 }, (_, i) => (
           <Skeleton key={i} className="h-24" />
         ))}
       </div>
@@ -312,7 +303,7 @@ export function ReportStrip({ ticketId }: { ticketId: string }) {
           </span>
         ))}
       </div>
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Kpi
           index={0}
           label="Registrations"
@@ -341,16 +332,6 @@ export function ReportStrip({ ticketId }: { ticketId: string }) {
           {...(m.breaches ? { tone: "critical" as const } : {})}
           sub={`${m.awaiting_approval} awaiting approval${m.breaches ? ` · ${m.breaches} breach` : ""}`}
         />
-        <Kpi
-          index={4}
-          label="Delivery"
-          value={`${ops.phases_done}/${ops.phases_total}`}
-          unit="phases"
-          {...(ops.projected_slip_days ? { tone: "warning" as const } : {})}
-          sub={
-            ops.projected_slip_days ? `${ops.projected_slip_days}d projected slip` : "On schedule"
-          }
-        />
       </div>
     </section>
   );
@@ -361,11 +342,7 @@ export function ReportStrip({ ticketId }: { ticketId: string }) {
 type FunnelStage = { key: string; name: string; value: number | null };
 const stagesOf = (s: FunnelStep): FunnelStage[] => [
   { key: "invited", name: "Invited", value: s.invited },
-  {
-    key: "took",
-    name: s.attempted != null || s.submitted == null ? "Attempted" : "Submitted",
-    value: s.attempted ?? s.submitted,
-  },
+  { key: "took", name: "Attempted", value: s.attempted },
   { key: "cleared", name: "Cleared", value: s.cleared },
   { key: "short", name: "Shortlisted", value: s.shortlisted },
 ];
@@ -451,7 +428,7 @@ function FunnelCard({
   );
 }
 
-const COUNT_FIELDS = ["invited", "attempted", "submitted", "cleared", "shortlisted"] as const;
+const COUNT_FIELDS = ["invited", "attempted", "cleared", "shortlisted"] as const;
 
 function CountsForm({
   initial,
@@ -462,7 +439,7 @@ function CountsForm({
   onCancel,
   withDate,
 }: {
-  initial?: CountsRow | null | undefined;
+  initial?: Omit<CountsRow, "supersedes_id"> | null | undefined;
   submitLabel: string;
   pending: boolean;
   error: unknown;
@@ -523,6 +500,10 @@ function CountsForm({
           <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional" />
         </Field>
       </div>
+      <p className="t-body-sm text-muted-foreground">
+        Attempted can't exceed invited, cleared can't exceed attempted, and shortlisted can't exceed
+        cleared. A round can only invite people the round before shortlisted.
+      </p>
       <div className="flex flex-wrap items-center gap-2">
         <Button type="submit" size="sm" disabled={pending || !any || !asOf}>
           {submitLabel}
@@ -647,11 +628,20 @@ function RoundCard({
 }) {
   const canEnter = useCan("counts.enter");
   const canEdit = useCan("rounds.edit");
-  const [open, setOpen] = useState<"history" | "enter" | null>(null);
+  const [open, setOpen] = useState<"history" | "enter" | "edit" | null>(null);
+  const [renaming, setRenaming] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const save = useMutation({
     mutationFn: ({ asOf, f }: { asOf: string; f: CountsFields }) =>
       recordCounts(ticketId, round.id, { as_of: asOf, ...f }),
+    onSuccess: () => {
+      setOpen(null);
+      onChanged();
+    },
+  });
+  const edit = useMutation({
+    mutationFn: ({ id, f }: { id: number; f: CountsFields }) =>
+      supersedeCounts(ticketId, round.id, id, f),
     onSuccess: () => {
       setOpen(null);
       onChanged();
@@ -671,7 +661,6 @@ function RoundCard({
     round.status === "done" ||
     (!!round.ends_on && round.ends_on < today());
   const missing = ended && !c;
-  const r = round.readiness;
   return (
     <Card className="rise" style={{ ["--i" as string]: index }}>
       <div className="flex flex-wrap items-start justify-between gap-3 px-[18px] pt-4">
@@ -703,6 +692,15 @@ function RoundCard({
                 </option>
               ))}
             </Select>
+            <Button
+              size="icon"
+              variant="ghost"
+              aria-label="Edit round"
+              aria-expanded={renaming}
+              onClick={() => setRenaming((v) => !v)}
+            >
+              <Pencil className="size-4" />
+            </Button>
             {confirmDelete ? (
               <>
                 <Button
@@ -732,6 +730,17 @@ function RoundCard({
       </div>
 
       <CardBody className="mt-3 space-y-3">
+        {renaming && (
+          <EditRound
+            ticketId={ticketId}
+            round={round}
+            onDone={() => {
+              setRenaming(false);
+              onChanged();
+            }}
+            onCancel={() => setRenaming(false)}
+          />
+        )}
         {missing && (
           <p className="flex items-center gap-2 rounded-[8px] bg-status-warning/15 px-3 py-2 t-body-sm text-warn">
             <AlertTriangle className="size-4 shrink-0" /> Counts missing: this round has ended and
@@ -751,24 +760,6 @@ function RoundCard({
             as of {formatDate(c.as_of)} · {c.entered_by_name}
           </p>
         )}
-        {r && (
-          <div>
-            <div className="mb-1 flex items-center justify-between">
-              <MonoLabel>Readiness checklist</MonoLabel>
-              <span className="flex items-center gap-1.5 t-data-sm">
-                {r.done}/{r.total}
-                <Chip tone={r.status === "done" || r.status === "ready" ? "good" : "warning"}>
-                  {label(r.status)}
-                </Chip>
-              </span>
-            </div>
-            <Bar
-              pct={r.total ? (r.done / r.total) * 100 : 0}
-              tone={r.done === r.total ? "good" : "warning"}
-              index={index}
-            />
-          </div>
-        )}
         <div className="flex flex-wrap gap-2">
           <Button
             size="sm"
@@ -783,16 +774,43 @@ function RoundCard({
               <ChevronRight className="size-3.5" />
             )}
           </Button>
+          {canEnter && c && (
+            <Button
+              size="sm"
+              variant="outline"
+              aria-expanded={open === "edit"}
+              onClick={() => setOpen(open === "edit" ? null : "edit")}
+            >
+              <Pencil className="size-3.5" /> Edit counts
+            </Button>
+          )}
           {canEnter && (
             <Button
               size="sm"
               variant={missing ? "default" : "outline"}
               onClick={() => setOpen(open === "enter" ? null : "enter")}
             >
-              <Plus className="size-3.5" /> Enter counts
+              <Plus className="size-3.5" /> {c ? "Add a new date" : "Enter counts"}
             </Button>
           )}
         </div>
+        {open === "edit" && c && (
+          <div className="space-y-1.5">
+            <p className="t-body-sm text-muted-foreground">
+              Editing the counts as of {formatDate(c.as_of)}. The earlier values stay in the counts
+              history.
+            </p>
+            <CountsForm
+              withDate={false}
+              initial={c}
+              submitLabel="Save changes"
+              pending={edit.isPending}
+              error={edit.isError ? edit.error : null}
+              onSubmit={(_, f) => edit.mutate({ id: c.id, f })}
+              onCancel={() => setOpen(null)}
+            />
+          </div>
+        )}
         {open === "enter" && (
           <CountsForm
             withDate
@@ -810,6 +828,93 @@ function RoundCard({
         <MutationError m={remove} />
       </CardBody>
     </Card>
+  );
+}
+
+/** Rename a round or change its kind, dates and cutoff. The audit trail records each field that changed. */
+function EditRound({
+  ticketId,
+  round,
+  onDone,
+  onCancel,
+}: {
+  ticketId: string;
+  round: RoundFull;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(round.name);
+  const [kind, setKind] = useState(round.kind as RoundKind);
+  const [starts, setStarts] = useState(round.starts_on ?? "");
+  const [ends, setEnds] = useState(round.ends_on ?? "");
+  const [rule, setRule] = useState(round.cutoff_rule ?? "");
+  const [value, setValue] = useState(round.cutoff_value == null ? "" : String(round.cutoff_value));
+  const save = useMutation({
+    mutationFn: () =>
+      patchRound(ticketId, round.id, {
+        name: name.trim(),
+        kind,
+        starts_on: starts || null,
+        ends_on: ends || null,
+        cutoff_rule: rule.trim() || null,
+        cutoff_value: value === "" ? null : Number(value),
+      }),
+    onSuccess: onDone,
+  });
+  return (
+    <form
+      className="surface-inset space-y-3 p-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        save.mutate();
+      }}
+    >
+      <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+        <Field label="Name" className="lg:col-span-2">
+          <Input value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
+        </Field>
+        <Field label="Kind">
+          <Select value={kind} onChange={(e) => setKind(e.target.value as RoundKind)}>
+            {ROUND_KINDS.map((k) => (
+              <option key={k}>{k}</option>
+            ))}
+          </Select>
+        </Field>
+        <span />
+        <Field label="Starts">
+          <Input type="date" value={starts} onChange={(e) => setStarts(e.target.value)} />
+        </Field>
+        <Field label="Ends">
+          <Input type="date" value={ends} min={starts} onChange={(e) => setEnds(e.target.value)} />
+        </Field>
+        <Field label="Cutoff rule">
+          <Input
+            value={rule}
+            onChange={(e) => setRule(e.target.value)}
+            placeholder="e.g. Score at least"
+          />
+        </Field>
+        <Field label="Cutoff value">
+          <Input
+            type="number"
+            inputMode="decimal"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+          />
+        </Field>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="submit" size="sm" disabled={save.isPending || !name.trim()}>
+          Save changes
+        </Button>
+        <Button type="button" size="sm" variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+        {save.isError && (
+          <span className="t-body-sm text-status-critical">{errorText(save.error)}</span>
+        )}
+      </div>
+    </form>
   );
 }
 
@@ -1129,6 +1234,13 @@ function RequestCard({
         <Chip tone={REQUEST_TONE[c.status]}>{label(c.status)}</Chip>
       </div>
       <CardBody className="mt-2 space-y-2">
+        {c.slack_channel_id && (
+          <p className="flex items-center gap-1.5 t-body-sm text-muted-foreground">
+            <Hash className="size-3.5" />
+            Updates go to {c.slack_channel_name ? `#${c.slack_channel_name}` : c.slack_channel_id}
+            <span className="t-data-sm">({c.slack_channel_id})</span>
+          </p>
+        )}
         {c.detail && (
           <p className="whitespace-pre-wrap text-[14px] text-secondary-foreground">{c.detail}</p>
         )}
@@ -1226,23 +1338,90 @@ function RequestCard({
   );
 }
 
+type ChannelCheck = { state: "idle" | "loading" | "ok" | "error"; text: string };
+
+/** A Slack channel ID with a live preview of the channel it points to, so nothing is saved against a wrong one. */
+function SlackChannelField({
+  ticketId,
+  value,
+  onChange,
+  onCheck,
+}: {
+  ticketId: string;
+  value: string;
+  onChange: (v: string) => void;
+  onCheck: (c: ChannelCheck) => void;
+}) {
+  const [check, setCheck] = useState<ChannelCheck>({ state: "idle", text: "" });
+  useEffect(() => {
+    const id = value.trim();
+    const next = (c: ChannelCheck) => {
+      setCheck(c);
+      onCheck(c);
+    };
+    if (!id) return next({ state: "idle", text: "" });
+    next({ state: "loading", text: "" });
+    let stale = false;
+    const t = setTimeout(() => {
+      lookupSlackChannel(ticketId, id)
+        .then((r) => !stale && next({ state: "ok", text: `#${r.channel_name}` }))
+        .catch((e) => !stale && next({ state: "error", text: errorText(e) }));
+    }, 400);
+    return () => {
+      stale = true;
+      clearTimeout(t);
+    };
+    // onCheck is a state setter from the parent; the lookup must only rerun when the id changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, ticketId]);
+  return (
+    <Field label="Slack channel ID (optional)">
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="C0123456789"
+        className="font-mono"
+        aria-describedby="slack-channel-preview"
+      />
+      <p
+        id="slack-channel-preview"
+        aria-live="polite"
+        className={cn(
+          "mt-1 min-h-5 t-body-sm",
+          check.state === "error" ? "text-status-critical" : "text-muted-foreground",
+        )}
+      >
+        {check.state === "loading" && "Looking up the channel…"}
+        {check.state === "ok" && `Posts to ${check.text}`}
+        {check.state === "error" && check.text}
+        {check.state === "idle" &&
+          "Updates for this request are posted there. Leave empty for none."}
+      </p>
+    </Field>
+  );
+}
+
 function RaiseRequest({ ticketId, onChanged }: { ticketId: string; onChanged: () => void }) {
   const { data: templates = [] } = useQuery(requestTemplatesQuery);
   const [open, setOpen] = useState(false);
   const [templateId, setTemplateId] = useState("");
   const [detail, setDetail] = useState("");
   const [due, setDue] = useState("");
+  const [channel, setChannel] = useState("");
+  const [channelCheck, setChannelCheck] = useState<ChannelCheck>({ state: "idle", text: "" });
   const raise = useMutation({
     mutationFn: () =>
       raiseRequest(ticketId, {
         template_id: Number(templateId),
         detail: detail.trim() || null,
         due_at: due ? `${due}T00:00:00` : null,
+        slack_channel_id: channel.trim() || null,
       }),
     onSuccess: () => {
       setTemplateId("");
       setDetail("");
       setDue("");
+      setChannel("");
       setOpen(false);
       onChanged();
     },
@@ -1288,8 +1467,22 @@ function RaiseRequest({ ticketId, onChanged }: { ticketId: string; onChanged: ()
             placeholder="What does the client need?"
           />
         </Field>
+        <SlackChannelField
+          ticketId={ticketId}
+          value={channel}
+          onChange={setChannel}
+          onCheck={setChannelCheck}
+        />
         <div className="flex items-center gap-2">
-          <Button type="submit" size="sm" disabled={!templateId || raise.isPending}>
+          <Button
+            type="submit"
+            size="sm"
+            disabled={
+              !templateId ||
+              raise.isPending ||
+              (channel.trim() !== "" && channelCheck.state !== "ok")
+            }
+          >
             Raise request
           </Button>
           <Button type="button" size="sm" variant="ghost" onClick={() => setOpen(false)}>
@@ -1301,201 +1494,6 @@ function RaiseRequest({ ticketId, onChanged }: { ticketId: string; onChanged: ()
     </Card>
   );
 }
-
-function LifecycleCard({ ticketId, onChanged }: { ticketId: string; onChanged: () => void }) {
-  const canManage = useCan("request.manage");
-  const { data, isLoading, isError, error, refetch } = useQuery(lifecycleQuery(ticketId));
-  const [openPhase, setOpenPhase] = useState<string | null>(null);
-  const [skipping, setSkipping] = useState<string | null>(null);
-  const [finishing, setFinishing] = useState<string | null>(null);
-  const [reason, setReason] = useState("");
-  const patch = useMutation({
-    mutationFn: ({ phase, status, skip }: { phase: string; status: PhaseStatus; skip?: string }) =>
-      patchPhase(ticketId, phase, { status, skip_reason: skip ?? null }),
-    onSuccess: () => {
-      setSkipping(null);
-      setFinishing(null);
-      setReason("");
-      onChanged();
-    },
-  });
-  const confirm = useMutation({
-    mutationFn: ({
-      cid,
-      itemId,
-      on,
-      detail,
-    }: {
-      cid: number;
-      itemId: number;
-      on: boolean;
-      detail?: string | undefined;
-    }) => confirmChecklistItem(ticketId, cid, itemId, on, detail),
-    onSuccess: onChanged,
-  });
-  return (
-    <Card>
-      <CardHeader
-        title="Lifecycle phases"
-        divided
-        meta={
-          data && `${data.filter((p: Phase) => p.status === "done").length}/${data.length} done`
-        }
-      />
-      {isLoading ? (
-        <div className="p-[18px]">
-          <Skeleton className="h-40 w-full" />
-        </div>
-      ) : isError || !data ? (
-        <div className="p-[18px]">
-          <ErrorBox error={error} onRetry={() => void refetch()} />
-        </div>
-      ) : (
-        <ol className="divide-y divide-border">
-          {data.map((p, i) => {
-            const expanded = openPhase === p.phase;
-            const g = p.gate;
-            return (
-              <li key={p.phase} className="px-[18px] py-2.5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="t-data-sm w-4 text-muted-foreground">{i + 1}</span>
-                  <button
-                    type="button"
-                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[14px] font-medium"
-                    aria-expanded={expanded}
-                    disabled={!g}
-                    onClick={() => setOpenPhase(expanded ? null : p.phase)}
-                  >
-                    {g &&
-                      (expanded ? (
-                        <ChevronDown className="size-3.5 shrink-0" />
-                      ) : (
-                        <ChevronRight className="size-3.5 shrink-0" />
-                      ))}
-                    <span className="truncate">{p.title}</span>
-                  </button>
-                  {g && (
-                    <span className="t-data-sm text-muted-foreground">
-                      {g.progress.done}/{g.progress.total}
-                    </span>
-                  )}
-                  {p.due_on && (
-                    <span className="t-data-sm text-muted-foreground">
-                      <Due at={p.due_on} open={p.status !== "done" && p.status !== "skipped"} />
-                    </span>
-                  )}
-                  <Chip tone={PHASE_TONE[p.status]}>{titleCase(p.status)}</Chip>
-                </div>
-                {p.status === "skipped" && p.skip_reason && (
-                  <p className="ml-6 t-body-sm text-muted-foreground">Skipped: {p.skip_reason}</p>
-                )}
-                {expanded && g && (
-                  <div className="ml-6 mt-1.5">
-                    <ul className="divide-y divide-border/60">
-                      {g.items.map((item) => (
-                        <ItemRow
-                          key={item.id}
-                          item={item}
-                          disabled={!canManage || confirm.isPending}
-                          onConfirm={(on, detail) =>
-                            confirm.mutate({ cid: g.id, itemId: item.id, on, detail })
-                          }
-                        />
-                      ))}
-                    </ul>
-                    {canManage && (
-                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                        {p.status !== "in_progress" && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={patch.isPending}
-                            onClick={() => patch.mutate({ phase: p.phase, status: "in_progress" })}
-                          >
-                            Start
-                          </Button>
-                        )}
-                        {p.status !== "done" && (
-                          <Button
-                            size="sm"
-                            variant="success"
-                            disabled={patch.isPending}
-                            onClick={() =>
-                              g.progress.done < g.progress.total
-                                ? setFinishing(p.phase)
-                                : patch.mutate({ phase: p.phase, status: "done" })
-                            }
-                          >
-                            Mark done
-                          </Button>
-                        )}
-                        {finishing === p.phase && (
-                          <span className="flex flex-wrap items-center gap-1.5 t-body-sm text-status-warning">
-                            {g.progress.total - g.progress.done} checklist item(s) not confirmed.
-                            <Button
-                              size="sm"
-                              variant="success"
-                              disabled={patch.isPending}
-                              onClick={() => patch.mutate({ phase: p.phase, status: "done" })}
-                            >
-                              Mark done anyway
-                            </Button>
-                            <Button size="sm" variant="ghost" onClick={() => setFinishing(null)}>
-                              Cancel
-                            </Button>
-                          </span>
-                        )}
-                        {p.status !== "skipped" && (
-                          <Button size="sm" variant="ghost" onClick={() => setSkipping(p.phase)}>
-                            Skip
-                          </Button>
-                        )}
-                        {skipping === p.phase && (
-                          <form
-                            className="flex min-w-48 flex-1 gap-2"
-                            onSubmit={(e) => {
-                              e.preventDefault();
-                              patch.mutate({
-                                phase: p.phase,
-                                status: "skipped",
-                                skip: reason.trim(),
-                              });
-                            }}
-                          >
-                            <Input
-                              autoFocus
-                              value={reason}
-                              onChange={(e) => setReason(e.target.value)}
-                              placeholder="Reason for skipping"
-                              aria-label="Skip reason"
-                            />
-                            <Button
-                              type="submit"
-                              size="sm"
-                              disabled={!reason.trim() || patch.isPending}
-                            >
-                              Skip phase
-                            </Button>
-                          </form>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ol>
-      )}
-      <div className="px-[18px] pb-3">
-        <MutationError m={patch} />
-        <MutationError m={confirm} />
-      </div>
-    </Card>
-  );
-}
-
-// ---- right column: composer + feed -----------------------------------------------------------
 
 function Composer({ ticketId, onChanged }: { ticketId: string; onChanged: () => void }) {
   const canPost = useCan("update.post");
@@ -2078,7 +2076,6 @@ function Communications({ ticketId, onChanged }: { ticketId: string; onChanged: 
 const CHANGE_TONE = { proposed: "warning", approved: "good", rejected: "serious" } as const;
 const FIELDS_FOR: Record<SubjectType, string[]> = {
   round: ["starts_on", "ends_on"],
-  phase: ["starts_on", "due_on"],
   activity: ["planned_date"],
 };
 
@@ -2191,7 +2188,6 @@ function TimelineChanges({ ticketId, onChanged }: { ticketId: string; onChanged:
   const canPropose = useCan("request.create");
   const q = useQuery(timelineChangesQuery(ticketId));
   const rounds = useQuery(roundsQuery(ticketId));
-  const phases = useQuery(lifecycleQuery(ticketId));
   const acts = useQuery(activitiesQuery(ticketId));
   const [type, setType] = useState<SubjectType>("round");
   const [subject, setSubject] = useState("");
@@ -2201,9 +2197,7 @@ function TimelineChanges({ ticketId, onChanged }: { ticketId: string; onChanged:
   const subjects: { id: string; name: string }[] =
     type === "round"
       ? (rounds.data ?? []).map((r) => ({ id: String(r.id), name: r.name }))
-      : type === "phase"
-        ? (phases.data ?? []).map((p) => ({ id: p.phase, name: p.title }))
-        : (acts.data ?? []).map((a) => ({ id: String(a.id), name: `${a.code} · ${a.title}` }));
+      : (acts.data ?? []).map((a) => ({ id: String(a.id), name: `${a.code} · ${a.title}` }));
   const add = useMutation({
     mutationFn: () =>
       proposeChange(ticketId, {
@@ -2256,7 +2250,6 @@ function TimelineChanges({ ticketId, onChanged }: { ticketId: string; onChanged:
                 }}
               >
                 <option value="round">Round</option>
-                <option value="phase">Phase</option>
                 <option value="activity">Activity</option>
               </Select>
               <Select
@@ -2313,10 +2306,9 @@ function TimelineChanges({ ticketId, onChanged }: { ticketId: string; onChanged:
   );
 }
 
-type OpsSection = "requests" | "phases" | "blockers";
+type OpsSection = "requests" | "blockers";
 const OPS_SECTIONS: { id: OpsSection; label: string }[] = [
   { id: "requests", label: "Special requests" },
-  { id: "phases", label: "Phase checklist" },
   { id: "blockers", label: "Dependencies & changes" },
 ];
 
@@ -2326,7 +2318,6 @@ export function ProgramRequests({ ticketId }: { ticketId: string }) {
   const canRaise = useCan("request.create");
   const [section, setSection] = useState<OpsSection>("requests");
   const deps = useQuery(dependenciesQuery(ticketId)).data;
-  const phases = useQuery(lifecycleQuery(ticketId)).data;
   const changes = useQuery(timelineChangesQuery(ticketId)).data;
   const comms = useQuery(communicationsQuery(ticketId)).data;
   const feed = useInfiniteQuery(updatesFeedQuery(ticketId));
@@ -2338,7 +2329,6 @@ export function ProgramRequests({ ticketId }: { ticketId: string }) {
   const overdueRequests = open.filter((c) => isPast(c.due_at)).length;
   const proposed = changes?.filter((c) => c.status === "proposed").length ?? 0;
   const lateComms = comms?.filter((c) => c.overdue && c.status === "planned").length ?? 0;
-  const phasesDone = phases?.filter((p) => p.status === "done").length ?? 0;
   const attention = (deps?.impact.overdue ?? 0) + proposed + lateComms;
   const resolved = requests.data?.filter((c) => !isOpen(c)) ?? [];
   const card = (c: RequestFull) => (
@@ -2374,17 +2364,11 @@ export function ProgramRequests({ ticketId }: { ticketId: string }) {
           index={2}
         />
         <Kpi
-          label="Phases done"
-          value={phases ? `${phasesDone}/${phases.length}` : "–"}
-          sub="lifecycle checklist"
-          index={3}
-        />
-        <Kpi
           label="Changes to decide"
           value={proposed}
           tone={proposed ? "warning" : undefined}
           sub={lateComms ? `${lateComms} overdue comms` : "timeline changes"}
-          index={4}
+          index={3}
         />
       </div>
       <div className="overflow-x-auto pb-1">
@@ -2435,11 +2419,6 @@ export function ProgramRequests({ ticketId }: { ticketId: string }) {
               hint="Special asks from the client or team show up here with a confirmation checklist."
             />
           )}
-        </div>
-      )}
-      {section === "phases" && (
-        <div className="max-w-3xl">
-          <LifecycleCard ticketId={ticketId} onChanged={refresh} />
         </div>
       )}
       {section === "blockers" && (

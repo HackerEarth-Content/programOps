@@ -1,7 +1,8 @@
 """What needs a person on one program today: one merged, grouped, ordered list.
 
-The Overview's "Needs you today", the one-sentence health reason in the program header and the directory's
-escalation count all read this, so they can never disagree. Items are deduplicated by what they are about
+The Overview's "Needs you today" and the one-sentence health reason in the program header read this. The counts on
+the directory, the nav badge and the CSM queue are the queue's own items (core.csm_queue), and the rules here that
+overlap with it use the same definitions (an activity "waits for approval" only once marketing has marked it ready). Items are deduplicated by what they are about
 (a type plus a round, activity or request id), never by their title, and several like items collapse into one
 ("18 marketing activities waiting for approval"). It also surfaces contradictions in the data (a campaign that
 runs after registration closed, a round marked done that has not started) instead of rendering them silently.
@@ -9,17 +10,16 @@ runs after registration closed, a round marked done that has not started) instea
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import activities, checklists, csm_queue, rounds
+from core import activities, csm_queue, rounds
 from core.activities import ActivityStatus
-from core.checklists import ChecklistKind, ChecklistStatus
-from core.health import READINESS_LOOKAHEAD_DAYS, health_of
+from core.health import health_of
 from core.orm import Program, ProgramNote
 from core.registration_window import load_estimate
 
@@ -31,16 +31,19 @@ _FROM_QUEUE: dict[csm_queue.Severity, NeedSeverity] = {
     csm_queue.Severity.INFO: "neutral",
 }
 _HEALTH_NAME = {"good": "Good", "warning": "At risk", "critical": "Critical"}
+# Contradictions in the data rather than work somebody is waiting to do.
+_CHECKS = frozenset({"window_conflict", "round_conflict", "health_mismatch", "untitled_program"})
 
 
 class NeedsItem(BaseModel):
-    id: str  # what it is about, e.g. "readiness:round:12": unique per program
+    id: str  # what it is about, e.g. "counts_missing:round:12": unique per program
     type: str
     severity: NeedSeverity
     title: str
     detail: str
     action: str | None  # the one secondary button, if there is something to open
     tab: str  # program tab where it gets resolved
+    group: Literal["action", "check"] = "action"  # "check": the data contradicts itself, nobody is waiting on it
 
 
 def _day(d: date) -> str:
@@ -67,13 +70,15 @@ async def needs_for(session: AsyncSession, program: Program, now: datetime | Non
         add("breach:activities", "control_breach", "danger",
             f"{_plural(len(live_unapproved), 'activity', 'activities')} live without approval",
             "Approve them or take them off", "Review", "marketing")
-    waiting = [a for a in plan if a.approved_at is None and a.status in (ActivityStatus.NOT_STARTED, ActivityStatus.WIP)]
+    # Only what marketing has marked ready (WIP) is waiting on the CSM, the same rule as the CSM queue. Activities that
+    # haven't been started aren't waiting on anybody yet.
+    waiting = [a for a in plan if a.approved_at is None and a.status == ActivityStatus.WIP]
     if waiting:
         no_utm = sum(not a.utm for a in waiting)
         who = program.csm_name or "a CSM"
         add("approvals:activities", "approval_waiting", "warn",
             f"{len(waiting)} marketing {'activity' if len(waiting) == 1 else 'activities'} waiting for approval",
-            f"Nothing can go live until {who} approves"
+            f"Marketing has marked them ready. Nothing can go live until {who} approves"
             + (f" and a UTM is set ({no_utm} still need one)" if no_utm else ""),
             "Review", "marketing")
     due = [
@@ -100,31 +105,14 @@ async def needs_for(session: AsyncSession, program: Program, now: datetime | Non
 
     # ---- rounds ----------------------------------------------------------------------------------------------
     program_rounds = await rounds.list_rounds(session, tid)
-    gates = {
-        c.round_id: (c, checklists.progress(items))
-        for c, items in await checklists.list_checklists(session, tid, kind=ChecklistKind.READINESS)
-        if c.round_id is not None
-    }
     for r in program_rounds:
-        gate = gates.get(r.id)
-        gate_open = gate is not None and gate[0].status not in (ChecklistStatus.READY.value, ChecklistStatus.DONE.value)
-        if r.starts_on and today <= r.starts_on <= today + timedelta(days=READINESS_LOOKAHEAD_DAYS) and gate_open and gate:
-            soon = r.starts_on <= today + timedelta(days=1)
-            add(f"readiness:round:{r.id}", "readiness_incomplete", "danger" if soon else "warn",
-                f"{r.name} starts {_day(r.starts_on)}: readiness {gate[1].done} of {gate[1].total}",
-                f"Round {r.seq} · the readiness checklist isn't ready", "Open checklist", "rounds")
         if r.ends_on and r.ends_on < today and not await rounds.standing_counts(session, r.id):
             add(f"counts_missing:round:{r.id}", "counts_missing", "warn",
                 f"{r.name} ended {_day(r.ends_on)} with no counts", f"Round {r.seq} · enter the round counts", "Enter counts", "rounds")
-        if r.status == "done":
-            if r.starts_on and r.starts_on > today:
-                add(f"round_conflict:round:{r.id}", "round_conflict", "warn",
-                    f"{r.name} is marked done but starts {_day(r.starts_on)}",
-                    f"Round {r.seq} · fix the round status or its dates", "Open rounds", "rounds")
-            elif gate_open:
-                add(f"round_conflict:round:{r.id}", "round_conflict", "warn",
-                    f"{r.name} is marked done but its readiness checklist is incomplete",
-                    f"Round {r.seq} · finish the checklist or reopen the round", "Open rounds", "rounds")
+        if r.status == "done" and r.starts_on and r.starts_on > today:
+            add(f"round_conflict:round:{r.id}", "round_conflict", "warn",
+                f"{r.name} is marked done but starts {_day(r.starts_on)}",
+                f"Round {r.seq} · fix the round status or its dates", "Open rounds", "rounds")
 
     # ---- the CSM queue's rules, grouped where several items say the same thing ---------------------------------
     grouped: dict[csm_queue.CsmKind, list[csm_queue.CsmItem]] = {}
@@ -167,5 +155,6 @@ async def needs_for(session: AsyncSession, program: Program, now: datetime | Non
         add("program:untitled", "untitled_program", "neutral", "This program has no name yet",
             "Set the program name on the HubSpot ticket", None, "overview")
 
-    out.sort(key=lambda i: (_ORDER[i.severity], i.id))
+    out = [i.model_copy(update={"group": "check"}) if i.type in _CHECKS else i for i in out]
+    out.sort(key=lambda i: (i.group == "check", _ORDER[i.severity], i.id))
     return out

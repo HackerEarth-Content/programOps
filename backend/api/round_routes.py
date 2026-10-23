@@ -8,9 +8,8 @@ from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import checklists, rounds
+from core import rounds
 from core.access import Access, require_permission
-from core.checklists import ChecklistKind
 from core.database import get_session
 from core.deps import program_or_404
 from core.orm import ProgramRound, RoundCount
@@ -28,7 +27,6 @@ router = APIRouter(
 class CountsFields(BaseModel):
     invited: int | None = Field(default=None, ge=0)
     attempted: int | None = Field(default=None, ge=0)  # participation
-    submitted: int | None = Field(default=None, ge=0)  # project-style rounds
     cleared: int | None = Field(default=None, ge=0)  # cleared the cutoff
     shortlisted: int | None = Field(default=None, ge=0)
     note: str | None = None
@@ -46,20 +44,12 @@ class CountsOut(BaseModel):
     as_of: dt.date
     invited: int | None
     attempted: int | None
-    submitted: int | None
     cleared: int | None
     shortlisted: int | None
     note: str | None
     entered_by_name: str
     entered_at: dt.datetime
     supersedes_id: int | None
-
-
-class ReadinessOut(BaseModel):
-    checklist_id: int
-    status: str
-    done: int
-    total: int
 
 
 class RoundOut(BaseModel):
@@ -74,7 +64,6 @@ class RoundOut(BaseModel):
     status: RoundStatus
     source: RoundSource
     latest_counts: CountsOut | None
-    readiness: ReadinessOut | None
 
 
 class RoundIn(BaseModel):
@@ -112,22 +101,14 @@ class SuggestedOut(BaseModel):
 
 async def _round_outs(session: AsyncSession, ticket_id: str, rows: list[ProgramRound]) -> list[RoundOut]:
     counts = await rounds.latest_counts(session, [r.id for r in rows])
-    gates = {
-        c.round_id: (c, checklists.progress(items))
-        for c, items in await checklists.list_checklists(session, ticket_id, kind=ChecklistKind.READINESS)
-        if c.round_id is not None
-    }
     out: list[RoundOut] = []
     for r in rows:
-        gate = gates.get(r.id)
         out.append(
             RoundOut(
                 id=r.id, seq=r.seq, name=r.name, kind=RoundKind(r.kind), starts_on=r.starts_on, ends_on=r.ends_on,
                 cutoff_rule=r.cutoff_rule, cutoff_value=r.cutoff_value, status=RoundStatus(r.status),
                 source=RoundSource(r.source),
                 latest_counts=CountsOut.model_validate(counts[r.id]) if r.id in counts else None,
-                readiness=ReadinessOut(checklist_id=gate[0].id, status=gate[0].status, done=gate[1].done, total=gate[1].total)
-                if gate else None,
             )
         )
     return out

@@ -23,7 +23,6 @@ export type CountsRow = Counts & { supersedes_id: number | null };
 export type CountsFields = {
   invited?: number | null;
   attempted?: number | null;
-  submitted?: number | null;
   cleared?: number | null;
   shortlisted?: number | null;
   note?: string | null;
@@ -71,7 +70,12 @@ export const supersedeCounts = (
 
 // ---- requests ----------------------------------------------------------------------------
 export type RequestStatus = Checklist["status"];
-export type RequestFull = Checklist & { created_at: string; resolution: string | null };
+export type RequestFull = Checklist & {
+  created_at: string;
+  resolution: string | null;
+  slack_channel_id: string | null;
+  slack_channel_name: string | null;
+};
 export const requestsFullQuery = (ticketId: string) =>
   queryOptions({
     queryKey: ["programs", ticketId, "requests", "full"],
@@ -82,6 +86,7 @@ export type RaiseRequestInput = {
   detail?: string | null;
   due_at?: string | null;
   owner_id?: string | null;
+  slack_channel_id?: string | null;
 };
 export const raiseRequest = (ticketId: string, body: RaiseRequestInput) =>
   sendJson<Checklist>("POST", `${p(ticketId)}/requests`, body);
@@ -90,7 +95,7 @@ export const patchRequest = (
   id: number,
   body: { status?: RequestStatus; resolution?: string | null; owner_id?: string | null },
 ) => sendJson<Checklist>("PATCH", `${p(ticketId)}/requests/${id}`, body);
-/** Same endpoint ops-api uses, but returns the updated checklist for any kind (gates too). */
+/** Same endpoint ops-api uses, but returns the updated checklist. */
 export const confirmChecklistItem = (
   ticketId: string,
   checklistId: number,
@@ -102,35 +107,6 @@ export const confirmChecklistItem = (
     confirmed,
     detail: detail ?? null,
   });
-
-// ---- lifecycle ---------------------------------------------------------------------------
-export type PhaseStatus = "not_started" | "in_progress" | "done" | "skipped";
-export type GateChecklist = Checklist & {
-  round_id: number | null;
-  phase: string | null;
-  resolution: string | null;
-};
-export type Phase = {
-  phase: string;
-  title: string;
-  status: PhaseStatus;
-  starts_on: string | null;
-  due_on: string | null;
-  completed_at: string | null;
-  completed_by_name: string | null;
-  skip_reason: string | null;
-  gate: GateChecklist | null;
-};
-export const lifecycleQuery = (ticketId: string) =>
-  queryOptions({
-    queryKey: ["programs", ticketId, "lifecycle"],
-    queryFn: () => apiFetch<Phase[]>(`${p(ticketId)}/lifecycle`),
-  });
-export const patchPhase = (
-  ticketId: string,
-  phase: string,
-  body: { status?: PhaseStatus; skip_reason?: string | null },
-) => sendJson<Phase>("PATCH", `${p(ticketId)}/lifecycle/${phase}`, body);
 
 // ---- updates feed (cursor pagination) ----------------------------------------------------------
 export type NotePage = { items: UpdateNote[]; next_before: string | null };
@@ -158,7 +134,6 @@ export type Dependency = {
   owner_name: string | null;
   due_on: string | null;
   status: DependencyStatus;
-  blocks_phase: string | null;
   blocks_round_id: number | null;
   notes: string | null;
   received_at: string | null;
@@ -170,7 +145,6 @@ export type DependencyImpact = {
   overdue: number;
   max_delay_days: number;
   projected_slip_days: number;
-  blocked_phases: string[];
   blocked_round_ids: number[];
 };
 export const dependenciesQuery = (ticketId: string) =>
@@ -219,7 +193,7 @@ export const patchCommunication = (ticketId: string, id: number, body: { status:
 
 // ---- timeline changes ----------------------------------------------------------------------
 export type ChangeStatus = "proposed" | "approved" | "rejected";
-export type SubjectType = "round" | "phase" | "activity";
+export type SubjectType = "round" | "activity";
 export type ChangeTask = { id: number; label: string; done: boolean; done_by_name: string | null };
 export type TimelineChange = {
   id: number;

@@ -6,7 +6,7 @@ severity, then by how long it has waited.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timezone
 from enum import StrEnum
 
 from pydantic import BaseModel
@@ -17,7 +17,7 @@ from core import dependencies, rounds
 from core.activities import ActivityStatus
 from core.checklists import ChecklistKind, ChecklistStatus
 from core.communications import CommStatus
-from core.health import CRITICAL_DEPENDENCY_DELAY_DAYS, READINESS_LOOKAHEAD_DAYS, STALE_UPDATE_DAYS
+from core.health import CRITICAL_DEPENDENCY_DELAY_DAYS, STALE_UPDATE_DAYS
 from core.orm import (
     Checklist,
     ParticipantComm,
@@ -49,7 +49,6 @@ class CsmKind(StrEnum):
     SLACK_UNLINKED = "slack_unlinked"
     DEPENDENCY_OVERDUE = "dependency_overdue"
     COMM_OVERDUE = "comm_overdue"
-    READINESS_INCOMPLETE = "readiness_incomplete"
     CHANGE_AWAITING_APPROVAL = "change_awaiting_approval"
 
 
@@ -108,11 +107,6 @@ async def items_for(session: AsyncSession, program: Program, now: datetime) -> l
     for r in await rounds.list_rounds(session, tid):
         if r.ends_on and r.ends_on < today and not await rounds.standing_counts(session, r.id):
             add(CsmKind.COUNTS_MISSING, Severity.AMBER, r.name, f"Ended {r.ends_on:%d %b} with no counts entered", None, "round", r.id)
-        if r.starts_on and today <= r.starts_on <= today + timedelta(days=READINESS_LOOKAHEAD_DAYS):
-            gate = await session.scalar(select(Checklist).where(Checklist.round_id == r.id, Checklist.kind == "readiness"))
-            if gate is not None and gate.status not in (ChecklistStatus.READY.value, ChecklistStatus.DONE.value):
-                add(CsmKind.READINESS_INCOMPLETE, Severity.AMBER, f"{r.name} readiness",
-                    f"Starts {r.starts_on:%d %b} and the readiness checklist isn't ready", gate.updated_at, "checklist", gate.id)
 
     if program.stage_label in ACTIVE_STAGES:
         latest = await session.scalar(

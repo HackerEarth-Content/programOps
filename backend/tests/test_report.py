@@ -49,7 +49,6 @@ def test_these_make_a_program_critical(facts, code):
         (HealthFacts(rounds_missing_counts=1), "round_counts_missing"),
         (HealthFacts(overdue_dependencies=1, max_dependency_delay_days=2), "dependency_overdue"),
         (HealthFacts(overdue_communications=1), "communication_overdue"),
-        (HealthFacts(readiness_incomplete=1), "readiness_incomplete"),
         (HealthFacts(changes_awaiting=1), "change_awaiting_approval"),
     ],
 )
@@ -114,14 +113,14 @@ async def test_the_report_joins_registration_participation_marketing_and_operati
     first = (await client.post("/programs/t1/rounds", json={"name": "Assessment"})).json()
     second = (await client.post("/programs/t1/rounds", json={"name": "Project"})).json()
     await client.post(f"/programs/t1/rounds/{first['id']}/counts", json={"as_of": days(0), "invited": 1000, "attempted": 800, "cleared": 200, "shortlisted": 100})
-    await client.post(f"/programs/t1/rounds/{second['id']}/counts", json={"as_of": days(0), "invited": 100, "attempted": 90, "submitted": 80, "shortlisted": 20})
+    await client.post(f"/programs/t1/rounds/{second['id']}/counts", json={"as_of": days(0), "invited": 100, "attempted": 90, "shortlisted": 20})
     plan = (await client.get("/programs/t1/activities")).json()
     await client.patch(f"/programs/t1/activities/{plan[0]['id']}", json={"utm": "he_mark/x"})
     await client.post(f"/programs/t1/activities/{plan[0]['id']}/approve")
     await client.post(f"/programs/t1/activities/{plan[0]['id']}/go-live", json={})
     template = next(t for t in (await client.get("/checklist-templates", params={"kind": "request"})).json())
     await client.post("/programs/t1/requests", json={"template_id": template["id"]})
-    await client.post("/programs/t1/dependencies", json={"title": "Asset", "due_on": days(-5), "blocks_phase": "content_approval"})
+    await client.post("/programs/t1/dependencies", json={"title": "Asset", "due_on": days(-5)})
     await client.post("/programs/t1/communications", json={"kind": "reminder", "audience": "A", "planned_for": (NOW - timedelta(hours=2)).isoformat()})
     await client.post("/programs/t1/timeline-changes", json={"subject_type": "round", "subject_id": str(first["id"]), "field": "starts_on", "revised": days(3), "reason": "Client delay"})
 
@@ -133,7 +132,7 @@ async def test_the_report_joins_registration_participation_marketing_and_operati
     assert body["marketing"] == {"total": 3, "live": 1, "approved": 1, "awaiting_approval": 2, "breaches": 0}
     ops = body["operations"]
     assert (ops["open_requests"], ops["dependencies_open"], ops["dependencies_overdue"], ops["projected_slip_days"]) == (1, 1, 1, 5)
-    assert (ops["communications_planned"], ops["communications_overdue"], ops["changes_proposed"], ops["phases_total"]) == (1, 1, 1, 7)
+    assert (ops["communications_planned"], ops["communications_overdue"], ops["changes_proposed"]) == (1, 1, 1)
     assert ops["health"] == "critical" and "dependency_badly_overdue" in ops["reasons"]
 
 

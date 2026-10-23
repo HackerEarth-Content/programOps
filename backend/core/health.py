@@ -4,7 +4,7 @@ read and test; `facts_for` gathers the facts for one program."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from enum import StrEnum
 
 from sqlalchemy import func, select
@@ -19,13 +19,11 @@ from core.orm import (
     ParticipantComm,
     ProgramActivity,
     ProgramNote,
-    ProgramRound,
     TimelineChange,
 )
 
 CRITICAL_DEPENDENCY_DELAY_DAYS = 3  # a client dependency this far overdue makes the program critical
 STALE_UPDATE_DAYS = 2  # no daily update for longer than this is a warning
-READINESS_LOOKAHEAD_DAYS = 3  # a round starting this soon needs its readiness checklist ready
 
 
 class Health(StrEnum):
@@ -45,7 +43,6 @@ class HealthFacts:
     max_dependency_delay_days: int = 0
     overdue_communications: int = 0
     changes_awaiting: int = 0
-    readiness_incomplete: int = 0
 
 
 @dataclass(frozen=True)
@@ -73,7 +70,6 @@ def evaluate(f: HealthFacts) -> HealthResult:
             ("round_counts_missing", f.rounds_missing_counts > 0),
             ("dependency_overdue", f.overdue_dependencies > 0 and f.max_dependency_delay_days <= CRITICAL_DEPENDENCY_DELAY_DAYS),
             ("communication_overdue", f.overdue_communications > 0),
-            ("readiness_incomplete", f.readiness_incomplete > 0),
             ("change_awaiting_approval", f.changes_awaiting > 0),
         )
         if hit
@@ -111,14 +107,9 @@ async def facts_for(session: AsyncSession, ticket_id: str, now: datetime | None 
 
     program_rounds = await rounds.list_rounds(session, ticket_id)
     missing_counts = 0
-    incomplete = 0
     for r in program_rounds:
         if r.ends_on and r.ends_on < today and not await rounds.standing_counts(session, r.id):
             missing_counts += 1
-        if r.starts_on and today <= r.starts_on <= today + timedelta(days=READINESS_LOOKAHEAD_DAYS):
-            gate = await session.scalar(select(Checklist).where(Checklist.round_id == r.id, Checklist.kind == "readiness"))
-            if gate is not None and gate.status not in (ChecklistStatus.READY.value, ChecklistStatus.DONE.value):
-                incomplete += 1
 
     deps = dependencies.impact(await dependencies.list_for(session, ticket_id), today)
 
@@ -146,7 +137,6 @@ async def facts_for(session: AsyncSession, ticket_id: str, now: datetime | None 
         max_dependency_delay_days=deps.max_delay_days,
         overdue_communications=overdue_comms,
         changes_awaiting=changes,
-        readiness_incomplete=incomplete,
     )
 
 

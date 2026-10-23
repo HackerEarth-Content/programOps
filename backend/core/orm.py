@@ -46,6 +46,9 @@ class Program(Base):
     )
 
     ticket_id: Mapped[str] = mapped_column(primary_key=True)
+    # "hubspot": a synced ticket. "internal": an internal hackathon created in the portal (no ticket, never synced
+    # or deleted by the sync, see core/internal_programs.py).
+    origin: Mapped[str] = mapped_column(default="hubspot", server_default=text("'hubspot'"))
     subject: Mapped[str] = mapped_column(default="")
 
     pipeline_id: Mapped[str]
@@ -482,7 +485,7 @@ class ChannelSnapshot(Base):
 
 class ProgramRound(Base):
     """One round of selection for a program (assessment, project, interview, onsite finale, custom). The CSM
-    adds, renames, reorders and removes them, so any program shape fits. Each round gets a readiness checklist."""
+    adds, renames, reorders and removes them, so any program shape fits."""
 
     __tablename__ = "program_rounds"
     __table_args__ = (
@@ -511,14 +514,9 @@ class RoundCount(Base):
 
     __tablename__ = "round_counts"
     __table_args__ = (
-        CheckConstraint(
-            "COALESCE(invited, 0) >= 0 AND COALESCE(attempted, 0) >= 0 AND COALESCE(submitted, 0) >= 0 "
-            "AND COALESCE(cleared, 0) >= 0 AND COALESCE(shortlisted, 0) >= 0",
-            name="ck_round_counts_non_negative",
-        ),
+        # Non-negative and the shortlisted / cross-round rules are enforced in core.rounds (and `ge=0` on the API).
         CheckConstraint("attempted IS NULL OR invited IS NULL OR attempted <= invited", name="ck_round_counts_attempted"),
         CheckConstraint("cleared IS NULL OR attempted IS NULL OR cleared <= attempted", name="ck_round_counts_cleared"),
-        CheckConstraint("submitted IS NULL OR attempted IS NULL OR submitted <= attempted", name="ck_round_counts_submitted"),
         Index("ix_round_counts_round", "round_id", "as_of"),
     )
 
@@ -527,7 +525,6 @@ class RoundCount(Base):
     as_of: Mapped[date] = mapped_column(Date)
     invited: Mapped[int | None]
     attempted: Mapped[int | None]  # participation
-    submitted: Mapped[int | None]  # for project-style rounds
     cleared: Mapped[int | None]  # cleared the cutoff
     shortlisted: Mapped[int | None]
     note: Mapped[str | None]
@@ -538,8 +535,7 @@ class RoundCount(Base):
 
 
 class ChecklistTemplate(Base):
-    """A reusable checklist: a special-request type ('request'), a lifecycle phase gate ('phase') or an
-    assessment readiness list ('readiness'). Editing it never changes checklists already created from it."""
+    """A reusable checklist: a special-request type ('request'). Editing it never changes checklists already created from it."""
 
     __tablename__ = "checklist_templates"
     __table_args__ = (
@@ -566,15 +562,13 @@ class ChecklistTemplateItem(Base):
 
 
 class Checklist(Base):
-    """A checklist on a program: a special request, a lifecycle phase gate or a round's readiness. Its items are
+    """A checklist on a program: a special request. Its items are
     a snapshot of the template when it was created. It becomes `ready` when every required item is confirmed."""
 
     __tablename__ = "checklists"
     __table_args__ = (
         CheckConstraint("kind IN ('request', 'phase', 'readiness')", name="ck_checklists_kind"),
         CheckConstraint("status IN ('open', 'in_progress', 'ready', 'done', 'declined')", name="ck_checklists_status"),
-        Index("uq_checklists_phase", "ticket_id", "phase", unique=True, postgresql_where=text("kind = 'phase'")),
-        Index("uq_checklists_readiness", "round_id", unique=True, postgresql_where=text("kind = 'readiness'")),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -583,8 +577,6 @@ class Checklist(Base):
     kind: Mapped[str]
     title: Mapped[str]
     status: Mapped[str] = mapped_column(default="open", server_default=text("'open'"))
-    round_id: Mapped[int | None] = mapped_column(ForeignKey("program_rounds.id", ondelete="CASCADE"))
-    phase: Mapped[str | None]
     owner_id: Mapped[str | None]
     owner_name: Mapped[str | None]
     due_at: Mapped[datetime | None]
@@ -592,6 +584,8 @@ class Checklist(Base):
     requested_by_name: Mapped[str | None]
     detail: Mapped[str | None]
     resolution: Mapped[str | None]
+    slack_channel_id: Mapped[str | None]  # where this special request's updates are posted
+    slack_channel_name: Mapped[str | None]  # cached from conversations.info when the id was saved
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
@@ -610,24 +604,6 @@ class ChecklistItem(Base):
     confirmed_by_name: Mapped[str | None]
     confirmed_at: Mapped[datetime | None]
     detail: Mapped[str | None]
-
-
-class ProgramPhase(Base):
-    """A program's position in the seven-phase lifecycle. Portal-owned: HubSpot's stage stays the ticket's master."""
-
-    __tablename__ = "program_phases"
-    __table_args__ = (
-        CheckConstraint("status IN ('not_started', 'in_progress', 'done', 'skipped')", name="ck_program_phases_status"),
-    )
-
-    ticket_id: Mapped[str] = mapped_column(ForeignKey("programs.ticket_id", ondelete="CASCADE"), primary_key=True)
-    phase: Mapped[str] = mapped_column(primary_key=True)
-    status: Mapped[str] = mapped_column(default="not_started", server_default=text("'not_started'"))
-    starts_on: Mapped[date | None] = mapped_column(Date)
-    due_on: Mapped[date | None] = mapped_column(Date)
-    completed_at: Mapped[datetime | None]
-    completed_by_name: Mapped[str | None]
-    skip_reason: Mapped[str | None]
 
 
 class ProgramAssignment(Base):
@@ -662,7 +638,6 @@ class ClientDependency(Base):
     owner_name: Mapped[str | None]
     due_on: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(default="open", server_default=text("'open'"))
-    blocks_phase: Mapped[str | None]
     blocks_round_id: Mapped[int | None] = mapped_column(ForeignKey("program_rounds.id", ondelete="SET NULL"))
     notes: Mapped[str | None]
     received_at: Mapped[datetime | None]
@@ -702,7 +677,7 @@ class ParticipantComm(Base):
 
 class TimelineChange(Base):
     """A change to a planned date, with the original, the revised date, the reason and the approver. Approving
-    applies it to the round, phase or activity it names. The original is never overwritten."""
+    applies it to the round or activity it names. The original is never overwritten."""
 
     __tablename__ = "timeline_changes"
     __table_args__ = (
@@ -729,7 +704,7 @@ class TimelineChange(Base):
 
 
 class TimelineChangeTask(Base):
-    """A downstream task a timeline change opens (e.g. re-send a reminder, re-check readiness)."""
+    """A downstream task a timeline change opens (e.g. re-send a reminder)."""
 
     __tablename__ = "timeline_change_tasks"
 

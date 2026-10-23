@@ -25,6 +25,7 @@ export const ROLE_DEFAULTS: Record<UserRole, readonly string[]> = {
     "request_types.edit",
     "hubspot.write",
     "integrations.link",
+    "program.create",
   ],
   marketing: [...BASE, "update.post", "activity.edit", "activity.add_channel", "metrics.enter"],
   account_manager: BASE,
@@ -56,7 +57,13 @@ export const PERMISSION_GROUPS: { title: string; keys: string[] }[] = [
   },
   {
     title: "Requests & HubSpot",
-    keys: ["request.manage", "request_types.edit", "hubspot.write", "integrations.link"],
+    keys: [
+      "request.manage",
+      "request_types.edit",
+      "hubspot.write",
+      "integrations.link",
+      "program.create",
+    ],
   },
   { title: "Administration", keys: ["users.manage", "settings.edit"] },
 ];

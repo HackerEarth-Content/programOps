@@ -1,12 +1,11 @@
-"""The checklist engine: templates, special requests, item confirmation, and the lifecycle phase gates."""
+"""The checklist engine: templates, special requests and item confirmation."""
 
 from __future__ import annotations
 
 from sqlalchemy import func, select
 
 from core import checklists
-from core.checklists import Phase
-from core.orm import Checklist, ChecklistTemplate, ProgramPhase
+from core.orm import ChecklistItem, ChecklistTemplate, SlackOutbox
 from core.permissions import Role
 
 
@@ -41,16 +40,13 @@ async def confirm_all(client, checklist: dict, ticket="t1") -> dict:
 async def test_the_starter_templates_are_seeded_once_and_never_overwrite_edits(db, templates):
     async with db() as session:
         keys = set((await session.scalars(select(ChecklistTemplate.key))).all())
-        assert keys == {
-            "content_to_marketing", "assessment_readiness", "phase_kickoff", "phase_requirements", "phase_content_approval",
-            "phase_launch_readiness", "phase_participant_management", "phase_execution", "phase_closure",
-        }
-        (await session.scalar(select(ChecklistTemplate).where(ChecklistTemplate.key == "phase_kickoff"))).name = "Edited by a CSM"
+        assert keys == {"content_to_marketing"}
+        (await session.scalar(select(ChecklistTemplate).where(ChecklistTemplate.key == "content_to_marketing"))).name = "Edited by a CSM"
         await session.commit()
         await checklists.ensure_default_templates(session)
         await session.commit()
-        assert await session.scalar(select(ChecklistTemplate.name).where(ChecklistTemplate.key == "phase_kickoff")) == "Edited by a CSM"
-        assert await session.scalar(select(func.count()).select_from(ChecklistTemplate)) == 9
+        assert await session.scalar(select(ChecklistTemplate.name).where(ChecklistTemplate.key == "content_to_marketing")) == "Edited by a CSM"
+        assert await session.scalar(select(func.count()).select_from(ChecklistTemplate)) == 1
 
 
 async def test_the_content_template_carries_the_four_agreed_items(client_for, make_user, templates):
@@ -95,13 +91,6 @@ async def test_a_deactivated_template_is_hidden_and_cannot_start_a_request(clien
     await client.patch(f"/checklist-templates/{tid}", json={"active": False})
     assert "content_to_marketing" not in {t["key"] for t in (await client.get("/checklist-templates")).json()}
     response = await client.post("/programs/t1/requests", json={"template_id": tid})
-    assert (response.status_code, response.json()["code"]) == (422, "template_not_a_request_type")
-
-
-async def test_a_phase_template_is_not_a_request_type(client_for, make_user, make_program, templates):
-    await make_program("t1")
-    client = await csm_client(client_for, make_user)
-    response = await client.post("/programs/t1/requests", json={"template_id": await template_id(client, "phase_kickoff")})
     assert (response.status_code, response.json()["code"]) == (422, "template_not_a_request_type")
 
 
@@ -182,78 +171,49 @@ async def test_a_request_can_be_declined_without_completing_it(client_for, make_
     assert declined.status_code == 200 and declined.json()["status"] == "declined"
 
 
-async def test_a_non_request_checklist_cannot_be_edited_as_a_request(client_for, make_user, make_program, templates):
+async def test_the_phase_lifecycle_is_gone(client_for, make_user, make_program, templates):
     await make_program("t1")
     client = await csm_client(client_for, make_user)
-    gate = next(p for p in (await client.get("/programs/t1/lifecycle")).json() if p["phase"] == "kickoff")["gate"]
-    response = await client.patch(f"/programs/t1/requests/{gate['id']}", json={"title": "x"})
-    assert (response.status_code, response.json()["code"]) == (422, "not_a_request")
+    assert (await client.get("/programs/t1/lifecycle")).status_code == 404
 
 
-# ---- lifecycle -------------------------------------------------------------------
+# ---- a special request's own Slack channel -----------------------------------------------
 
 
-async def test_the_lifecycle_has_the_seven_phases_in_order_each_with_a_gate(client_for, make_user, make_program, templates):
-    await make_program("t1")
-    phases = (await (await csm_client(client_for, make_user)).get("/programs/t1/lifecycle")).json()
-    assert [p["phase"] for p in phases] == [
-        "kickoff", "requirements", "content_approval", "launch_readiness", "participant_management", "execution", "closure",
-    ]
-    assert all(p["status"] == "not_started" and p["gate"]["kind"] == "phase" and p["gate"]["items"] for p in phases)
-    assert phases[2]["title"] == "Content approval" and phases[2]["gate"]["title"] == "Content approval gate"
+def stub_slack(monkeypatch, known: dict[str, str]):
+    async def channel_name(channel_id: str):
+        return (True, known[channel_id]) if channel_id in known else (False, "Channel not found (or it's private and the bot isn't in it).")
+
+    monkeypatch.setattr("core.slack.channel_name", channel_name)
 
 
-async def test_opening_the_lifecycle_twice_creates_nothing_new(client_for, make_user, make_program, templates, db):
+async def test_a_request_keeps_its_slack_channel_and_posts_there(client_for, make_user, make_program, templates, db, monkeypatch):
+    stub_slack(monkeypatch, {"C0123456789": "hack-updates"})
     await make_program("t1")
     client = await csm_client(client_for, make_user)
-    await client.get("/programs/t1/lifecycle")
-    await client.get("/programs/t1/lifecycle")
+    request = await new_request(client, slack_channel_id=" C0123456789 ", detail="Banner for the finale")
+    assert (request["slack_channel_id"], request["slack_channel_name"]) == ("C0123456789", "hack-updates")
+    await client.patch(f"/programs/t1/requests/{request['id']}", json={"status": "declined", "resolution": "Out of scope"})
     async with db() as session:
-        assert await session.scalar(select(func.count()).select_from(ProgramPhase)) == 7
-        assert await session.scalar(select(func.count()).select_from(Checklist).where(Checklist.kind == "phase")) == 7
-        await checklists.ensure_lifecycle(session, "t1")  # the service itself is idempotent too
-        await session.commit()
-        assert await session.scalar(select(func.count()).select_from(ProgramPhase)) == 7
+        sent = (await session.scalars(select(SlackOutbox).order_by(SlackOutbox.id))).all()
+    assert [m.channel_id for m in sent] == ["C0123456789", "C0123456789"]
+    assert "New special request" in sent[0].body and "Banner for the finale" in sent[0].body
+    assert "declined" in sent[1].body and "Out of scope" in sent[1].body
 
 
-async def test_a_phase_cannot_be_completed_until_its_gate_is_ready(client_for, make_user, make_program, templates):
+async def test_an_unknown_slack_channel_is_refused_and_nothing_is_created(client_for, make_user, make_program, templates, db, monkeypatch):
+    stub_slack(monkeypatch, {})
     await make_program("t1")
     client = await csm_client(client_for, make_user)
-    kickoff = next(p for p in (await client.get("/programs/t1/lifecycle")).json() if p["phase"] == "kickoff")
-    early = await client.patch("/programs/t1/lifecycle/kickoff", json={"status": "done"})
-    assert (early.status_code, early.json()["code"]) == (409, "phase_gate_incomplete")
-    await confirm_all(client, kickoff["gate"])
-    done = (await client.patch("/programs/t1/lifecycle/kickoff", json={"status": "done"})).json()
-    assert (done["status"], done["completed_by_name"]) == ("done", "Priya S.") and done["completed_at"]
-    reopened = (await client.patch("/programs/t1/lifecycle/kickoff", json={"status": "in_progress"})).json()
-    assert reopened["completed_at"] is None and reopened["completed_by_name"] is None
+    response = await client.post("/programs/t1/requests", json={"template_id": await template_id(client, "content_to_marketing"), "slack_channel_id": "C0999999999"})
+    assert (response.status_code, response.json()["code"]) == (422, "slack_channel_invalid")
+    assert (await client.get("/programs/t1/requests")).json() == []
 
 
-async def test_a_phase_can_be_skipped_with_a_reason_and_has_dates(client_for, make_user, make_program, templates):
+async def test_a_request_without_a_channel_posts_nothing(client_for, make_user, make_program, templates, db):
     await make_program("t1")
     client = await csm_client(client_for, make_user)
-    refused = await client.patch("/programs/t1/lifecycle/participant_management", json={"status": "skipped"})
-    assert (refused.status_code, refused.json()["code"]) == (422, "skip_reason_required")
-    skipped = (await client.patch(
-        "/programs/t1/lifecycle/participant_management",
-        json={"status": "skipped", "skip_reason": "Client manages participants", "starts_on": "2026-10-01", "due_on": "2026-10-05"},
-    )).json()
-    assert (skipped["status"], skipped["skip_reason"], skipped["starts_on"], skipped["due_on"]) == (
-        "skipped", "Client manages participants", "2026-10-01", "2026-10-05",
-    )
-
-
-async def test_gate_items_are_confirmed_through_the_same_endpoint_as_requests(client_for, make_user, make_program, templates):
-    await make_program("t1")
-    client = await csm_client(client_for, make_user)
-    gate = next(p for p in (await client.get("/programs/t1/lifecycle")).json() if p["phase"] == "requirements")["gate"]
-    after = await client.put(f"/programs/t1/checklists/{gate['id']}/items/{gate['items'][0]['id']}", json={"confirmed": True})
-    assert after.status_code == 200 and after.json()["status"] == "in_progress"
-
-
-async def test_everyone_internal_can_read_the_lifecycle_but_only_a_csm_changes_it(client_for, make_user, make_program, templates):
-    await make_program("t1")
-    marketing = await client_for(await make_user("m@example.com", [Role.MARKETING]))
-    assert (await marketing.get("/programs/t1/lifecycle")).status_code == 200
-    assert (await marketing.patch("/programs/t1/lifecycle/kickoff", json={"status": "in_progress"})).status_code == 403
-    assert Phase.CLOSURE.value == "closure"
+    request = await new_request(client)
+    await client.patch(f"/programs/t1/requests/{request['id']}", json={"status": "declined"})
+    async with db() as session:
+        assert await session.scalar(select(func.count()).select_from(SlackOutbox)) == 0

@@ -14,7 +14,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import audit, checklists
-from core.checklists import Phase
 from core.errors import DomainError
 from core.orm import ClientDependency, ProgramRound, User
 
@@ -34,7 +33,7 @@ class DependencyStatus(StrEnum):
 
 
 EDITABLE = frozenset(
-    {"title", "kind", "client_owner", "owner_id", "due_on", "status", "blocks_phase", "blocks_round_id", "notes"}
+    {"title", "kind", "client_owner", "owner_id", "due_on", "status", "blocks_round_id", "notes"}
 )
 
 
@@ -51,7 +50,6 @@ class Impact:
     overdue: int
     max_delay_days: int
     projected_slip_days: int  # the program slips at least as far as its most overdue open dependency
-    blocked_phases: list[str]
     blocked_round_ids: list[int]
 
 
@@ -64,7 +62,6 @@ def impact(deps: Sequence[ClientDependency], today: date) -> Impact:
         overdue=len(late),
         max_delay_days=worst,
         projected_slip_days=worst,
-        blocked_phases=sorted({d.blocks_phase for d in late if d.blocks_phase}),
         blocked_round_ids=sorted({d.blocks_round_id for d in late if d.blocks_round_id}),
     )
 
@@ -112,7 +109,6 @@ async def create(
     client_owner: str | None,
     owner_id: str | None,
     due_on: date | None,
-    blocks_phase: Phase | None,
     blocks_round_id: int | None,
     notes: str | None,
 ) -> ClientDependency:
@@ -120,7 +116,7 @@ async def create(
     dep = ClientDependency(
         ticket_id=ticket_id, title=title.strip(), kind=kind.value, client_owner=client_owner, owner_id=owner_id,
         owner_name=await checklists.user_name(session, owner_id) if owner_id else None, due_on=due_on,
-        blocks_phase=blocks_phase.value if blocks_phase else None, blocks_round_id=blocks_round_id, notes=notes,
+        blocks_round_id=blocks_round_id, notes=notes,
         created_by=actor.id,
     )
     session.add(dep)

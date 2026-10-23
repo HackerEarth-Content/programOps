@@ -27,14 +27,20 @@ class OutboxStatus(StrEnum):
 
 
 async def enqueue(
-    session: AsyncSession, *, ticket_id: str | None, kind: str, body: str, dedupe_key: str | None = None
+    session: AsyncSession,
+    *,
+    ticket_id: str | None,
+    kind: str,
+    body: str,
+    dedupe_key: str | None = None,
+    channel_id: str | None = None,
 ) -> SlackOutbox | None:
-    """Queue a message for the program's linked channel. None when `dedupe_key` was already used. A program with no
-    channel gets a `skipped` row, so the gap is visible instead of silent. The caller commits."""
+    """Queue a message for `channel_id`, or the program's linked channel. None when `dedupe_key` was already used. A
+    program with no channel gets a `skipped` row, so the gap is visible instead of silent. The caller commits."""
     if dedupe_key and await session.scalar(select(SlackOutbox.id).where(SlackOutbox.dedupe_key == dedupe_key)):
         return None
     cfg = await session.get(ProgramRegistrationSettings, ticket_id) if ticket_id else None
-    channel = cfg.slack_channel_id if cfg else None
+    channel = channel_id or (cfg.slack_channel_id if cfg else None)
     message = SlackOutbox(
         ticket_id=ticket_id, channel_id=channel, kind=kind, body=body, dedupe_key=dedupe_key,
         status=OutboxStatus.QUEUED if channel else OutboxStatus.SKIPPED,

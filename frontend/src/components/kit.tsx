@@ -481,39 +481,69 @@ export const STAGE_LABELS = [
   "Closed",
 ] as const;
 
-/** Six equal segments: done = green with a check, current = accent with a bold label, upcoming = raised. */
-export function StageBar({ current }: { current: number }) {
+export type StageProgress = { done: number; total: number };
+
+/**
+ * Six equal segments. Each fills in proportion to how much of that stage's HubSpot checklist is ticked
+ * ("3/5 · 60%"); a stage without a checklist reads full once passed. The current stage's name is bold.
+ */
+export function StageBar({
+  current,
+  progress,
+  from = 0,
+}: {
+  current: number;
+  progress?: StageProgress[] | undefined;
+  /** The first stage shown: an internal hackathon skips feasibility (New and Pre sales). */
+  from?: number;
+}) {
   return (
-    <ol aria-label="Lifecycle stage" className="grid grid-cols-6 gap-1.5">
+    <ol
+      aria-label="Lifecycle stage"
+      className="grid gap-1.5"
+      style={{ gridTemplateColumns: `repeat(${STAGE_LABELS.length - from}, minmax(0, 1fr))` }}
+    >
       {STAGE_LABELS.map((label, i) => {
-        const done = i < current;
+        if (i < from) return null;
+        const past = i < current;
         const now = i === current;
+        const p = progress?.[i];
+        const hasList = !!p && p.total > 0;
+        const pct = hasList ? Math.round((100 * p.done) / p.total) : past ? 100 : 0;
+        const complete = pct === 100;
         return (
           <li key={label} aria-current={now ? "step" : undefined} className="min-w-0 space-y-1.5">
             <div
-              className={cn(
-                "h-1.5 rounded-full",
-                done ? "bg-ok" : now ? "bg-primary" : "bg-raised",
-              )}
-            />
+              role="progressbar"
+              aria-label={`${label} checklist`}
+              aria-valuenow={pct}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              className="h-2 overflow-hidden rounded-full bg-raised"
+            >
+              <div
+                className={cn(
+                  "h-2 rounded-full transition-[width]",
+                  complete ? "bg-ok" : "bg-primary",
+                )}
+                style={{ width: `${pct}%` }}
+              />
+            </div>
             <p
               className={cn(
                 "flex items-center gap-1 truncate text-[13px]",
-                now ? "font-semibold text-foreground" : done ? "text-foreground" : "text-ink-2",
+                now ? "font-semibold text-foreground" : past ? "text-foreground" : "text-ink-2",
               )}
             >
-              {done && <Check aria-hidden className="size-3.5 shrink-0 text-ok" />}
+              {complete && (past || hasList) && (
+                <Check aria-hidden className="size-3.5 shrink-0 text-ok" />
+              )}
               <span className="truncate">{label}</span>
             </p>
-            {(done || now) && (
-              <span
-                className={cn(
-                  "inline-block rounded-full px-1.5 py-px text-[11px] font-medium uppercase tracking-wide",
-                  done ? "bg-ok-bg text-ok" : "bg-accent-bg text-primary",
-                )}
-              >
-                {done ? "Done" : "Now"}
-              </span>
+            {hasList && (
+              <p className="t-data-sm text-ink-2">
+                {p.done}/{p.total} · {pct}%
+              </p>
             )}
           </li>
         );

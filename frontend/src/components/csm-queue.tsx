@@ -85,7 +85,6 @@ const KIND_TONE: Record<CsmKind, Tone> = {
   slack_unlinked: "neutral",
   dependency_overdue: "serious",
   comm_overdue: "serious",
-  readiness_incomplete: "warning",
   change_awaiting_approval: "indigo",
 };
 const KIND_ORDER = Object.keys(KIND_TONE) as CsmKind[];
@@ -95,7 +94,6 @@ const LINK_LABEL: Partial<Record<CsmKind, string>> = {
   slack_unlinked: "Link channel",
   dependency_overdue: "Open dependencies",
   comm_overdue: "Open communications",
-  readiness_incomplete: "Open readiness checklist",
   change_awaiting_approval: "Review change",
 };
 
@@ -542,7 +540,7 @@ function ItemRow({
   );
 }
 
-const COUNT_FIELDS = ["invited", "attempted", "submitted", "cleared", "shortlisted"] as const;
+const COUNT_FIELDS = ["invited", "attempted", "cleared", "shortlisted"] as const;
 
 function CountsForm({
   item,

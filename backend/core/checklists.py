@@ -1,4 +1,4 @@
-"""One checklist engine behind special requests, lifecycle phase gates and assessment readiness.
+"""One checklist engine behind special requests.
 
 A template's items are copied (snapshotted) into a checklist when it is created, so editing a template later never
 changes a checklist already in use. Each item records who confirmed it, when, and the detail ("what exactly was
@@ -10,12 +10,11 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import audit
@@ -25,15 +24,12 @@ from core.orm import (
     ChecklistItem,
     ChecklistTemplate,
     ChecklistTemplateItem,
-    ProgramPhase,
     User,
 )
 
 
 class ChecklistKind(StrEnum):
     REQUEST = "request"
-    PHASE = "phase"
-    READINESS = "readiness"
 
 
 class ChecklistStatus(StrEnum):
@@ -42,25 +38,6 @@ class ChecklistStatus(StrEnum):
     READY = "ready"  # every required item confirmed
     DONE = "done"
     DECLINED = "declined"
-
-
-class Phase(StrEnum):
-    """The program lifecycle, in order."""
-
-    KICKOFF = "kickoff"
-    REQUIREMENTS = "requirements"
-    CONTENT_APPROVAL = "content_approval"
-    LAUNCH_READINESS = "launch_readiness"
-    PARTICIPANT_MANAGEMENT = "participant_management"
-    EXECUTION = "execution"
-    CLOSURE = "closure"
-
-
-class PhaseStatus(StrEnum):
-    NOT_STARTED = "not_started"
-    IN_PROGRESS = "in_progress"
-    DONE = "done"
-    SKIPPED = "skipped"
 
 
 @dataclass(frozen=True)
@@ -79,10 +56,6 @@ class TemplateSpec:
     items: tuple[ItemSpec, ...]
 
 
-def _phase(key: Phase, name: str, *items: ItemSpec) -> TemplateSpec:
-    return TemplateSpec(f"phase_{key.value}", name, ChecklistKind.PHASE, items)
-
-
 # Starter wording, editable by CSMs and super admins without a release. Seeded once; never overwritten.
 DEFAULT_TEMPLATES: tuple[TemplateSpec, ...] = (
     TemplateSpec(
@@ -94,60 +67,11 @@ DEFAULT_TEMPLATES: tuple[TemplateSpec, ...] = (
             ItemSpec("Eligibility and dates verified", "Checked against the SOW."),
         ),
     ),
-    _phase(
-        Phase.KICKOFF, "Kickoff",
-        ItemSpec("Kickoff call held", needs_detail=True), ItemSpec("Client stakeholders and owners identified", needs_detail=True),
-        ItemSpec("Success measures agreed"), ItemSpec("Communication cadence agreed"),
-    ),
-    _phase(
-        Phase.REQUIREMENTS, "Requirements",
-        ItemSpec("Eligibility and target audience confirmed"), ItemSpec("Rounds, cutoffs and scoring agreed"),
-        ItemSpec("Content and branding requirements captured"), ItemSpec("Timeline baselined with the client"),
-    ),
-    _phase(
-        Phase.CONTENT_APPROVAL, "Content approval",
-        ItemSpec("Landing page copy approved by the client"), ItemSpec("Creative assets approved"),
-        ItemSpec("Assessment content approved"), ItemSpec("Rules, terms and FAQs approved"),
-    ),
-    _phase(
-        Phase.LAUNCH_READINESS, "Launch readiness",
-        ItemSpec("Registration page live and tested"), ItemSpec("Assessment configured and reviewed"),
-        ItemSpec("Test links verified"), ItemSpec("Dry run completed", needs_detail=True),
-        ItemSpec("Support channel and response times ready"), ItemSpec("Go-live approved by the client", needs_detail=True),
-    ),
-    _phase(
-        Phase.PARTICIPANT_MANAGEMENT, "Participant management",
-        ItemSpec("Invitation plan agreed"), ItemSpec("Reminder schedule agreed"),
-        ItemSpec("RSVP process defined"), ItemSpec("Support and escalation path defined"),
-    ),
-    _phase(
-        Phase.EXECUTION, "Execution",
-        ItemSpec("Rounds running to plan"), ItemSpec("Daily monitoring in place"),
-        ItemSpec("Issues log reviewed"), ItemSpec("Shortlists verified before announcement"),
-    ),
-    _phase(
-        Phase.CLOSURE, "Closure",
-        ItemSpec("Final report shared with the client"), ItemSpec("Winners confirmed with the client", needs_detail=True),
-        ItemSpec("Prizes and rewards follow-ups raised", needs_detail=True), ItemSpec("Feedback and retro held"),
-        ItemSpec("Outstanding deliverables cleared"),
-    ),
-    TemplateSpec(
-        "assessment_readiness", "Assessment readiness", ChecklistKind.READINESS,
-        (
-            ItemSpec("Technical configuration complete"), ItemSpec("Test links shared and verified", needs_detail=True),
-            ItemSpec("Engineering review completed"), ItemSpec("Dry run completed", "Date and result.", needs_detail=True),
-            ItemSpec("Pre-launch checklist signed off"),
-        ),
-    ),
 )
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def phase_title(phase: Phase) -> str:
-    return phase.value.replace("_", " ").capitalize()
 
 
 # ---- templates -----------------------------------------------------------------
@@ -294,8 +218,6 @@ async def create_checklist(
     ticket_id: str,
     template: ChecklistTemplate,
     title: str | None = None,
-    round_id: int | None = None,
-    phase: Phase | None = None,
     owner_id: str | None = None,
     due_at: datetime | None = None,
     detail: str | None = None,
@@ -303,7 +225,7 @@ async def create_checklist(
     """Create a checklist from a template, snapshotting its items."""
     checklist = Checklist(
         ticket_id=ticket_id, template_id=template.id, kind=template.kind, title=(title or template.name).strip(),
-        round_id=round_id, phase=phase.value if phase else None, owner_id=owner_id,
+        owner_id=owner_id,
         owner_name=await user_name(session, owner_id) if owner_id else None, due_at=due_at, detail=detail,
         requested_by=actor.id if actor else None, requested_by_name=(actor.name or actor.email) if actor else None,
     )
@@ -388,16 +310,22 @@ async def create_request(
     detail: str | None,
     owner_id: str | None,
     due_at: datetime | None,
+    slack_channel_id: str | None = None,
+    slack_channel_name: str | None = None,
 ) -> Checklist:
     template = await get_template(session, template_id)
     if template.kind != ChecklistKind.REQUEST or not template.active:
         raise DomainError("template_not_a_request_type", "Pick an active request type.", 422)
-    return await create_checklist(
+    checklist = await create_checklist(
         session, actor, ticket_id=ticket_id, template=template, title=title, owner_id=owner_id, due_at=due_at, detail=detail
     )
+    checklist.slack_channel_id, checklist.slack_channel_name = slack_channel_id, slack_channel_name
+    return checklist
 
 
-REQUEST_EDITABLE = frozenset({"title", "detail", "owner_id", "due_at", "resolution", "status"})
+REQUEST_EDITABLE = frozenset(
+    {"title", "detail", "owner_id", "due_at", "resolution", "status", "slack_channel_id", "slack_channel_name"}
+)
 
 
 async def update_request(session: AsyncSession, actor: User, checklist: Checklist, changes: dict[str, Any]) -> Checklist:
@@ -435,92 +363,3 @@ async def list_checklists(
         ).all():
             by_list[item.checklist_id].append(item)
     return [(c, by_list[c.id]) for c in lists]
-
-
-# ---- lifecycle -----------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class PhaseView:
-    phase: ProgramPhase
-    checklist: Checklist | None
-    items: list[ChecklistItem]
-
-
-async def ensure_lifecycle(session: AsyncSession, ticket_id: str) -> None:
-    """Create the program's seven phases and their gate checklists if they don't exist yet. Idempotent and safe if
-    two requests race (the loser's insert is rolled back to a savepoint and ignored)."""
-    have_phases = set((await session.scalars(select(ProgramPhase.phase).where(ProgramPhase.ticket_id == ticket_id))).all())
-    have_gates = set(
-        (await session.scalars(select(Checklist.phase).where(Checklist.ticket_id == ticket_id, Checklist.kind == "phase"))).all()
-    )
-    for phase in Phase:
-        if phase.value not in have_phases:
-            await _insert_ignoring_race(session, ProgramPhase(ticket_id=ticket_id, phase=phase.value))
-        if phase.value not in have_gates and (template := await template_by_key(session, f"phase_{phase.value}")):
-            try:
-                async with session.begin_nested():
-                    await create_checklist(
-                        session, None, ticket_id=ticket_id, template=template, title=f"{phase_title(phase)} gate", phase=phase
-                    )
-            except IntegrityError:
-                pass
-
-
-async def _insert_ignoring_race(session: AsyncSession, row: ProgramPhase) -> None:
-    try:
-        async with session.begin_nested():
-            session.add(row)
-            await session.flush()
-    except IntegrityError:
-        pass
-
-
-async def lifecycle(session: AsyncSession, ticket_id: str) -> list[PhaseView]:
-    phases = {
-        p.phase: p for p in (await session.scalars(select(ProgramPhase).where(ProgramPhase.ticket_id == ticket_id))).all()
-    }
-    gates = {
-        c.phase: c
-        for c in (await session.scalars(select(Checklist).where(Checklist.ticket_id == ticket_id, Checklist.kind == "phase"))).all()
-    }
-    views: list[PhaseView] = []
-    for phase in Phase:
-        row = phases.get(phase.value)
-        if row is None:
-            continue
-        gate = gates.get(phase.value)
-        views.append(PhaseView(row, gate, await items_of(session, gate.id) if gate else []))
-    return views
-
-
-async def update_phase(
-    session: AsyncSession, actor: User, ticket_id: str, phase: Phase, changes: dict[str, Any]
-) -> ProgramPhase:
-    """Set a phase's status and dates. Done needs the gate checklist ready; skipped needs a reason."""
-    row = await session.get(ProgramPhase, (ticket_id, phase.value))
-    if row is None:
-        raise DomainError("phase_not_found", "Open the program's lifecycle first.", 404)
-    status = PhaseStatus(changes["status"]) if "status" in changes and changes["status"] is not None else None
-    if status == PhaseStatus.DONE:
-        gate = await session.scalar(select(Checklist).where(Checklist.ticket_id == ticket_id, Checklist.phase == phase.value, Checklist.kind == "phase"))
-        if gate is not None and not all_required_done(await items_of(session, gate.id)):
-            raise DomainError("phase_gate_incomplete", "Confirm every required item in this phase's gate first.")
-    if status == PhaseStatus.SKIPPED and not (changes.get("skip_reason") or row.skip_reason or "").strip():
-        raise DomainError("skip_reason_required", "Say why this phase is skipped.", 422)
-
-    for field in ("starts_on", "due_on", "skip_reason"):
-        if field in changes and getattr(row, field) != changes[field]:
-            audit.record(session, actor, entity="phase", entity_id=f"{ticket_id}:{phase.value}", ticket_id=ticket_id,
-                         action="phase_updated", field=field, old=_jsonable(getattr(row, field)), new=_jsonable(changes[field]))
-            setattr(row, field, changes[field])
-    if status is not None and status.value != row.status:
-        audit.record(session, actor, entity="phase", entity_id=f"{ticket_id}:{phase.value}", ticket_id=ticket_id,
-                     action="phase_status", old=row.status, new=status.value)
-        row.status = status.value
-        row.completed_at, row.completed_by_name = (_now(), actor.name or actor.email) if status == PhaseStatus.DONE else (None, None)
-    return row
-
-
-def _jsonable(value: Any) -> Any:
-    return value.isoformat() if isinstance(value, (date, datetime)) else value
