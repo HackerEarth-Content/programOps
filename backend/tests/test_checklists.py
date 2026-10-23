@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 
 from core import checklists
-from core.orm import ChecklistItem, ChecklistTemplate, SlackOutbox
+from core.orm import ChecklistItem, ChecklistTemplate, ProgramEvent, SlackOutbox, UserPermissionOverride
 from core.permissions import Role
 
 
@@ -217,3 +217,41 @@ async def test_a_request_without_a_channel_posts_nothing(client_for, make_user, 
     await client.patch(f"/programs/t1/requests/{request['id']}", json={"status": "declined"})
     async with db() as session:
         assert await session.scalar(select(func.count()).select_from(SlackOutbox)) == 0
+
+
+async def test_only_someone_who_can_link_integrations_points_a_request_at_a_channel(client_for, make_user, make_program, templates, db, monkeypatch):
+    stub_slack(monkeypatch, {"C0123456789": "hack-updates"})
+    await make_program("t1")
+    csm = await csm_client(client_for, make_user)
+    am = await client_for(await make_user("am@example.com", [Role.ACCOUNT_MANAGER], name="Meera J."))
+    body = {"template_id": await template_id(csm, "content_to_marketing"), "slack_channel_id": "C0123456789"}
+    refused = await am.post("/programs/t1/requests", json=body)
+    assert (refused.status_code, refused.json()["code"]) == (403, "slack_channel_not_allowed")
+    assert (await csm.get("/programs/t1/requests")).json() == []
+    assert (await am.post("/programs/t1/requests", json={"template_id": body["template_id"]})).status_code == 201  # no channel: fine
+    request = (await csm.post("/programs/t1/requests", json=body)).json()
+    assert request["slack_channel_name"] == "hack-updates"
+    async with db() as session:  # the channel is in the audit trail
+        events = (await session.scalars(select(ProgramEvent).where(ProgramEvent.field == "slack_channel_id"))).all()
+    assert [e.new for e in events] == ["C0123456789 (#hack-updates)"]
+    cleared = await csm.patch(f"/programs/t1/requests/{request['id']}", json={"slack_channel_id": ""})
+    assert cleared.status_code == 200 and cleared.json()["slack_channel_id"] is None
+
+
+async def test_changing_a_requests_channel_is_audited_and_needs_the_same_permission(client_for, make_user, make_program, templates, db, monkeypatch):
+    stub_slack(monkeypatch, {"C0123456789": "hack-updates", "C0999999999": "other"})
+    await make_program("t1")
+    csm = await csm_client(client_for, make_user)
+    request = await new_request(csm, slack_channel_id="C0123456789")
+    user = await make_user("rm@example.com", [Role.ACCOUNT_MANAGER], name="Ravi")
+    async with db() as session:  # may manage requests, but was not given integrations.link
+        session.add(UserPermissionOverride(user_id=user.id, permission="request.manage", granted=True))
+        await session.commit()
+    manager = await client_for(user)
+    refused = await manager.patch(f"/programs/t1/requests/{request['id']}", json={"slack_channel_id": "C0999999999"})
+    assert (refused.status_code, refused.json()["code"]) == (403, "slack_channel_not_allowed")
+    moved = await csm.patch(f"/programs/t1/requests/{request['id']}", json={"slack_channel_id": "C0999999999"})
+    assert moved.status_code == 200 and moved.json()["slack_channel_name"] == "other"
+    async with db() as session:
+        events = (await session.scalars(select(ProgramEvent).where(ProgramEvent.field == "slack_channel_id").order_by(ProgramEvent.id))).all()
+    assert [e.new for e in events][-1] == "C0999999999"
