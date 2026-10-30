@@ -36,7 +36,10 @@ export function NewInternalProgram() {
         event_end_date: end || null,
       }),
     onSuccess: async (program) => {
-      await qc.invalidateQueries({ queryKey: ["programs"] });
+      // the directory's totals and KPI cards come from the portfolio, the queues from their own queries
+      await Promise.all(
+        ["programs", "portfolio", "queues"].map((key) => qc.invalidateQueries({ queryKey: [key] })),
+      );
       setOpen(false);
       setName("");
       setType("Hackathon");

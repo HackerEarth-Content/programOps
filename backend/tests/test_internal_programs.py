@@ -151,3 +151,12 @@ async def test_if_the_portal_save_fails_the_new_ticket_is_archived_again(client_
     client._transport.raise_app_exceptions = False
     response = await client.post("/programs/internal", json={"name": "X"})
     assert response.status_code == 500 and FakeHubSpot.deleted == ["9001"]
+
+
+async def test_an_internal_program_counts_in_the_directory_totals(client_for, make_user, make_program):
+    await make_program("t1")
+    client = await csm_client(client_for, make_user)
+    before = (await client.get("/portfolio")).json()["active_programs"]
+    program = await new_internal(client)
+    after = (await client.get("/portfolio")).json()
+    assert after["active_programs"] == before + 1 and program["ticket_id"] in {c["ticket_id"] for c in after["programs"]}
