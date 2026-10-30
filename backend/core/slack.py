@@ -35,8 +35,10 @@ def _friendly(error: str) -> _SlackError:
     return message
 
 
-async def _call(method: str, payload: dict) -> tuple[bool, dict | str]:
-    if not settings.SLACK_BOT_TOKEN:
+async def _call(method: str, payload: dict, token: str | None = None) -> tuple[bool, dict | str]:
+    """`token` defaults to the bot token; the invite flow passes the signed-in person's one-off user token."""
+    token = token or settings.SLACK_BOT_TOKEN
+    if not token:
         return False, "Slack isn't connected yet. Ask an admin to connect it."
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -44,7 +46,7 @@ async def _call(method: str, payload: dict) -> tuple[bool, dict | str]:
                 r = await client.post(
                     f"https://slack.com/api/{method}",
                     data=payload,  # form-encoded: conversations.info doesn't accept JSON
-                    headers={"Authorization": f"Bearer {settings.SLACK_BOT_TOKEN}"},
+                    headers={"Authorization": f"Bearer {token}"},
                 )
                 if r.status_code == 429:
                     await asyncio.sleep(min(int(r.headers.get("Retry-After", 1)), 5))
@@ -83,6 +85,50 @@ async def join_channel(channel_id: str) -> tuple[bool, str]:
         return False, "That doesn't look like a Slack channel ID (e.g. C0123456789)."
     ok, data = await _call("conversations.join", {"channel": channel_id})
     return (True, "") if ok else (False, str(data))
+
+
+def oauth_configured() -> bool:
+    return bool(settings.SLACK_CLIENT_ID and settings.SLACK_CLIENT_SECRET)
+
+
+def authorize_url(redirect_uri: str, state: str) -> str:
+    """Slack's consent page asking the person for the one permission that lets them add apps to a private channel."""
+    from urllib.parse import urlencode
+
+    query = urlencode({"client_id": settings.SLACK_CLIENT_ID, "user_scope": "groups:write", "redirect_uri": redirect_uri, "state": state})
+    return f"https://slack.com/oauth/v2/authorize?{query}"
+
+
+async def _user_token(code: str, redirect_uri: str) -> tuple[bool, str]:
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                "https://slack.com/api/oauth.v2.access",
+                data={"client_id": settings.SLACK_CLIENT_ID, "client_secret": settings.SLACK_CLIENT_SECRET, "code": code, "redirect_uri": redirect_uri},
+            )
+        data = r.json()
+    except (httpx.HTTPError, ValueError) as e:
+        return False, f"Couldn't reach Slack: {e.__class__.__name__}"
+    token = (data.get("authed_user") or {}).get("access_token")
+    if not data.get("ok") or not token:
+        return False, f"Slack didn't approve the request: {data.get('error', 'no user token returned')}"
+    return True, token
+
+
+async def invite_bot_with_code(code: str, redirect_uri: str, channel_id: str) -> tuple[bool, str]:
+    """Trade the one-time code for the person's token, invite the bot with it, and drop the token. Nothing is stored."""
+    ok, token = await _user_token(code, redirect_uri)
+    if not ok:
+        return False, token
+    ok, me = await _call("auth.test", {})  # the bot's own user id
+    if not ok:
+        return False, str(me)
+    ok, value = await _call("conversations.invite", {"channel": channel_id, "users": me["user_id"]}, token=token)
+    if ok or getattr(value, "code", "") == "already_in_channel":
+        return True, "The bot is in the channel."
+    if getattr(value, "code", "") in ("channel_not_found", "not_in_channel"):
+        return False, "You aren't a member of that channel, so you can't add the bot. Join it in Slack first, then try again."
+    return False, str(value)
 
 
 def escape(text: str) -> str:

@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # HubSpot search API allows up to 200 results per page
     PROGRAM_PAGE_SIZE: int = 200
 
+    # Slack app credentials for the one-shot "add the bot to a private channel" flow (a person invites the bot).
+    SLACK_CLIENT_ID: str = ""
+    SLACK_CLIENT_SECRET: str = ""
+
     FRONTEND_URL: str
     API_BASE_URL: str
     ENVIRONMENT: str
