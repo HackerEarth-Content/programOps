@@ -75,13 +75,12 @@ async def create_internal_program(
     session: AsyncSession = Depends(get_session),
     access: Access = Depends(require_permission(Permission.PROGRAM_CREATE)),
 ):
-    """Start an internal program (a hackathon or a hiring challenge): no HubSpot ticket and no feasibility step. It starts
-    at Onboarding."""
+    """Start an internal program (a hackathon or a hiring challenge): no feasibility step, it starts at Onboarding. A real
+    HubSpot ticket is created for it when write-back is on (502 `hubspot_scope_missing` / `hubspot_unavailable` if not)."""
     program = await internal_programs.create_internal(
         session, access.user, name=body.name, campaign_type=body.campaign_type,
         registration_start_date=body.registration_start_date, event_end_date=body.event_end_date,
     )
-    await session.commit()
     return _serialize(program)
 
 

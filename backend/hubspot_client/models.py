@@ -202,7 +202,7 @@ class ProgramTicket(BaseModel):
             platform_details=_platform(props),
             other_event_name=props.get("other_event_name") or None,
             event_id=props.get("event_id") or None,
-            registration_start_date=props.get("registration_start_date"),
+            registration_start_date=props.get("registration_start_date_skip_if_undefined"),
             event_end_date=props.get("event_end_date_skip_if_undefined"),
             target_audience=_split_checkbox(props.get("target_audience")),
             geography=_split_checkbox(

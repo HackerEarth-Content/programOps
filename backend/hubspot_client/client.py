@@ -40,7 +40,7 @@ TICKET_PROPERTIES = [
     "platform_details",
     "other_platform_details",
     "event_id",
-    "registration_start_date",
+    "registration_start_date_skip_if_undefined",
     "event_end_date_skip_if_undefined",
     "target_audience",
     "geography_if_its_a_specific_city_or_split_please_specify_in_other",
@@ -160,6 +160,19 @@ class HubSpotClient:
         url = f"{_BASE}/crm/v3/objects/tickets/{ticket_id}"
         async with _session() as session:
             await _request(session, "PATCH", url, json={"properties": properties})
+
+    async def create_ticket(self, properties: dict[str, str]) -> str:
+        """Create a ticket and return its id. Needs the ticket-write scope on the token."""
+        url = f"{_BASE}/crm/v3/objects/tickets"
+        async with _session() as session:
+            data = await _request(session, "POST", url, json={"properties": properties})
+        return str(data["id"])
+
+    async def delete_ticket(self, ticket_id: str) -> None:
+        """Archive a ticket (used to undo a creation whose portal save failed)."""
+        url = f"{_BASE}/crm/v3/objects/tickets/{ticket_id}"
+        async with _session() as session:
+            await _request(session, "DELETE", url, raw=True)
 
     async def _owner_records(self) -> list[dict]:
         """All HubSpot owner records. Best-effort: [] rather than failing the

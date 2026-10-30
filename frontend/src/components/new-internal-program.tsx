@@ -15,8 +15,8 @@ import { Input } from "@/components/ui/input";
 import { HIRING_CAMPAIGN_TYPE, sendJson, useCan, type Program } from "@/lib/api";
 
 /**
- * Start an internal program (a hackathon or a hiring challenge): run by HackerEarth itself, so there is no HubSpot
- * ticket and no feasibility step. It is created at Onboarding and its stage and checklist are kept in ProgramOps.
+ * Start an internal program (a hackathon or a hiring challenge): run by HackerEarth itself, so no feasibility step.
+ * It is created at Onboarding, with a real HubSpot ticket when the portal can write to HubSpot.
  */
 export function NewInternalProgram() {
   const canCreate = useCan("program.create");
@@ -62,9 +62,9 @@ export function NewInternalProgram() {
             <DialogHeader>
               <DialogTitle>New internal program</DialogTitle>
               <DialogDescription>
-                For hackathons and hiring challenges HackerEarth runs itself, so no HubSpot ticket
-                and no feasibility step. It starts at Onboarding, and its stage and checklist are
-                kept here.
+                For hackathons and hiring challenges HackerEarth runs itself, so no feasibility
+                step. It starts at Onboarding, and a ticket marked [Internal] is created for it in
+                HubSpot.
               </DialogDescription>
             </DialogHeader>
             <div className="mt-4 space-y-3">

@@ -66,9 +66,9 @@ async def set_checklist_item(
     access: Access = Depends(require_permission(Permission.HUBSPOT_WRITE)),
 ) -> ChecklistOut:
     """Tick or untick a checklist item on the HubSpot ticket. 409 `hubspot_conflict` (with `current`) if it changed there.
-    An internal hackathon has no ticket: the change is saved in the portal instead (409 `program_conflict`)."""
+    An internal hackathon with no HubSpot ticket: the change is saved in the portal instead (409 `program_conflict`)."""
     program = await session.get(Program, ticket_id)
-    if program is not None and internal_programs.is_internal(program):
+    if program is not None and internal_programs.is_local_only(program):
         selected = internal_programs.set_checklist_item(
             session, access.user, program, stage_key=body.stage_key, item=body.item, done=body.done, expected=body.expected
         )
@@ -96,9 +96,9 @@ async def move_stage(
     access: Access = Depends(require_permission(Permission.HUBSPOT_WRITE)),
 ) -> StageOut:
     """Move the HubSpot ticket to another stage. 409 `hubspot_conflict` (with `current_stage`) if it moved there.
-    An internal hackathon has no ticket: the move is saved in the portal instead (409 `program_conflict`)."""
+    An internal hackathon with no HubSpot ticket: the move is saved in the portal instead (409 `program_conflict`)."""
     program = await session.get(Program, ticket_id)
-    if program is not None and internal_programs.is_internal(program):
+    if program is not None and internal_programs.is_local_only(program):
         stage_key = internal_programs.move_stage(
             session, access.user, program, stage_key=body.stage_key, expected_stage_key=body.expected_stage_key
         )
