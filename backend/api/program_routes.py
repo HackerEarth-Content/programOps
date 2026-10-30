@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from typing import Literal
 from urllib.parse import quote
 from collections import Counter
 from datetime import date, datetime, timezone
@@ -63,6 +64,7 @@ async def sync_status():
 
 class InternalProgramIn(BaseModel):
     name: str = Field(min_length=1)
+    campaign_type: Literal["Hackathon", "Coding Challenge"] = "Hackathon"  # "Coding Challenge" = a hiring challenge
     registration_start_date: date | None = None
     event_end_date: date | None = None
 
@@ -73,12 +75,12 @@ async def create_internal_program(
     session: AsyncSession = Depends(get_session),
     access: Access = Depends(require_permission(Permission.PROGRAM_CREATE)),
 ):
-    """Start an internal hackathon: a program with no HubSpot ticket and no feasibility step. It starts at Onboarding."""
+    """Start an internal program (a hackathon or a hiring challenge): no feasibility step, it starts at Onboarding. A real
+    HubSpot ticket is created for it when write-back is on (502 `hubspot_scope_missing` / `hubspot_unavailable` if not)."""
     program = await internal_programs.create_internal(
-        session, access.user, name=body.name, campaign_type="Hackathon",
+        session, access.user, name=body.name, campaign_type=body.campaign_type,
         registration_start_date=body.registration_start_date, event_end_date=body.event_end_date,
     )
-    await session.commit()
     return _serialize(program)
 
 

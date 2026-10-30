@@ -57,6 +57,8 @@ import {
   apiFetch,
   checkRedash,
   deleteRegistration,
+  API_BASE_URL,
+  joinSlackChannel,
   lookupSlackChannel,
   previewSlackMessage,
   runRedash,
@@ -1346,7 +1348,34 @@ function Integrations({
 const invalidateReg = (qc: ReturnType<typeof useQueryClient>, ticketId: string) =>
   qc.invalidateQueries({ queryKey: ["programs", ticketId] });
 
+const PRIVATE_ID = /^[CG][A-Z0-9]{8,}$/;
+
+/** Slack won't let a bot join a private channel, so a person in it approves once and the bot is invited as them. */
+function InviteBotLink({ ticketId, channelId }: { ticketId: string; channelId: string }) {
+  const href = `${API_BASE_URL}/api/slack/invite/start?ticket_id=${encodeURIComponent(ticketId)}&channel_id=${encodeURIComponent(channelId)}`;
+  return (
+    <Button size="sm" variant="outline" asChild>
+      <a href={href}>Add the bot to this private channel</a>
+    </Button>
+  );
+}
+
 function SlackChannelBox({ ticketId, data }: { ticketId: string; data: RegistrationsView }) {
+  // Slack sends the person back here with the outcome in the address; show it once, then tidy the address.
+  const [returned, setReturned] = useState<{ ok: boolean; text: string } | null>(null);
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const error = q.get("slack_error");
+    if (!error && q.get("slack") !== "invited") return;
+    setReturned(
+      error
+        ? { ok: false, text: error }
+        : { ok: true, text: "The bot was added. Now add the channel ID below." },
+    );
+    q.delete("slack");
+    q.delete("slack_error");
+    window.history.replaceState(null, "", `${window.location.pathname}?${q.toString()}`);
+  }, []);
   const qc = useQueryClient();
   const refresh = () => invalidateReg(qc, ticketId);
   const { channel_id, channel_name } = data.slack;
@@ -1385,6 +1414,18 @@ function SlackChannelBox({ ticketId, data }: { ticketId: string; data: Registrat
     },
   });
   const test = useMutation({ mutationFn: () => testSlack(ticketId) });
+  // Is the bot in the saved channel? A public channel can be joined from here; a private one needs /invite in Slack.
+  const botStatus = useQuery({
+    queryKey: ["programs", ticketId, "slack-status", channel_id],
+    queryFn: () => lookupSlackChannel(ticketId, channel_id as string),
+    enabled: !!channel_id && !editing && data.slack_configured,
+    retry: false,
+    staleTime: 30_000,
+  });
+  const join = useMutation({
+    mutationFn: () => joinSlackChannel(ticketId),
+    onSuccess: () => void botStatus.refetch(),
+  });
 
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3">
@@ -1395,6 +1436,17 @@ function SlackChannelBox({ ticketId, data }: { ticketId: string; data: Registrat
       {!data.slack_configured && (
         <span className="t-body-sm text-status-critical">
           Slack isn't connected yet. Ask an admin to connect it.
+        </span>
+      )}
+      {returned && (
+        <span
+          role="status"
+          className={cn(
+            "basis-full t-body-sm",
+            returned.ok ? "text-status-good" : "text-status-critical",
+          )}
+        >
+          {returned.text}
         </span>
       )}
       {channel_id && !editing ? (
@@ -1412,6 +1464,34 @@ function SlackChannelBox({ ticketId, data }: { ticketId: string; data: Registrat
           <Button size="sm" variant="ghost" onClick={() => save.mutate(null)}>
             Remove
           </Button>
+          {botStatus.data &&
+            (botStatus.data.is_member ? (
+              <span className="t-body-sm text-status-good">The bot is in this channel.</span>
+            ) : botStatus.data.is_private ? (
+              <>
+                <span className="t-body-sm text-status-warning">
+                  The bot isn't in this private channel.
+                </span>
+                <InviteBotLink ticketId={ticketId} channelId={channel_id as string} />
+              </>
+            ) : (
+              <>
+                <span className="t-body-sm text-status-warning">
+                  The bot isn't in this channel yet.
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={join.isPending}
+                  onClick={() => join.mutate()}
+                >
+                  {join.isPending ? "Adding…" : "Add the bot"}
+                </Button>
+              </>
+            ))}
+          {join.isError && (
+            <span className="t-body-sm text-status-critical">{errMsg(join.error)}</span>
+          )}
           {test.isSuccess && <span className="t-body-sm text-status-good">Test message sent.</span>}
           {test.isError && (
             <span className="t-body-sm text-status-critical">{errMsg(test.error)}</span>
@@ -1466,6 +1546,9 @@ function SlackChannelBox({ ticketId, data }: { ticketId: string; data: Registrat
           )}
           {preview.state === "error" && (
             <span className="t-body-sm text-status-critical">{preview.text}</span>
+          )}
+          {preview.state === "error" && PRIVATE_ID.test(input.trim()) && (
+            <InviteBotLink ticketId={ticketId} channelId={input.trim()} />
           )}
           {save.isError && (
             <span className="t-body-sm text-status-critical">{errMsg(save.error)}</span>

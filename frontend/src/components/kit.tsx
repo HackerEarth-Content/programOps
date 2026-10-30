@@ -171,17 +171,21 @@ export function Bar({
   index = 0,
   className,
   track = true,
+  label = "Progress",
 }: {
   pct: number;
   tone?: Tone;
   index?: number;
   className?: string;
   track?: boolean;
+  /** What the bar measures, for screen readers. */
+  label?: string;
 }) {
   return (
     <div
       className={cn("h-1.5 overflow-hidden rounded-full", track && "bg-secondary", className)}
       role="progressbar"
+      aria-label={label}
       aria-valuenow={Math.round(pct)}
       aria-valuemin={0}
       aria-valuemax={100}

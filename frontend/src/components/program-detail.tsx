@@ -172,7 +172,7 @@ function Header({ program, full }: { program: Program; full: boolean }) {
           <ArrowLeft /> Back
         </Button>
         <nav aria-label="Breadcrumb" className="text-[13px] text-ink-3">
-          <Link to="/" className="text-ink-2 hover:text-foreground">
+          <Link to="/" className="text-ink-2 underline underline-offset-2 hover:text-foreground">
             Programs
           </Link>{" "}
           <span aria-hidden>/</span> {title}

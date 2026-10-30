@@ -141,7 +141,7 @@ async def test_marketing_and_account_managers_can_open_the_queue_too(client_for,
         assert (await client.get("/queues/csm", params={"scope": "all"})).status_code == 200
 
 
-async def test_an_untouched_plan_row_is_not_flagged_for_a_missing_utm(client_for, make_user, make_program, db):
+async def test_an_untouched_plan_row_is_to_prepare_not_a_blocker(client_for, make_user, make_program, db):
     from core import activities
 
     await make_program("t1")
@@ -151,11 +151,12 @@ async def test_an_untouched_plan_row_is_not_flagged_for_a_missing_utm(client_for
         ]})
         await session.commit()
     client = await client_for(await make_user("m@example.com", [Role.MARKETING]))
-    assert (await client.get("/queues/marketing")).json()["items"] == []
+    items = (await client.get("/queues/marketing")).json()["items"]
+    assert [(i["kind"], i["severity"]) for i in items] == [("to_prepare", "info")]
     aid = (await client.get("/programs/t1/activities")).json()[0]["id"]
     await client.patch(f"/programs/t1/activities/{aid}", json={"status": "wip"})
     kinds = {i["kind"] for i in (await client.get("/queues/marketing")).json()["items"]}
-    assert "missing_utm_or_proof" in kinds
+    assert "missing_utm_or_proof" in kinds and "to_prepare" not in kinds
 
 
 async def test_my_queue_follows_the_csm_named_on_the_hubspot_ticket_by_email(client_for, make_user, make_program, db):

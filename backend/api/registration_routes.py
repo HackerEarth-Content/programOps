@@ -294,10 +294,22 @@ async def delete_entry(
 @router.get("/slack/lookup")
 async def lookup_channel(ticket_id: str, channel_id: str):
     """Preview: the channel name for an id, before saving it."""
-    ok, value = await slack.channel_name(channel_id.strip())
+    ok, value = await slack.channel_status(channel_id.strip())
     if not ok:
         raise HTTPException(422, value)
-    return {"channel_id": channel_id.strip(), "channel_name": value}
+    return {"channel_id": channel_id.strip(), "channel_name": value["name"], "is_member": value["is_member"], "is_private": value["is_private"]}
+
+
+@router.post("/slack/join", dependencies=[_LINK])
+async def join_slack_channel(ticket_id: str, session: AsyncSession = Depends(get_session)):
+    """Add the bot to the program's linked channel (public channels only; a private one needs /invite in Slack)."""
+    cfg = await session.get(ProgramRegistrationSettings, ticket_id)
+    if not cfg or not cfg.slack_channel_id:
+        raise HTTPException(400, "No Slack channel set for this program.")
+    ok, err = await slack.join_channel(cfg.slack_channel_id)
+    if not ok:
+        raise HTTPException(502, err)
+    return {"joined": True}
 
 
 @router.put("/slack")

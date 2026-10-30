@@ -369,7 +369,7 @@ function ProgramCard({ row, index }: { row: Row; index: number }) {
               key={t.tab}
               id={p.ticket_id}
               tab={t.tab}
-              className="hover:text-foreground hover:underline"
+              className="inline-flex min-h-6 items-center px-0.5 hover:text-foreground hover:underline"
             >
               {t.label}
               {t.n ? <span className="ml-1 text-[12px] text-muted-foreground">{t.n}</span> : null}

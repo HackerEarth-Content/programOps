@@ -28,6 +28,7 @@ from api.program_routes import router as program_router
 from api.queue_routes import router as queue_router
 from api.registration_extra_routes import router as registration_extra_router
 from api.registration_routes import router as registration_router
+from api.slack_oauth_routes import router as slack_oauth_router
 from api.round_routes import router as round_router
 from api.system_routes import router as system_router
 from api.update_routes import router as update_router
@@ -74,6 +75,7 @@ app.include_router(admin_router)
 app.include_router(audit_router)
 app.include_router(program_router)
 app.include_router(registration_router)
+app.include_router(slack_oauth_router)
 app.include_router(registration_extra_router)
 app.include_router(activity_router)
 app.include_router(round_router)

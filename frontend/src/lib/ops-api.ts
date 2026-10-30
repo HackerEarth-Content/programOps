@@ -45,7 +45,7 @@ export const setUserPermissions = (id: string, grants: string[], revokes: string
 // Mirrors core/permissions.py: label per permission, grouped for the editor.
 export const PERMISSION_LABELS: Record<string, string> = {
   "program.view": "View programs",
-  "program.create": "Start internal hackathons",
+  "program.create": "Start internal programs",
   "audit.view": "View audit log",
   "comment.add": "Add comments",
   "request.create": "Raise requests",
@@ -85,7 +85,8 @@ export type MarketingKind =
   | "ready_to_go_live"
   | "missing_utm_or_proof"
   | "awaiting_approval"
-  | "results_to_record";
+  | "results_to_record"
+  | "to_prepare";
 export type CsmKind =
   | "control_breach"
   | "approval_waiting"
@@ -104,6 +105,7 @@ export const KIND_LABELS: Record<MarketingKind | CsmKind, string> = {
   missing_utm_or_proof: "Missing UTM or proof",
   awaiting_approval: "Awaiting approval",
   results_to_record: "Results to record",
+  to_prepare: "To prepare",
   control_breach: "Control breach",
   approval_waiting: "Approval waiting",
   request_due: "Request due",
