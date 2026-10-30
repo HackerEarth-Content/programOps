@@ -202,7 +202,7 @@ export function MarketingQueue() {
             ))}
           </div>
 
-          <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+          <div className="grid items-start gap-5 grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_340px]">
             <div className="space-y-4">
               {shown.length === 0 ? (
                 <EmptyState
@@ -263,7 +263,7 @@ function MarketingSkeleton() {
           <Skeleton key={i} className="h-[84px]" />
         ))}
       </div>
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="grid gap-5 grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_340px]">
         <div className="space-y-4">
           {Array.from({ length: 3 }, (_, i) => (
             <Skeleton key={i} className="h-[150px]" />

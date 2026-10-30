@@ -1,5 +1,6 @@
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 import { apiFetch, sendJson, ROLE_LABELS, type UserRole } from "@/lib/api";
+import { PERMISSION_LABELS } from "@/lib/ops-api";
 
 export const SECTIONS = ["users", "roles", "audit", "settings"] as const;
 export type Section = (typeof SECTIONS)[number];
@@ -9,7 +10,7 @@ export const parseSection = (v: unknown): Section => SECTIONS.find((s) => s === 
 
 const BASE = ["program.view", "audit.view", "comment.add", "request.create"];
 export const ROLE_DEFAULTS: Record<UserRole, readonly string[]> = {
-  super_admin: [...BASE, "request_types.edit", "users.manage", "settings.edit"],
+  super_admin: Object.keys(PERMISSION_LABELS), // holds every permission, including any added later
   csm: [
     ...BASE,
     "update.post",

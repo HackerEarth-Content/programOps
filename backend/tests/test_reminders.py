@@ -293,7 +293,7 @@ async def test_one_nudge_covers_everything_waiting_instead_of_one_message_per_ac
     await admin.put("/programs/t1/assignments", json=[{"user_id": csm.id, "role": "csm"}])
     async with db() as session:
         session.add_all(
-            ProgramActivity(ticket_id="t1", code=f"W1-ACT-0{i}", source="poa", channel="Email", title=f"Mail {i}", status="not_started")
+            ProgramActivity(ticket_id="t1", code=f"W1-ACT-0{i}", source="poa", channel="Email", title=f"Mail {i}", status="wip")  # marked ready by marketing
             for i in range(3)
         )
         await session.commit()
@@ -304,6 +304,21 @@ async def test_one_nudge_covers_everything_waiting_instead_of_one_message_per_ac
     assert len(nudges) == 1 and "3 marketing activities are waiting for your approval" in nudges[0].body
     again = await marketing.post("/programs/t1/activities/nudge-approvals")
     assert (again.status_code, again.json()["code"]) == (429, "nudge_too_soon")
+
+
+async def test_activities_not_yet_marked_ready_are_not_nudged(client_for, make_user, make_program, db):
+    await make_program("t1")
+    await link_slack(db)
+    async with db() as session:
+        session.add(ProgramActivity(ticket_id="t1", code="W1-ACT-01", source="poa", channel="Email", title="Mail", status="not_started"))
+        await session.commit()
+        activity_id = await session.scalar(select(ProgramActivity.id))
+    marketing = await client_for(await make_user("m@example.com", [Role.MARKETING], name="Neha K."))
+    bulk = await marketing.post("/programs/t1/activities/nudge-approvals")
+    assert (bulk.status_code, bulk.json()["code"]) == (409, "nothing_to_nudge") and "WIP" in bulk.json()["detail"]
+    single = await marketing.post(f"/programs/t1/activities/{activity_id}/nudge")
+    assert (single.status_code, single.json()["code"]) == (409, "nothing_to_nudge")
+    assert [r for r in await outbox(db) if r.kind == "nudge"] == []
 
 
 async def test_an_approved_activity_cannot_be_nudged_and_an_account_manager_cannot_nudge(client_for, make_user, make_program, db):

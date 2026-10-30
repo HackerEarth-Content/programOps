@@ -57,6 +57,7 @@ import {
   apiFetch,
   checkRedash,
   deleteRegistration,
+  joinSlackChannel,
   lookupSlackChannel,
   previewSlackMessage,
   runRedash,
@@ -1385,6 +1386,18 @@ function SlackChannelBox({ ticketId, data }: { ticketId: string; data: Registrat
     },
   });
   const test = useMutation({ mutationFn: () => testSlack(ticketId) });
+  // Is the bot in the saved channel? A public channel can be joined from here; a private one needs /invite in Slack.
+  const botStatus = useQuery({
+    queryKey: ["programs", ticketId, "slack-status", channel_id],
+    queryFn: () => lookupSlackChannel(ticketId, channel_id as string),
+    enabled: !!channel_id && !editing && data.slack_configured,
+    retry: false,
+    staleTime: 30_000,
+  });
+  const join = useMutation({
+    mutationFn: () => joinSlackChannel(ticketId),
+    onSuccess: () => void botStatus.refetch(),
+  });
 
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3">
@@ -1412,6 +1425,31 @@ function SlackChannelBox({ ticketId, data }: { ticketId: string; data: Registrat
           <Button size="sm" variant="ghost" onClick={() => save.mutate(null)}>
             Remove
           </Button>
+          {botStatus.data &&
+            (botStatus.data.is_member ? (
+              <span className="t-body-sm text-status-good">The bot is in this channel.</span>
+            ) : botStatus.data.is_private ? (
+              <span className="t-body-sm text-status-warning">
+                The bot isn't in this private channel. In Slack, type /invite and pick the bot.
+              </span>
+            ) : (
+              <>
+                <span className="t-body-sm text-status-warning">
+                  The bot isn't in this channel yet.
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={join.isPending}
+                  onClick={() => join.mutate()}
+                >
+                  {join.isPending ? "Adding…" : "Add the bot"}
+                </Button>
+              </>
+            ))}
+          {join.isError && (
+            <span className="t-body-sm text-status-critical">{errMsg(join.error)}</span>
+          )}
           {test.isSuccess && <span className="t-body-sm text-status-good">Test message sent.</span>}
           {test.isError && (
             <span className="t-body-sm text-status-critical">{errMsg(test.error)}</span>

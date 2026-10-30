@@ -1338,7 +1338,11 @@ function RequestCard({
   );
 }
 
-type ChannelCheck = { state: "idle" | "loading" | "ok" | "error"; text: string };
+type ChannelCheck = {
+  state: "idle" | "loading" | "ok" | "error";
+  text: string;
+  note?: string | undefined;
+};
 
 /** A Slack channel ID with a live preview of the channel it points to, so nothing is saved against a wrong one. */
 function SlackChannelField({
@@ -1364,7 +1368,19 @@ function SlackChannelField({
     let stale = false;
     const t = setTimeout(() => {
       lookupSlackChannel(ticketId, id)
-        .then((r) => !stale && next({ state: "ok", text: `#${r.channel_name}` }))
+        .then(
+          (r) =>
+            !stale &&
+            next({
+              state: "ok",
+              text: `#${r.channel_name}`,
+              note: r.is_member
+                ? undefined
+                : r.is_private
+                  ? "The bot isn't in this private channel: in Slack, type /invite and pick the bot."
+                  : "The bot isn't in this channel yet. It joins public channels by itself with the first message.",
+            }),
+        )
         .catch((e) => !stale && next({ state: "error", text: errorText(e) }));
     }, 400);
     return () => {
@@ -1393,6 +1409,9 @@ function SlackChannelField({
       >
         {check.state === "loading" && "Looking up the channel…"}
         {check.state === "ok" && `Posts to ${check.text}`}
+        {check.state === "ok" && check.note && (
+          <span className="block text-status-warning">{check.note}</span>
+        )}
         {check.state === "error" && check.text}
         {check.state === "idle" &&
           "Updates for this request are posted there. Leave empty for none."}

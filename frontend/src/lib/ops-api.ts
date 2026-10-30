@@ -45,7 +45,7 @@ export const setUserPermissions = (id: string, grants: string[], revokes: string
 // Mirrors core/permissions.py: label per permission, grouped for the editor.
 export const PERMISSION_LABELS: Record<string, string> = {
   "program.view": "View programs",
-  "program.create": "Start internal hackathons",
+  "program.create": "Start internal programs",
   "audit.view": "View audit log",
   "comment.add": "Add comments",
   "request.create": "Raise requests",

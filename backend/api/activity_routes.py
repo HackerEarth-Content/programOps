@@ -185,12 +185,13 @@ async def nudge_all_for_approval(
 ) -> NudgeOut:
     """One Slack message asking the program's CSM(s) to approve everything still waiting (not one per activity).
     At most one per program per hour."""
+    # Only what marketing has marked ready (WIP) is waiting on the CSM: the same rule as the CSM queue and reminders.
     waiting = [
         a for a in await activities.list_for(session, ticket_id)
-        if a.approved_at is None and a.status in (activities.ActivityStatus.NOT_STARTED, activities.ActivityStatus.WIP)
+        if a.approved_at is None and a.status == activities.ActivityStatus.WIP
     ]
     if not waiting:
-        raise DomainError("nothing_to_nudge", "Nothing is waiting for approval.", 409)
+        raise DomainError("nothing_to_nudge", "Nothing is marked ready for approval yet. Set an activity to WIP first.", 409)
     csms = (
         await session.scalars(
             select(User.name).join(ProgramAssignment, ProgramAssignment.user_id == User.id)
@@ -221,6 +222,8 @@ async def nudge_for_approval(
     activity = await activities.get(session, ticket_id, activity_id)
     if activity.approved_at is not None:
         raise DomainError("nothing_to_nudge", "This activity is already approved.", 409)
+    if activity.status != activities.ActivityStatus.WIP:
+        raise DomainError("nothing_to_nudge", "Set the activity to WIP (ready for review) before asking for approval.", 409)
     csms = (
         await session.scalars(
             select(User.name).join(ProgramAssignment, ProgramAssignment.user_id == User.id)

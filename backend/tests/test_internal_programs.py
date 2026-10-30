@@ -63,3 +63,12 @@ async def test_an_internal_program_moves_stage_and_ticks_items_without_hubspot(c
     assert (behind.status_code, behind.json()["code"]) == (409, "program_conflict")
     feasibility = await client.post(f"/programs/{ticket}/hubspot/stage", json={"stage_key": "pre_sales", "expected_stage_key": "ongoing"})
     assert (feasibility.status_code, feasibility.json()["code"]) == (422, "unknown_stage")
+
+
+async def test_the_event_type_is_chosen_not_fixed(client_for, make_user):
+    client = await csm_client(client_for, make_user)
+    hiring = await client.post("/programs/internal", json={"name": "Campus drive", "campaign_type": "Coding Challenge"})
+    assert (hiring.status_code, hiring.json()["campaign_type"]) == (201, "Coding Challenge")
+    assert (await new_internal(client, "Plain default"))["campaign_type"] == "Hackathon"  # still the default
+    refused = await client.post("/programs/internal", json={"name": "X", "campaign_type": "Webinar"})
+    assert refused.status_code == 422

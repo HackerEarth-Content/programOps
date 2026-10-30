@@ -12,11 +12,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { sendJson, useCan, type Program } from "@/lib/api";
+import { HIRING_CAMPAIGN_TYPE, sendJson, useCan, type Program } from "@/lib/api";
 
 /**
- * Start an internal hackathon: run by HackerEarth itself, so there is no HubSpot ticket and no feasibility step.
- * It is created at Onboarding and its stage and checklist are kept in ProgramOps.
+ * Start an internal program (a hackathon or a hiring challenge): run by HackerEarth itself, so there is no HubSpot
+ * ticket and no feasibility step. It is created at Onboarding and its stage and checklist are kept in ProgramOps.
  */
 export function NewInternalProgram() {
   const canCreate = useCan("program.create");
@@ -24,12 +24,14 @@ export function NewInternalProgram() {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
+  const [type, setType] = useState("Hackathon");
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const create = useMutation({
     mutationFn: () =>
       sendJson<Program>("POST", "/programs/internal", {
         name: name.trim(),
+        campaign_type: type,
         registration_start_date: start || null,
         event_end_date: end || null,
       }),
@@ -37,6 +39,7 @@ export function NewInternalProgram() {
       await qc.invalidateQueries({ queryKey: ["programs"] });
       setOpen(false);
       setName("");
+      setType("Hackathon");
       setStart("");
       setEnd("");
       void navigate({ to: "/programs/$ticketId", params: { ticketId: program.ticket_id } });
@@ -46,7 +49,7 @@ export function NewInternalProgram() {
   return (
     <>
       <Button onClick={() => setOpen(true)}>
-        <Plus /> New internal hackathon
+        <Plus /> New internal program
       </Button>
       <Dialog open={open} onOpenChange={(v) => !create.isPending && setOpen(v)}>
         <DialogContent>
@@ -57,13 +60,25 @@ export function NewInternalProgram() {
             }}
           >
             <DialogHeader>
-              <DialogTitle>New internal hackathon</DialogTitle>
+              <DialogTitle>New internal program</DialogTitle>
               <DialogDescription>
-                For programs HackerEarth runs itself, so no HubSpot ticket and no feasibility step.
-                It starts at Onboarding, and its stage and checklist are kept here.
+                For hackathons and hiring challenges HackerEarth runs itself, so no HubSpot ticket
+                and no feasibility step. It starts at Onboarding, and its stage and checklist are
+                kept here.
               </DialogDescription>
             </DialogHeader>
             <div className="mt-4 space-y-3">
+              <label className="block space-y-1">
+                <span className="text-[13px] text-ink-2">Event type</span>
+                <select
+                  value={type}
+                  onChange={(e) => setType(e.target.value)}
+                  className="h-9 w-full rounded-[8px] border border-border bg-surface px-3 text-[14px]"
+                >
+                  <option value="Hackathon">Hackathon</option>
+                  <option value={HIRING_CAMPAIGN_TYPE}>Hiring challenge</option>
+                </select>
+              </label>
               <label className="block space-y-1">
                 <span className="text-[13px] text-ink-2">Name</span>
                 <Input value={name} onChange={(e) => setName(e.target.value)} required autoFocus />

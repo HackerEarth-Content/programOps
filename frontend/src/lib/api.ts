@@ -101,8 +101,12 @@ export async function apiFetch<T>(path: string): Promise<T> {
   // different port (8000 vs 5173), so it needs to be explicitly sent cross-port.
   const response = await fetch(`${API_BASE_URL}${path}`, { credentials: "include" });
   if (!response.ok) {
+    // Say why when the server did (a rejected Slack channel, a refused action), not just the status.
+    const detail = await response.json().catch(() => null);
     throw new ApiError(
-      `${path} failed: ${response.status} ${response.statusText}`,
+      typeof detail?.detail === "string"
+        ? detail.detail
+        : `${path} failed: ${response.status} ${response.statusText}`,
       response.status,
     );
   }
@@ -324,8 +328,14 @@ export const saveRegistrationConfig = (ticketId: string, roles: string[], fields
     `${regPath(ticketId)}/registrations/config`,
     { roles, fields },
   );
+export type SlackChannelStatus = {
+  channel_id: string;
+  channel_name: string;
+  is_member: boolean; // the bot is already in the channel
+  is_private: boolean; // a bot can't join a private channel: someone has to /invite it
+};
 export const lookupSlackChannel = (ticketId: string, channelId: string) =>
-  apiFetch<{ channel_id: string; channel_name: string }>(
+  apiFetch<SlackChannelStatus>(
     `${regPath(ticketId)}/slack/lookup?channel_id=${encodeURIComponent(channelId)}`,
   );
 export const saveSlack = (
@@ -338,6 +348,8 @@ export const checkRedash = (ticketId: string, event_slug: string) =>
   sendJson<RedashCheck>("POST", `${regPath(ticketId)}/registrations/redash/check`, { event_slug });
 export const runRedash = (ticketId: string) =>
   sendJson<SaveResult>("POST", `${regPath(ticketId)}/registrations/redash/run`);
+export const joinSlackChannel = (ticketId: string) =>
+  sendJson<{ joined: boolean }>("POST", `${regPath(ticketId)}/slack/join`);
 export const testSlack = (ticketId: string) =>
   sendJson<{ sent: boolean }>("POST", `${regPath(ticketId)}/slack/test`);
 
