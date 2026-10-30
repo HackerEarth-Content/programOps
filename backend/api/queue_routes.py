@@ -30,6 +30,7 @@ class MarketingKind(StrEnum):
     MISSING_UTM_OR_PROOF = "missing_utm_or_proof"
     AWAITING_APPROVAL = "awaiting_approval"  # marketing marked it WIP: ready for the CSM to review
     RESULTS_TO_RECORD = "results_to_record"  # live, and yesterday's views and clicks aren't logged
+    TO_PREPARE = "to_prepare"  # not started, still needs a UTM or go-live date; info only, so it never inflates a badge
 
 
 class QueueItem(BaseModel):
@@ -86,6 +87,8 @@ def _kinds(activity: ProgramActivity, today: date, logged_yesterday: bool) -> li
     in_motion = activity.status != ActivityStatus.NOT_STARTED or activity.approved_at is not None
     if missing and in_motion:  # a plan row nobody has touched yet isn't a blocker; it would flood the queue
         found.append((MarketingKind.MISSING_UTM_OR_PROOF, Severity.AMBER, f"Missing {' and '.join(missing)}"))
+    elif not in_motion and (setup := [n for n in missing if n != "creative proof"]):
+        found.append((MarketingKind.TO_PREPARE, Severity.INFO, f"Needs {' and '.join(setup)} before it can start"))
     return found
 
 

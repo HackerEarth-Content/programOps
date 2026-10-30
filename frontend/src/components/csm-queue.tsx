@@ -156,12 +156,13 @@ export function CsmQueue() {
     [portfolio.data],
   );
 
-  const sum = (c: Partial<Record<CsmKind, number>> | undefined) =>
-    Object.values(c ?? {}).reduce((a, b) => a + b, 0);
+  // info-level setup items (e.g. "Slack not linked") don't count as work for today
+  const actionable = (list: { severity: string }[] | undefined) =>
+    (list ?? []).filter((i) => i.severity !== "info").length;
   const items = useMemo(() => (current.data?.items ?? []) as CsmItem[], [current.data]);
   const shown = useMemo(() => items.filter((i) => !kind || i.kind === kind), [items, kind]);
   const critical = items.filter((i) => i.severity === "critical").length;
-  const total = sum(current.data?.counts);
+  const total = actionable(current.data?.items);
   const counts = current.data?.counts ?? {};
 
   const move = useCallback(
@@ -212,12 +213,12 @@ export function CsmQueue() {
               {
                 id: "mine",
                 label: "My programs",
-                ...(mine.data ? { count: sum(mine.data.counts) } : {}),
+                ...(mine.data ? { count: actionable(mine.data.items) } : {}),
               },
               {
                 id: "all",
                 label: "All programs",
-                ...(all.data ? { count: sum(all.data.counts) } : {}),
+                ...(all.data ? { count: actionable(all.data.items) } : {}),
               },
             ]}
           />

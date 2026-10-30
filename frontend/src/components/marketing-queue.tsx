@@ -94,6 +94,12 @@ const SECTIONS: {
     caption: "Yesterday's views and clicks",
     tone: "indigo",
   },
+  {
+    kind: "to_prepare",
+    title: "To prepare",
+    caption: "Not started: add a UTM and go-live date",
+    tone: "neutral",
+  },
 ];
 
 const yesterday = () => new Date(Date.now() - 864e5).toISOString().slice(0, 10);
@@ -157,7 +163,7 @@ export function MarketingQueue() {
         />
       ) : (
         <>
-          <div className="reveal grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+          <div className="reveal grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
             {(
               [
                 ["Approved · Ready", "ready_to_go_live", "good"],
@@ -165,6 +171,7 @@ export function MarketingQueue() {
                 ["Missing UTM / creative", "missing_utm_or_proof", "serious"],
                 ["Waiting CSM approval", "awaiting_approval", "info"],
                 ["Results to record", "results_to_record", "indigo"],
+                ["To prepare", "to_prepare", "neutral"],
               ] as [string, MarketingKind, Tone][]
             ).map(([label, k, tone], n) => (
               <Kpi
@@ -334,6 +341,7 @@ function Row({ item }: { item: MarketingItem }) {
     case "go_live_due":
       return <GoLiveRow item={item} />;
     case "missing_utm_or_proof":
+    case "to_prepare":
       return <MissingRow item={item} />;
     case "awaiting_approval":
       return <WaitingRow item={item} />;

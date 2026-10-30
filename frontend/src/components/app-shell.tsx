@@ -65,7 +65,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { data: status } = useQuery(systemStatusQuery);
   const { data: csm } = useQuery(csmQueueQuery("mine"));
   const { data: marketing } = useQuery(marketingQueueQuery);
-  const counts = { csm: csm?.items.length, marketing: marketing?.items.length };
+  const todo = (list: { severity: string }[] | undefined) =>
+    list?.filter((i) => i.severity !== "info").length;
+  const counts = { csm: todo(csm?.items), marketing: todo(marketing?.items) };
 
   // "g" then a letter jumps between the main screens: g d directory, g c CSM queue, g m marketing queue, g a admin.
   const navigate = useNavigate();
