@@ -40,13 +40,13 @@ async def confirm_all(client, checklist: dict, ticket="t1") -> dict:
 async def test_the_starter_templates_are_seeded_once_and_never_overwrite_edits(db, templates):
     async with db() as session:
         keys = set((await session.scalars(select(ChecklistTemplate.key))).all())
-        assert keys == {"content_to_marketing"}
+        assert keys == {"content_to_marketing", "csm_to_marketing", "csm_to_content"}
         (await session.scalar(select(ChecklistTemplate).where(ChecklistTemplate.key == "content_to_marketing"))).name = "Edited by a CSM"
         await session.commit()
         await checklists.ensure_default_templates(session)
         await session.commit()
         assert await session.scalar(select(ChecklistTemplate.name).where(ChecklistTemplate.key == "content_to_marketing")) == "Edited by a CSM"
-        assert await session.scalar(select(func.count()).select_from(ChecklistTemplate)) == 1
+        assert await session.scalar(select(func.count()).select_from(ChecklistTemplate)) == 3
 
 
 async def test_the_content_template_carries_the_four_agreed_items(client_for, make_user, templates):
@@ -197,7 +197,7 @@ async def test_a_request_keeps_its_slack_channel_and_posts_there(client_for, mak
     async with db() as session:
         sent = (await session.scalars(select(SlackOutbox).order_by(SlackOutbox.id))).all()
     assert [m.channel_id for m in sent] == ["C0123456789", "C0123456789"]
-    assert "New special request" in sent[0].body and "Banner for the finale" in sent[0].body
+    assert "New request: Content to marketing" in sent[0].body and "Banner for the finale" in sent[0].body
     assert "declined" in sent[1].body and "Out of scope" in sent[1].body
 
 
@@ -210,13 +210,13 @@ async def test_an_unknown_slack_channel_is_refused_and_nothing_is_created(client
     assert (await client.get("/programs/t1/requests")).json() == []
 
 
-async def test_a_request_without_a_channel_posts_nothing(client_for, make_user, make_program, templates, db):
+async def test_a_program_without_a_channel_only_gets_skipped_rows(client_for, make_user, make_program, templates, db):
     await make_program("t1")
     client = await csm_client(client_for, make_user)
     request = await new_request(client)
     await client.patch(f"/programs/t1/requests/{request['id']}", json={"status": "declined"})
     async with db() as session:
-        assert await session.scalar(select(func.count()).select_from(SlackOutbox)) == 0
+        assert set((await session.scalars(select(SlackOutbox.status))).all()) == {"skipped"}
 
 
 async def test_only_someone_who_can_link_integrations_points_a_request_at_a_channel(client_for, make_user, make_program, templates, db, monkeypatch):

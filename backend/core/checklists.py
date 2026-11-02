@@ -56,7 +56,8 @@ class TemplateSpec:
     items: tuple[ItemSpec, ...]
 
 
-# Starter wording, editable by CSMs and super admins without a release. Seeded once; never overwritten.
+# Starter wording, editable by CSMs and super admins without a release (admins can reword the CSM routes later). Seeded
+# once; never overwritten.
 DEFAULT_TEMPLATES: tuple[TemplateSpec, ...] = (
     TemplateSpec(
         "content_to_marketing", "Content to marketing", ChecklistKind.REQUEST,
@@ -65,6 +66,26 @@ DEFAULT_TEMPLATES: tuple[TemplateSpec, ...] = (
             ItemSpec("Client has approved the copy", "Link or note of the client's sign-off.", needs_detail=True),
             ItemSpec("Logos and brand assets received", "Client logo and brand guidelines are in hand and usable."),
             ItemSpec("Eligibility and dates verified", "Checked against the SOW."),
+        ),
+    ),
+    TemplateSpec(
+        "csm_to_marketing", "CSM to Marketing", ChecklistKind.REQUEST,
+        (
+            ItemSpec("Brief and objective shared", "The ask, the goal and any constraints are written down for Marketing."),
+            ItemSpec("Audience and channel agreed", "Who it targets and where it goes out (email, social, banner)."),
+            ItemSpec("Creative or copy approved by the client", "Link or note of the client's sign-off.", needs_detail=True),
+            ItemSpec("UTM and go-live date confirmed", "The UTM string and the date and time it goes live.", needs_detail=True),
+            ItemSpec("Budget or timeline confirmed", "Only if the request involves spend or a fixed window.", required=False),
+        ),
+    ),
+    TemplateSpec(
+        "csm_to_content", "CSM to Content", ChecklistKind.REQUEST,
+        (
+            ItemSpec("Content brief received", "What is needed, for whom, and why."),
+            ItemSpec("Client assets and references received", "Logos, past material, links and examples are in hand."),
+            ItemSpec("Tone, format and length agreed", "Voice, deliverable format and word count or duration."),
+            ItemSpec("Review and sign-off owner named", "Who reviews and approves it on the client side.", needs_detail=True),
+            ItemSpec("Delivery date confirmed", "The date Content will hand it over."),
         ),
     ),
 )
