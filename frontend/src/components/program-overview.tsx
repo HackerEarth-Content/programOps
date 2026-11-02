@@ -40,13 +40,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import {
   apiFetch,
   checklistStatusQueryOptions,
-  createNote,
   historyQueryOptions,
-  notesQueryOptions,
   peopleByName,
   registrationsQueryOptions,
   sendJson,
@@ -95,6 +92,7 @@ export function ProgramOverview({ ticketId, program }: { ticketId: string; progr
         <StageChecklist ticketId={ticketId} program={program} />
       </div>
       <aside className="flex min-w-0 flex-col gap-4">
+        <LatestUpdate ticketId={ticketId} />
         <ProgramSetup
           ticketId={ticketId}
           program={program}
@@ -102,7 +100,6 @@ export function ProgramOverview({ ticketId, program }: { ticketId: string; progr
           canLink={canLink}
           onLink={() => setLinking(true)}
         />
-        <LatestUpdate ticketId={ticketId} />
         <Brief
           ticketId={ticketId}
           program={program}
@@ -110,8 +107,6 @@ export function ProgramOverview({ ticketId, program }: { ticketId: string; progr
           canLink={canLink}
           onLink={() => setLinking(true)}
         />
-        <Notes ticketId={ticketId} />
-        <HubspotHistory ticketId={ticketId} />
       </aside>
       <LinkClientDialog
         open={linking}
@@ -1168,92 +1163,7 @@ function AssignDialog({
   );
 }
 
-function Notes({ ticketId }: { ticketId: string }) {
-  const queryClient = useQueryClient();
-  const { data, isLoading } = useQuery(notesQueryOptions(ticketId));
-  const notes = data ?? [];
-  const canEdit = useCan("comment.add");
-  const [body, setBody] = useState("");
-  const [showAll, setShowAll] = useState(false);
-  const add = useMutation({
-    mutationFn: () => createNote(ticketId, body.trim()),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["programs", ticketId, "notes"] });
-      setBody("");
-    },
-  });
-  const canSend = body.trim().length > 0 && !add.isPending;
-  const shown = showAll ? notes : notes.slice(0, 3);
-  return (
-    <Section
-      title="Internal notes"
-      meta={
-        notes.length > 3 ? (
-          <MoreButton onClick={() => setShowAll((v) => !v)}>
-            {showAll ? "Show latest 3" : `All ${notes.length}`}
-          </MoreButton>
-        ) : undefined
-      }
-    >
-      {canEdit && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (canSend) add.mutate();
-          }}
-          className="space-y-2"
-        >
-          <Textarea
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            placeholder="Write a note for the team…"
-            aria-label="Internal note"
-            rows={2}
-            className="min-h-[72px]"
-          />
-          {add.isError && (
-            <p className="text-[13px] text-danger">
-              {add.error instanceof Error ? add.error.message : "Couldn't save the note."}
-            </p>
-          )}
-          <div className="flex items-center gap-2">
-            <span className="grow text-[13px] text-ink-2">
-              {!isLoading && notes.length === 0 ? "No internal notes yet." : ""}
-            </span>
-            <Button type="submit" size="sm" variant="outline" disabled={!canSend}>
-              {add.isPending && <Loader2 className="size-3.5 animate-spin" />}
-              Add note
-            </Button>
-          </div>
-        </form>
-      )}
-      {isLoading ? (
-        <Skeleton className="mt-2 h-16" />
-      ) : notes.length === 0 ? (
-        canEdit ? null : (
-          <p className="text-[13px] text-ink-2">No internal notes yet.</p>
-        )
-      ) : (
-        <ul className={cn("mt-2", showAll && "max-h-80 overflow-y-auto")}>
-          {shown.map((n) => (
-            <li key={n.note_id} className="border-t border-border py-2.5">
-              <p className="whitespace-pre-wrap text-[14px]">{n.body}</p>
-              <p className="text-[13px] text-ink-2">
-                {n.author_name ??
-                  (n.author_user_id != null
-                    ? `HubSpot user ${n.author_user_id}`
-                    : "Unknown author")}{" "}
-                · {formatWhen(n.created_at)}
-              </p>
-            </li>
-          ))}
-        </ul>
-      )}
-    </Section>
-  );
-}
-
-function HubspotHistory({ ticketId }: { ticketId: string }) {
+export function HubspotHistory({ ticketId }: { ticketId: string }) {
   const { data, isLoading } = useQuery(historyQueryOptions(ticketId));
   const history = data ?? [];
   const [showAll, setShowAll] = useState(false);

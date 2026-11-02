@@ -18,6 +18,7 @@ import {
   Skeleton,
 } from "@/components/kit";
 import { Button } from "@/components/ui/button";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -214,11 +215,11 @@ function Widgets({ data, rows }: { data: Portfolio; rows: Row[] }) {
   const empty = STAGES.filter((s) => s !== "Closed" && !data.stage_distribution[s]);
   const closed = rows.filter((r) => !isOpen(r)).length;
   const open = rows.filter(isOpen);
-  const noTarget = open.filter((r) => r.card && !r.card.target).length;
-  const noClient = open.filter((r) => !clientOf(r)).length;
+  const noTarget = open.filter((r) => r.card && !r.card.target);
+  const noClient = open.filter((r) => !clientOf(r));
   const gaps = [
-    { label: "No registration target", n: noTarget, warn: true },
-    { label: "Client not linked", n: noClient, warn: false },
+    { label: "No registration target", rows: noTarget, n: noTarget.length, warn: true },
+    { label: "Client not linked", rows: noClient, n: noClient.length, warn: false },
   ];
   return (
     <div className="grid gap-3 md:grid-cols-2">
@@ -276,9 +277,39 @@ function Widgets({ data, rows }: { data: Portfolio; rows: Row[] }) {
                 className={`size-1.5 rounded-full ${g.n === 0 ? "bg-ok" : g.warn ? "bg-warn" : "bg-ink-3"}`}
               />
               <span>{g.label}</span>
-              <span className="font-medium">
-                {g.n} program{g.n === 1 ? "" : "s"}
-              </span>
+              {g.n === 0 ? (
+                <span className="font-medium">0 programs</span>
+              ) : (
+                // hover (or focus) lists which programs, each one a link
+                <HoverCard openDelay={100} closeDelay={80}>
+                  <HoverCardTrigger asChild>
+                    <button
+                      type="button"
+                      className="font-medium underline decoration-dotted underline-offset-4"
+                    >
+                      {g.n} program{g.n === 1 ? "" : "s"}
+                    </button>
+                  </HoverCardTrigger>
+                  <HoverCardContent align="end" className="w-72 p-2">
+                    <p className="px-2 pb-1 pt-0.5 text-[12px] text-ink-2">{g.label}</p>
+                    <ul>
+                      {g.rows.map((r) => (
+                        <li key={r.program.ticket_id}>
+                          <Link
+                            to="/programs/$ticketId"
+                            params={{ ticketId: r.program.ticket_id }}
+                            search={{ tab: "overview" }}
+                            className="flex items-center justify-between gap-2 rounded-[6px] px-2 py-1.5 text-[13px] hover:bg-raised"
+                          >
+                            <span className="min-w-0 truncate font-medium">{nameOf(r)}</span>
+                            <span className="shrink-0 text-ink-2">{stageOf(r)}</span>
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  </HoverCardContent>
+                </HoverCard>
+              )}
             </div>
           ))
         )}
