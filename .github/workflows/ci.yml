@@ -1,0 +1,120 @@
+name: CI
+
+# Runs on every push (any branch, which includes the merge commit landing on main) and on every pull request
+# into main, so a change is tested before it merges and again after.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to the same branch cancels the older run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (pytest, migrations)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+
+    # The tests need a real Postgres (ARRAY, JSONB, partial indexes, triggers): same image as local development.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18-trixie
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: programops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    # Placeholders only: they satisfy the settings loader. Nothing here talks to HubSpot, Slack, OpenAI or Google,
+    # and the suite creates its own `<name>_test` database, so it can never touch a real one.
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/programops
+      HUBSPOT_SERVICE_KEY: ci-placeholder
+      PROGRAM_PIPELINE_ID: "934067746"
+      OPENAI_API_KEY: ci-placeholder
+      OPENAI_MODEL: gpt-4.1-mini
+      FRONTEND_URL: http://localhost:5173
+      API_BASE_URL: http://localhost:8000
+      ENVIRONMENT: test
+      USER_SECRET: ci-test-secret-not-used-anywhere-else-0123456789
+      GOOGLE_CLIENT_ID: ci-placeholder
+      GOOGLE_CLIENT_SECRET: ci-placeholder
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Tests
+        run: uv run pytest -q
+
+      - name: Standalone checks
+        run: |
+          uv run python -m tests.test_etl
+          uv run python -m hubspot_client.documents
+          uv run python -m api.program_routes
+
+      # The models and the migrations must agree: no model change without its Alembic migration.
+      - name: Migrations apply and match the models
+        run: |
+          uv run alembic upgrade head
+          uv run alembic check
+
+  frontend:
+    name: Frontend (lint, types, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      # One error in vite.config.ts (the Nitro `preset` option) is known and expected; anything else fails the job.
+      - name: Type check
+        run: |
+          npx tsc --noEmit | tee tsc.log || true
+          if grep "error TS" tsc.log | grep -v "vite.config.ts(19,34)"; then
+            echo "::error::TypeScript errors (other than the known vite.config.ts one)"
+            exit 1
+          fi
+
+      - name: Build
+        run: npm run build

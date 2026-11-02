@@ -25,7 +25,7 @@ CASES = [
     ([Role.CSM], "PUT", "/programs/t1/slack", {}, 200),
     ([Role.CSM], "DELETE", "/programs/t1/registrations/1", None, 404),  # allowed, the entry just doesn't exist
     ([Role.SUPER_ADMIN], "GET", "/programs", None, 200),
-    ([Role.SUPER_ADMIN], "PUT", "/programs/t1/registrations/config", CONFIG, 403),  # administration only, no program work
+    ([Role.SUPER_ADMIN], "PUT", "/programs/t1/registrations/config", CONFIG, 200),  # a super admin holds every permission (68e88fb)
     ([Role.SUPER_ADMIN, Role.CSM], "PUT", "/programs/t1/registrations/config", CONFIG, 200),  # dual role
 ]
 

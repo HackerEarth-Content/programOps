@@ -65,7 +65,7 @@ async def test_everything_is_refused_while_the_flag_is_off(client_for, make_user
 
 async def test_only_someone_with_hubspot_write_can_change_the_ticket(client_for, make_user, make_program, hubspot):
     await make_program("t1")
-    for role in (Role.MARKETING, Role.ACCOUNT_MANAGER, Role.SUPER_ADMIN):
+    for role in (Role.MARKETING, Role.ACCOUNT_MANAGER, Role.VIEWER):  # (a super admin holds every permission)
         client = await client_for(await make_user(f"{role.value}@example.com", [role]))
         assert (await client.post("/programs/t1/hubspot/checklist", json=tick())).status_code == 403
         assert (await client.post("/programs/t1/hubspot/stage", json={"stage_key": "ongoing", "expected_stage_key": "onboarding"})).status_code == 403
