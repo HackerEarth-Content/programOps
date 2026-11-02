@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import audit, slack
+from core import audit
 from core.orm import AppSetting, User
 
 _KEY = "portal"
