@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link, useRouter } from "@tanstack/react-router";
-import { ArrowLeft } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import {
+  Avatar,
   Chip,
   EmptyState,
   HealthPill,
@@ -9,6 +9,7 @@ import {
   StageBar,
   TabBar,
   type TabItem,
+  type Tone,
 } from "@/components/kit";
 import { ProgramOverview } from "@/components/program-overview";
 import { ProgramDocuments } from "@/components/program-documents";
@@ -28,13 +29,7 @@ import {
   type Program,
 } from "@/lib/api";
 import { formatDay, known } from "@/lib/format";
-import {
-  activitySummaryQuery,
-  HEALTH_REASONS,
-  needsQuery,
-  reportQuery,
-  type Health,
-} from "@/lib/ops-api";
+import { activitySummaryQuery, HEALTH_REASONS, reportQuery, type Health } from "@/lib/ops-api";
 import { programDocumentsQueryOptions } from "@/lib/program-documents";
 import { parseTab, PROGRAM_TABS, type ProgramTab } from "@/lib/program-tabs";
 
@@ -77,7 +72,7 @@ export function ProgramDetail({ ticketId, tab }: { ticketId: string; tab: Progra
   const program = programQuery.data;
   return (
     <div className="space-y-5">
-      <Header program={program} full={tab === "overview"} />
+      <Header program={program} />
       <ProgramTabs ticketId={ticketId} tab={tab} />
       <div key={tab} className="page-in">
         {tab === "overview" && <ProgramOverview ticketId={ticketId} program={program} />}
@@ -119,11 +114,14 @@ function stageIndex(stage: Program["stage"]) {
   return STAGES.indexOf(stage);
 }
 
-function Header({ program, full }: { program: Program; full: boolean }) {
-  const router = useRouter();
+/** The label a person holds on a program (Owner, AM, CSM, Content, HubSpot) as a small team chip. */
+const roleLabelTone = (label: string): Tone =>
+  label === "CSM" ? "csm" : label === "Content" ? "marketing" : label === "AM" ? "am" : "neutral";
+
+/** One header for every tab: breadcrumb, title + health, one meta line, the people, the stage ladder. */
+function Header({ program }: { program: Program }) {
   const ticketId = program.ticket_id;
   const { data: health } = useQuery(healthQuery(ticketId));
-  const needs = useQuery(needsQuery(ticketId)).data;
   const sow = useQuery(programDocumentsQueryOptions(ticketId)).data?.sow?.details;
   const stages = useQuery(checklistStatusQueryOptions).data?.find(
     (c) => c.ticket_id === ticketId,
@@ -140,51 +138,22 @@ function Header({ program, full }: { program: Program; full: boolean }) {
       title={health.reasons.map((r) => HEALTH_REASONS[r] ?? r).join("\n") || undefined}
     />
   ) : null;
-
-  if (!full) {
-    return (
-      <header className="flex flex-wrap items-center gap-3">
-        <Link to="/" className="text-[13px] text-ink-2 hover:text-foreground">
-          Programs /
-        </Link>
-        <h1 className="t-headline-md">{title}</h1>
-        {pill}
-        <Chip>
-          {program.stage} · stage {stageIndex(program.stage) + 1} of {STAGES.length}
-        </Chip>
-      </header>
-    );
-  }
-
-  const top = needs?.[0];
   const people = peopleByName(program);
   return (
-    <header className="space-y-5">
-      <div className="flex flex-wrap items-center gap-3">
-        <Button
-          variant="ghost"
-          size="sm"
-          // Back to wherever the user came from (a queue, the directory); the directory if the tab was opened directly.
-          onClick={() =>
-            window.history.length > 1 ? router.history.back() : void router.navigate({ to: "/" })
-          }
-        >
-          <ArrowLeft /> Back
-        </Button>
-        <nav aria-label="Breadcrumb" className="text-[13px] text-ink-3">
-          <Link to="/" className="text-ink-2 underline underline-offset-2 hover:text-foreground">
-            Programs
-          </Link>{" "}
-          <span aria-hidden>/</span> {title}
-        </nav>
-      </div>
+    <header className="space-y-3">
+      <nav aria-label="Breadcrumb" className="text-[13px] text-ink-2">
+        <Link to="/" className="hover:text-foreground">
+          Programs
+        </Link>{" "}
+        <span aria-hidden>/</span> {title}
+      </nav>
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex min-w-0 flex-col gap-2">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="t-headline-lg">{title}</h1>
+        <div className="min-w-0">
+          <h1 className="t-headline-lg flex flex-wrap items-center gap-2.5">
+            {title}
             {pill}
-          </div>
-          <p className="text-[14px] text-ink-2">
+          </h1>
+          <p className="mt-1 text-[14px] text-ink-2">
             {[program.campaign_type, client].filter(Boolean).join(" · ")} ·{" "}
             {program.origin === "internal" ? (
               <span className="text-[12px] font-medium">Internal</span>
@@ -193,22 +162,17 @@ function Header({ program, full }: { program: Program; full: boolean }) {
             )}{" "}
             · Updated {formatDay(program.last_modified_at)}
           </p>
-          <p className="text-[14px]">
-            {top ? `${top.title}.` : needs ? "Nothing needs you today." : "\u00a0"}
-          </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           {people.map((p) => (
             <span key={p.name} className="flex items-center gap-2 text-[13px] text-ink-2">
-              <span className="flex size-7 items-center justify-center rounded-full bg-accent-bg text-[11px] font-semibold text-primary">
-                {p.name
-                  .split(/\s+/)
-                  .map((w) => w[0])
-                  .slice(0, 2)
-                  .join("")
-                  .toUpperCase()}
-              </span>
-              {p.name} · {p.roles.join(", ")}
+              <Avatar name={p.name} className="size-6 text-[11px]" />
+              {p.name}
+              {p.roles.map((r) => (
+                <Chip key={r} tone={roleLabelTone(r)}>
+                  {r}
+                </Chip>
+              ))}
             </span>
           ))}
           {canPost && (

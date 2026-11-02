@@ -139,12 +139,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       <header className="sticky top-0 z-50 border-b border-border bg-surface">
-        <div className="mx-auto flex max-w-[1360px] flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 lg:px-8">
+        <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 lg:px-8">
           <Link to="/" className="flex shrink-0 items-center gap-2.5" aria-label="ProgramOps home">
             <img
               src="/favicon.png"
               alt=""
-              className="size-[30px] rounded-[8px] bg-white object-contain ring-1 ring-border dark:ring-white/40"
+              className="size-7 rounded-[6px] bg-white object-contain ring-1 ring-border dark:ring-white/40"
             />
             <span className="text-[15px] font-semibold">ProgramOps</span>
           </Link>
@@ -160,15 +160,15 @@ export function AppShell({ children }: { children: ReactNode }) {
                   aria-current={active ? "page" : undefined}
                   title={`${n.label} (press g, then ${n.key})`}
                   className={cn(
-                    "flex items-center gap-1.5 rounded-[8px] px-3 py-1.5 text-[14px]",
+                    "flex items-center gap-1.5 rounded-[6px] px-3 py-1.5 text-[14px]",
                     active
-                      ? "bg-raised font-medium text-foreground"
-                      : "text-ink-2 hover:text-foreground",
+                      ? "bg-raised font-medium text-foreground ring-1 ring-border"
+                      : "text-ink-2 hover:bg-raised hover:text-foreground",
                   )}
                 >
                   {n.label}
                   {count !== undefined && count > 0 && (
-                    <span className="rounded-full bg-accent-bg px-1.5 text-[12px] font-medium text-primary">
+                    <span className="rounded-full bg-accent-bg px-1.5 text-[12px] font-medium leading-[18px] text-primary">
                       {count}
                     </span>
                   )}
@@ -184,7 +184,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <DropdownMenuTrigger
                   aria-label="Sync status and actions"
                   title={syncDetail}
-                  className="hidden rounded-[8px] px-1 py-1 hover:bg-raised md:inline-flex"
+                  className="hidden rounded-[6px] px-1 py-1 hover:bg-raised md:inline-flex"
                 >
                   <SyncStatus
                     label={syncLabel}
@@ -217,7 +217,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <button
               onClick={toggleTheme}
               aria-label={`Switch to ${dark ? "light" : "dark"} theme`}
-              className="flex size-9 shrink-0 items-center justify-center rounded-[8px] border border-border text-ink-2 hover:bg-raised"
+              className="flex size-8 shrink-0 items-center justify-center rounded-[6px] border border-border text-ink-2 hover:bg-raised"
             >
               {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
             </button>
@@ -250,7 +250,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <main
         key={pathname.split("/").slice(0, 3).join("/")}
-        className="page-in mx-auto w-full max-w-[1360px] flex-1 px-4 py-6 lg:px-8"
+        className="page-in mx-auto w-full max-w-[1440px] flex-1 px-4 py-6 lg:px-8"
       >
         {children}
       </main>
@@ -286,7 +286,7 @@ function GlobalSearch() {
         onKeyDown={(e) => e.key === "Escape" && (setQ(""), input.current?.blur())}
         placeholder="Search tickets, programs, teams…"
         aria-label="Search programs"
-        className="h-9 w-full rounded-[8px] bg-raised pl-8 pr-8 text-[13px] placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+        className="h-8 w-full rounded-[6px] bg-raised pl-8 pr-8 text-[13px] placeholder:text-placeholder focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
       />
       {q ? (
         <button
@@ -303,7 +303,7 @@ function GlobalSearch() {
         </kbd>
       )}
       {open && q.trim().length >= 2 && (
-        <div className="drawer-in absolute left-0 right-0 top-10 z-50 overflow-hidden rounded-xl border border-border bg-popover">
+        <div className="drawer-in absolute left-0 right-0 top-10 z-50 overflow-hidden rounded-lg border border-border bg-popover">
           {hits.map((h) => (
             <Link
               key={h.ticket_id}

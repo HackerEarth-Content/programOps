@@ -6,7 +6,27 @@ import { formatDay, formatWhen } from "@/lib/format";
 import { groupLog, splitList, type LogEvent } from "@/lib/history";
 import { cn } from "@/lib/utils";
 
-export type Tone = "good" | "warning" | "serious" | "critical" | "info" | "indigo" | "neutral";
+export type Tone =
+  | "good"
+  | "warning"
+  | "serious"
+  | "critical"
+  | "info"
+  | "indigo"
+  | "neutral"
+  | "csm"
+  | "marketing"
+  | "am";
+
+/** Team tag tone for a role id (csm / marketing / account_manager); neutral for anything else. */
+export const roleTone = (role: string): Tone =>
+  role === "csm"
+    ? "csm"
+    : role === "marketing"
+      ? "marketing"
+      : role === "account_manager"
+        ? "am"
+        : "neutral";
 
 /** Status / count chip. */
 export function Chip({
@@ -28,7 +48,10 @@ const TONE_TEXT: Record<Tone, string> = {
   serious: "text-warn",
   critical: "text-status-critical",
   info: "text-primary",
-  indigo: "text-chart-5",
+  indigo: "text-team-csm",
+  csm: "text-team-csm",
+  marketing: "text-team-marketing",
+  am: "text-team-am",
   neutral: "text-muted-foreground",
 };
 const TONE_BG: Record<Tone, string> = {
@@ -37,7 +60,10 @@ const TONE_BG: Record<Tone, string> = {
   serious: "bg-status-serious",
   critical: "bg-status-critical",
   info: "bg-accent-fill",
-  indigo: "bg-chart-5",
+  indigo: "bg-team-csm",
+  csm: "bg-team-csm",
+  marketing: "bg-team-marketing",
+  am: "bg-team-am",
   neutral: "bg-status-neutral",
 };
 export const toneText = (t: Tone) => TONE_TEXT[t];
@@ -92,12 +118,12 @@ export function CardHeader({
   return (
     <header
       className={cn(
-        "flex items-center justify-between gap-3 px-[18px] pt-[16px] pb-3",
+        "flex items-center justify-between gap-3 px-4 pt-3.5 pb-3",
         divided && "border-b border-border",
         className,
       )}
     >
-      <h2 className="flex min-w-0 items-center gap-2 text-[16px] font-semibold leading-[22px] tracking-[-0.01em]">
+      <h2 className="flex min-w-0 items-center gap-2 text-[14px] font-semibold leading-5">
         {icon && <span className="text-muted-foreground [&_svg]:size-4">{icon}</span>}
         <span className="truncate">{title}</span>
       </h2>
@@ -110,7 +136,7 @@ export function CardHeader({
   );
 }
 export const CardBody = ({ className, ...rest }: ComponentProps<"div">) => (
-  <div className={cn("px-[18px] pb-4", className)} {...rest} />
+  <div className={cn("px-4 pb-4", className)} {...rest} />
 );
 
 /** Mono caption above a figure, e.g. "TOTAL REGISTRATIONS". */
@@ -183,7 +209,7 @@ export function Bar({
 }) {
   return (
     <div
-      className={cn("h-1.5 overflow-hidden rounded-full", track && "bg-secondary", className)}
+      className={cn("h-1 overflow-hidden rounded-full", track && "bg-border", className)}
       role="progressbar"
       aria-label={label}
       aria-valuenow={Math.round(pct)}
@@ -273,8 +299,8 @@ export function Segmented<T extends string>({
           className={cn(
             "flex h-7 items-center gap-1.5 rounded-[6px] px-3 text-[13px] font-medium",
             value === o.id
-              ? "bg-card text-foreground"
-              : "text-secondary-foreground hover:text-foreground",
+              ? "bg-card text-foreground shadow-sm"
+              : "text-secondary-foreground hover:bg-card/70 hover:text-foreground",
           )}
         >
           {o.label}
@@ -306,7 +332,7 @@ export function Avatar({
   return (
     <span
       className={cn(
-        "inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-accent-bg text-[10px] font-semibold text-primary",
+        "inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-accent-bg text-[11px] font-semibold text-primary",
         className,
       )}
     >
@@ -327,7 +353,7 @@ export function EmptyState({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-border px-6 py-12 text-center">
+    <div className="flex flex-col items-center gap-1.5 rounded-lg border border-dashed border-border px-6 py-8 text-center">
       {icon && <span className="text-muted-foreground [&_svg]:size-5">{icon}</span>}
       <p className="text-[14px] font-medium">{title}</p>
       {hint && <p className="max-w-sm text-[13px] text-muted-foreground">{hint}</p>}
@@ -355,15 +381,16 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-end justify-between gap-4">
+    <div className="flex flex-wrap items-start justify-between gap-4">
       <div className="min-w-0">
-        {label && <MonoLabel className="mb-1 block text-primary">{label}</MonoLabel>}
+        {/* `label` (the old blue eyebrow above the title) is no longer drawn: say it in the title or the finding. */}
+        {label ? <span className="sr-only">{label}</span> : null}
         <h1 className="t-headline-lg flex flex-wrap items-center gap-2.5">
           {title}
           {chip}
         </h1>
         {subtitle && (
-          <p className="mt-1 max-w-2xl text-[14px] text-secondary-foreground">{subtitle}</p>
+          <p className="mt-1 max-w-3xl text-[14px] text-secondary-foreground">{subtitle}</p>
         )}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
@@ -396,10 +423,11 @@ export function useHotkey(key: string, handler: () => void) {
 // ---- shared vocabulary: health, status, stage, tabs, key numbers, action rows, sync ---------------
 
 export type HealthKey = "good" | "warning" | "critical";
+// "Good" is quiet (a dot and plain text); only At risk / Critical get a tinted chip, so colour means "look here".
 const HEALTH_PILL: Record<HealthKey, { label: string; cls: string }> = {
-  good: { label: "Good", cls: "bg-ok-bg text-ok" },
-  warning: { label: "At risk", cls: "bg-warn-bg text-warn" },
-  critical: { label: "Critical", cls: "bg-danger-bg text-danger" },
+  good: { label: "Good", cls: "text-ink-2" },
+  warning: { label: "At risk", cls: "bg-warn-bg text-warn px-2 py-1" },
+  critical: { label: "Critical", cls: "bg-danger-bg text-danger px-2 py-1" },
 };
 export const HEALTH_NAMES: Record<HealthKey, string> = {
   good: "Good",
@@ -422,12 +450,15 @@ export function HealthPill({
     <span
       title={title}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[13px] font-medium leading-none",
+        "inline-flex items-center gap-1.5 rounded-[4px] text-[13px] font-medium leading-none",
         h.cls,
         className,
       )}
     >
-      <span aria-hidden className="size-[7px] rounded-full bg-current" />
+      <span
+        aria-hidden
+        className={cn("size-1.5 rounded-full", health === "good" ? "bg-ok" : "bg-current")}
+      />
       {h.label}
     </span>
   );
@@ -504,7 +535,7 @@ export function StageBar({
   return (
     <ol
       aria-label="Lifecycle stage"
-      className="grid gap-1.5"
+      className="grid max-w-[720px] gap-1"
       style={{ gridTemplateColumns: `repeat(${STAGE_LABELS.length - from}, minmax(0, 1fr))` }}
     >
       {STAGE_LABELS.map((label, i) => {
@@ -523,24 +554,25 @@ export function StageBar({
               aria-valuenow={pct}
               aria-valuemin={0}
               aria-valuemax={100}
-              className="h-2 overflow-hidden rounded-full bg-raised"
+              className="h-1 overflow-hidden rounded-full bg-border"
             >
               <div
                 className={cn(
-                  "h-2 rounded-full transition-[width]",
-                  complete ? "bg-ok" : "bg-primary",
+                  "bar-grow h-1 rounded-full transition-[width]",
+                  // done stages are neutral grey, the current stage is the one blue
+                  complete ? "bg-ink-2" : "bg-primary",
                 )}
                 style={{ width: `${pct}%` }}
               />
             </div>
             <p
               className={cn(
-                "flex items-center gap-1 truncate text-[13px]",
-                now ? "font-semibold text-foreground" : past ? "text-foreground" : "text-ink-2",
+                "flex items-center gap-1 truncate text-[12px]",
+                now ? "font-medium text-foreground" : "text-ink-2",
               )}
             >
               {complete && (past || hasList) && (
-                <Check aria-hidden className="size-3.5 shrink-0 text-ok" />
+                <Check aria-hidden className="size-3 shrink-0 text-ink-2" />
               )}
               <span className="truncate">{label}</span>
             </p>
@@ -596,10 +628,10 @@ export function TabBar({
           <span key={t.id} className="shrink-0">
             {renderLink(t, {
               className: cn(
-                "-mb-px flex items-center gap-2 whitespace-nowrap border-b-2 px-3.5 py-2.5 text-[14px]",
+                "-mb-px flex items-center gap-2 whitespace-nowrap border-b-2 px-3 py-2.5 text-[14px] font-medium",
                 on
-                  ? "border-primary font-semibold text-foreground"
-                  : "border-transparent text-ink-2 hover:text-foreground",
+                  ? "border-primary text-foreground"
+                  : "border-transparent text-ink-2 hover:border-border hover:bg-raised hover:text-foreground",
               ),
               ...(on ? { "aria-current": "page" as const } : {}),
               children: body,
@@ -657,10 +689,11 @@ export function KpiTile({
   );
 }
 
+// A row, not a tinted block: the dot carries the severity.
 const ACTION_BG: Record<"danger" | "warn" | "neutral", string> = {
-  danger: "bg-danger-bg",
-  warn: "bg-warn-bg",
-  neutral: "bg-raised",
+  danger: "",
+  warn: "",
+  neutral: "",
 };
 const ACTION_DOT: Record<"danger" | "warn" | "neutral", string> = {
   danger: "bg-danger",
@@ -680,7 +713,12 @@ export function ActionItem({
   action?: ReactNode;
 }) {
   return (
-    <div className={cn("flex items-center gap-3.5 rounded-[10px] px-3.5 py-3", ACTION_BG[tone])}>
+    <div
+      className={cn(
+        "flex items-center gap-3 border-b border-border px-4 py-3 last:border-b-0",
+        ACTION_BG[tone],
+      )}
+    >
       <span aria-hidden className={cn("size-2 shrink-0 rounded-full", ACTION_DOT[tone])} />
       <div className="min-w-0 flex-1">
         <p className="font-medium">{title}</p>
@@ -822,5 +860,250 @@ export function LogList<T extends LogEvent>({
         </section>
       ))}
     </div>
+  );
+}
+
+// ---- strips, notices, segmented bars, placeholder slots (the revamp's widget vocabulary) ---------------
+// Real data or a missing required field only: no decorative icons, no sparklines on KPIs.
+
+/**
+ * One container split by 1px dividers into equal cells (instead of a row of separate KPI tiles). Two
+ * columns on a phone, one column per cell from `md`.
+ */
+export function KpiStrip({
+  children,
+  className,
+  label = "Key numbers",
+}: {
+  children: ReactNode;
+  className?: string;
+  label?: string;
+}) {
+  const n = Array.isArray(children) ? children.filter(Boolean).length : 1;
+  return (
+    <section
+      aria-label={label}
+      className={cn(
+        "surface reveal grid grid-cols-2 overflow-hidden md:[grid-template-columns:repeat(var(--n),minmax(0,1fr))]",
+        className,
+      )}
+      style={{ ["--n" as string]: n }}
+    >
+      {children}
+    </section>
+  );
+}
+
+/** One cell of a KpiStrip: label, figure (24px), optional thin bar and one note line. */
+export function KpiCell({
+  label,
+  value,
+  unit,
+  pct,
+  bar = "accent",
+  sub,
+  className,
+}: {
+  label: ReactNode;
+  value: ReactNode;
+  unit?: ReactNode;
+  pct?: number | null | undefined;
+  bar?: StatusTone | "accent";
+  sub?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "min-w-0 border-border px-4 py-3.5 max-md:border-t max-md:[&:nth-child(-n+2)]:border-t-0 max-md:[&:nth-child(even)]:border-l md:border-l md:first:border-l-0",
+        className,
+      )}
+    >
+      <p className="text-[13px] text-ink-2">{label}</p>
+      <p className="mt-0.5 flex items-baseline gap-1.5 t-data-lg">
+        {value}
+        {unit && <span className="text-[13px] font-normal text-ink-2">{unit}</span>}
+      </p>
+      {pct !== undefined && pct !== null && (
+        <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-border" aria-hidden>
+          <div
+            className={cn("bar-grow h-1 rounded-full", BAR_FILL[bar])}
+            style={{ width: `${Math.max(0, Math.min(100, pct))}%` }}
+          />
+        </div>
+      )}
+      {sub && <p className="mt-1.5 text-[13px] text-ink-2">{sub}</p>}
+    </div>
+  );
+}
+
+/** A quiet one-line notice with a status dot and optional actions. Not a tinted banner. */
+export function Notice({
+  tone = "warn",
+  children,
+  actions,
+  className,
+}: {
+  tone?: StatusTone;
+  children: ReactNode;
+  actions?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "surface rise flex flex-wrap items-center gap-x-3 gap-y-2 px-3.5 py-2.5 text-[13px] text-ink-2",
+        className,
+      )}
+    >
+      <span
+        aria-hidden
+        className={cn(
+          "size-1.5 shrink-0 rounded-full",
+          ACTION_DOT[tone === "ok" ? "neutral" : tone],
+        )}
+      />
+      <div className="min-w-0 flex-1 [&_b]:font-medium [&_b]:text-foreground">{children}</div>
+      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+    </div>
+  );
+}
+
+/** A horizontal bar split into proportional parts (pipeline by stage, organic vs other). One hue. */
+export function SegBar({
+  parts,
+  label,
+}: {
+  parts: { label?: ReactNode; value: number; muted?: boolean }[];
+  label: string;
+}) {
+  const total = parts.reduce((s, p) => s + p.value, 0);
+  return (
+    <div role="img" aria-label={label} className="flex h-8 gap-0.5">
+      {parts
+        .filter((p) => p.value > 0)
+        .map((p, i) => (
+          <div
+            key={i}
+            style={{ flex: `${p.value} 1 0` }}
+            className={cn(
+              "grid min-w-0 place-items-center rounded-[4px] text-[13px] font-medium",
+              p.muted ? "bg-raised text-ink-2" : "bg-accent-bg text-foreground",
+            )}
+          >
+            {total > 0 && p.label}
+          </div>
+        ))}
+    </div>
+  );
+}
+
+/** Legend row: small squares + labels. `muted` swatches are the neutral series. */
+export function Legend({ items }: { items: { label: ReactNode; muted?: boolean }[] }) {
+  return (
+    <ul className="flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-ink-2">
+      {items.map((it, i) => (
+        <li key={i} className="inline-flex items-center gap-1.5">
+          <span
+            aria-hidden
+            className={cn("size-2 rounded-[2px]", it.muted ? "bg-border" : "bg-primary")}
+          />
+          {it.label}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * A required field that is still missing: dashed outline, what it is, why, and the action that fills it.
+ * The mandatory-placeholder widget.
+ */
+export function SlotRow({
+  title,
+  hint,
+  action,
+  className,
+}: {
+  title: ReactNode;
+  hint?: ReactNode;
+  action?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-3 rounded-lg border border-dashed border-placeholder px-3 py-2.5",
+        className,
+      )}
+    >
+      <span
+        aria-hidden
+        className="size-3.5 shrink-0 rounded-full border-[1.5px] border-dashed border-placeholder"
+      />
+      <div className="min-w-0 flex-1">
+        <p className="text-[13px] font-medium">{title}</p>
+        {hint && <p className="text-[12px] text-ink-2">{hint}</p>}
+      </div>
+      {action}
+    </div>
+  );
+}
+
+/** A required field that is filled: tick, label, value. */
+export function OkRow({ label, value }: { label: ReactNode; value?: ReactNode }) {
+  return (
+    <div className="flex items-center gap-3 py-1.5 text-[13px]">
+      <span
+        aria-hidden
+        className="grid size-3.5 shrink-0 place-items-center rounded-full bg-ok text-on-accent"
+      >
+        <Check className="size-2.5" strokeWidth={3.5} />
+      </span>
+      <span className="min-w-0 flex-1">{label}</span>
+      {value && <span className="shrink-0 text-ink-2">{value}</span>}
+    </div>
+  );
+}
+
+/** A dashed empty stat (Views, Clicks, CTR before an activity is live). */
+export function EmptyStat({ label, value = "—" }: { label: string; value?: ReactNode }) {
+  return (
+    <div className="rounded-lg border border-dashed border-placeholder px-2.5 py-2">
+      <p className="text-[12px] text-ink-2">{label}</p>
+      <p className="text-[18px] font-semibold text-ink-2">{value}</p>
+    </div>
+  );
+}
+
+/** Approval · UTM · go-live date as three dots, one mark per marketing activity. */
+export function ReadinessDots({
+  approval,
+  utm,
+  date,
+  showCount = true,
+}: {
+  approval: boolean;
+  utm: boolean;
+  date: boolean;
+  showCount?: boolean;
+}) {
+  const done = [approval, utm, date];
+  const n = done.filter(Boolean).length;
+  const label = `Approval ${approval ? "done" : "missing"}, UTM ${utm ? "done" : "missing"}, go-live date ${date ? "done" : "missing"}`;
+  return (
+    <span role="img" aria-label={label} className="inline-flex items-center gap-1">
+      {done.map((d, i) => (
+        <span
+          key={i}
+          aria-hidden
+          className={cn(
+            "size-2 rounded-full border-[1.5px] transition-colors duration-150",
+            d ? "border-ok bg-ok" : "border-placeholder bg-transparent",
+          )}
+        />
+      ))}
+      {showCount && <span className="ml-1.5 text-[12px] text-ink-2">{n} of 3</span>}
+    </span>
   );
 }
