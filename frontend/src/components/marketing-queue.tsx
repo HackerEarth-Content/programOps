@@ -1,30 +1,8 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import {
-  AlertTriangle,
-  Bell,
-  CalendarCheck,
-  CheckCircle2,
-  Link2,
-  Loader2,
-  Plus,
-  Zap,
-} from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
-import {
-  Bar,
-  Card,
-  CardBody,
-  CardHeader,
-  Chip,
-  Dot,
-  EmptyState,
-  Kpi,
-  MonoLabel,
-  Num,
-  Skeleton,
-  type Tone,
-} from "@/components/kit";
+import { Bar, Card, CardBody, CardHeader, Chip, EmptyState, Skeleton } from "@/components/kit";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -56,53 +34,39 @@ import {
 } from "@/lib/queues-api";
 import { cn, usePersistentState } from "@/lib/utils";
 
-const SECTIONS: {
-  kind: MarketingKind;
-  title: string;
-  caption: string;
-  tone: Tone;
-  urgent?: boolean;
-}[] = [
+/** Work lists shown above "To prepare", in the order they matter. "Results to record" leads. */
+const SECTIONS: { kind: MarketingKind; title: string; caption: string; urgent?: boolean }[] = [
   {
-    kind: "ready_to_go_live",
-    title: "Approved · Ready to go live",
-    caption: "CSM approved, UTM in place",
-    tone: "good",
+    kind: "results_to_record",
+    title: "Results to record",
+    caption: "Yesterday's views and clicks",
   },
   {
     kind: "go_live_due",
     title: "Go-live due today or overdue",
     caption: "Approved and past its planned date",
-    tone: "critical",
     urgent: true,
   },
+  { kind: "ready_to_go_live", title: "Ready to go live", caption: "CSM approved, UTM in place" },
   {
     kind: "missing_utm_or_proof",
     title: "Missing UTM or creative proof",
     caption: "A UTM is required to go live",
-    tone: "serious",
   },
   {
     kind: "awaiting_approval",
     title: "Waiting for CSM approval",
     caption: "Read-only for marketing: nudge the CSM",
-    tone: "info",
-  },
-  {
-    kind: "results_to_record",
-    title: "Results to record",
-    caption: "Yesterday's views and clicks",
-    tone: "indigo",
-  },
-  {
-    kind: "to_prepare",
-    title: "To prepare",
-    caption: "Not started: add a UTM and go-live date",
-    tone: "neutral",
   },
 ];
 
+const PREVIEW_ROWS = 5;
 const yesterday = () => new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+const FieldLabel = ({ children }: { children: ReactNode }) => (
+  <span className="text-[13px] text-ink-2">{children}</span>
+);
 
 const ErrorText = ({ error }: { error: Error | null }) =>
   error ? (
@@ -126,26 +90,50 @@ export function MarketingQueue() {
     return [...m.entries()];
   }, [items]);
   const shown = items.filter((i) => !program || i.ticket_id === program);
-  const count = (k: MarketingKind) => shown.filter((i) => i.kind === k).length;
-  const programsIn = (k: MarketingKind) =>
-    new Set(shown.filter((i) => i.kind === k).map((i) => i.ticket_id)).size;
+  const of = (k: MarketingKind) => shown.filter((i) => i.kind === k);
+  const toPrepare = of("to_prepare");
+
+  // Every number in the finding line is counted from the rows listed below it.
+  const results = of("results_to_record");
+  const due = of("go_live_due");
+  const needUtm = shown.filter(
+    (i) => (i.kind === "to_prepare" || i.kind === "missing_utm_or_proof") && /UTM/.test(i.detail),
+  );
+  const programsK = new Set([...results, ...due, ...needUtm].map((i) => i.ticket_id)).size;
+  const finding = [
+    due.length > 0 && <b key="d">{plural(due.length, "go-live")} due</b>,
+    results.length > 0 && <b key="r">{plural(results.length, "result")} to record</b>,
+    needUtm.length > 0 && (
+      <span key="u">
+        <b>{plural(needUtm.length, "activity", "activities")}</b> still need a UTM
+      </span>
+    ),
+  ].filter(Boolean) as ReactNode[];
 
   return (
     <div className="page-in space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="t-headline-lg">Marketing Queue</h1>
-          <p className="mt-1 max-w-2xl text-[14px] text-secondary-foreground">
-            Channel execution across active programs. Go live only when approved, keep tracking
-            intact, record daily results.
-          </p>
+          <h1 className="t-headline-lg">Marketing queue</h1>
+          {!q.isLoading && !q.isError && (
+            <p className="mt-1 max-w-3xl text-[14px] text-ink-2 [&_b]:font-medium [&_b]:text-foreground">
+              {finding.length === 0 ? (
+                "Nothing is waiting on marketing right now."
+              ) : (
+                <>
+                  {finding.map((f, i) => (
+                    <span key={i}>
+                      {i > 0 && (i === finding.length - 1 ? " and " : ", ")}
+                      {f}
+                    </span>
+                  ))}
+                  , across {plural(programsK, "program")}.
+                </>
+              )}
+            </p>
+          )}
         </div>
-        {canAddChannel && (
-          <Button onClick={() => setAdding(true)}>
-            <Plus />
-            Add unplanned channel
-          </Button>
-        )}
+        {canAddChannel && <Button onClick={() => setAdding(true)}>Add unplanned channel</Button>}
       </div>
 
       {q.isLoading ? (
@@ -163,54 +151,34 @@ export function MarketingQueue() {
         />
       ) : (
         <>
-          <div className="reveal grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-            {(
-              [
-                ["Approved · Ready", "ready_to_go_live", "good"],
-                ["Due today / overdue", "go_live_due", "critical"],
-                ["Missing UTM / creative", "missing_utm_or_proof", "serious"],
-                ["Waiting CSM approval", "awaiting_approval", "info"],
-                ["Results to record", "results_to_record", "indigo"],
-                ["To prepare", "to_prepare", "neutral"],
-              ] as [string, MarketingKind, Tone][]
-            ).map(([label, k, tone], n) => (
-              <Kpi
-                key={k}
-                label={label}
-                index={n}
-                tone={count(k) > 0 ? tone : "neutral"}
-                value={<Num value={count(k)} />}
-                sub={`${programsIn(k)} program${programsIn(k) === 1 ? "" : "s"}`}
-              />
-            ))}
-          </div>
-
-          <div
-            className="flex flex-wrap items-center gap-2"
-            role="group"
-            aria-label="Filter by program"
-          >
-            <MonoLabel>Quick filter</MonoLabel>
-            {[
-              [null, "All programs", items.length] as const,
-              ...byProgram.map(([id, p]) => [id, p.name, p.n] as const),
-            ].map(([id, name, n]) => (
-              <button
-                key={id ?? "all"}
-                type="button"
-                aria-pressed={program === id}
-                onClick={() => setProgram(id)}
-                className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Chip tone={program === id ? "info" : "neutral"} className="h-7 px-3">
-                  {name} ({n})
-                </Chip>
-              </button>
-            ))}
-          </div>
+          {byProgram.length > 1 && (
+            <div
+              className="flex flex-wrap items-center gap-2"
+              role="group"
+              aria-label="Filter by program"
+            >
+              <span className="text-[13px] text-ink-2">Program</span>
+              {[
+                [null, "All programs", items.length] as const,
+                ...byProgram.map(([id, p]) => [id, p.name, p.n] as const),
+              ].map(([id, name, n]) => (
+                <button
+                  key={id ?? "all"}
+                  type="button"
+                  aria-pressed={program === id}
+                  onClick={() => setProgram(id)}
+                  className="rounded-[4px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <Chip tone={program === id ? "info" : "neutral"} className="h-7 px-3">
+                    {name} ({n})
+                  </Chip>
+                </button>
+              ))}
+            </div>
+          )}
 
           <div className="grid items-start gap-5 grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_340px]">
-            <div className="space-y-4">
+            <div className="min-w-0 space-y-4">
               {shown.length === 0 ? (
                 <EmptyState
                   icon={<CheckCircle2 />}
@@ -218,41 +186,34 @@ export function MarketingQueue() {
                   hint="No activity is waiting on a UTM, a go-live, an approval or results."
                 />
               ) : (
-                SECTIONS.map((s) => {
-                  const rows = shown.filter((i) => i.kind === s.kind);
-                  if (rows.length === 0) return null;
-                  return (
-                    <Card key={s.kind} className="overflow-hidden">
-                      <header
-                        className={cn(
-                          "flex flex-wrap items-center justify-between gap-2 border-b border-border px-[18px] py-3",
-                          s.urgent && "bg-status-critical/10",
-                        )}
-                      >
-                        <h2 className="flex items-center gap-2 text-[16px] font-semibold tracking-[-0.01em]">
-                          <Dot tone={s.tone} />
-                          {s.title}
-                          <Chip tone={s.tone}>
-                            {rows.length} {rows.length === 1 ? "item" : "items"}
-                          </Chip>
-                        </h2>
-                        <span className="t-data-sm text-muted-foreground">{s.caption}</span>
-                      </header>
-                      <ul className="reveal divide-y divide-border">
-                        {rows.map((item, n) => (
-                          <li key={item.id} className="row-hover" style={{ ["--i" as string]: n }}>
-                            <Row item={item} />
-                          </li>
-                        ))}
-                      </ul>
-                    </Card>
-                  );
-                })
+                <>
+                  {SECTIONS.map((s) => {
+                    const rows = of(s.kind);
+                    if (rows.length === 0) return null;
+                    return (
+                      <Card key={s.kind} className="overflow-hidden">
+                        <header className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-4 py-3">
+                          <h2 className="text-[14px] font-semibold">{s.title}</h2>
+                          <Chip tone={s.urgent ? "critical" : "neutral"}>{rows.length}</Chip>
+                          <span className="ml-auto text-[13px] text-ink-2">{s.caption}</span>
+                        </header>
+                        <ul className="divide-y divide-border">
+                          {rows.map((item) => (
+                            <li key={item.id}>
+                              <Row item={item} />
+                            </li>
+                          ))}
+                        </ul>
+                      </Card>
+                    );
+                  })}
+                  {toPrepare.length > 0 && <PrepareCard rows={toPrepare} />}
+                </>
               )}
             </div>
-            <aside className="space-y-5">
-              <GuardrailsCard />
+            <aside className="min-w-0 space-y-4">
               <TelemetryCard tickets={program ? [program] : byProgram.map(([id]) => id)} />
+              <GuardrailsCard />
             </aside>
           </div>
         </>
@@ -264,24 +225,191 @@ export function MarketingQueue() {
 
 function MarketingSkeleton() {
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
-        {Array.from({ length: 5 }, (_, i) => (
-          <Skeleton key={i} className="h-[84px]" />
+    <div className="grid gap-5 grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="space-y-4">
+        {Array.from({ length: 2 }, (_, i) => (
+          <Skeleton key={i} className="h-[150px]" />
         ))}
       </div>
-      <div className="grid gap-5 grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_340px]">
-        <div className="space-y-4">
-          {Array.from({ length: 3 }, (_, i) => (
-            <Skeleton key={i} className="h-[150px]" />
-          ))}
-        </div>
-        <div className="space-y-5">
-          <Skeleton className="h-[200px]" />
-          <Skeleton className="h-[200px]" />
-        </div>
+      <div className="space-y-4">
+        <Skeleton className="h-[160px]" />
+        <Skeleton className="h-[200px]" />
       </div>
     </div>
+  );
+}
+
+// ---- To prepare: grouped by program ---------------------------------------------------------
+
+function PrepareCard({ rows }: { rows: MarketingItem[] }) {
+  const groups = useMemo(() => {
+    const m = new Map<string, { name: string; rows: MarketingItem[] }>();
+    for (const r of rows) {
+      const g = m.get(r.ticket_id) ?? { name: r.program_name, rows: [] };
+      g.rows.push(r);
+      m.set(r.ticket_id, g);
+    }
+    return [...m.entries()];
+  }, [rows]);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [all, setAll] = useState<Record<string, boolean>>({});
+  const canEdit = useCan("activity.edit");
+  return (
+    <Card className="overflow-hidden">
+      <header className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-4 py-3">
+        <h2 className="text-[14px] font-semibold">To prepare</h2>
+        <span className="ml-auto text-[13px] text-ink-2">
+          {plural(rows.length, "activity", "activities")} · {plural(groups.length, "program")} · not
+          started, add a UTM and a go-live date
+        </span>
+      </header>
+      {groups.map(([id, g], gi) => {
+        const isOpen = open[id] ?? gi === 0;
+        const visible = all[id] ? g.rows : g.rows.slice(0, PREVIEW_ROWS);
+        return (
+          <div key={id} className="border-b border-border last:border-b-0">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 bg-background px-4 py-2.5">
+              <button
+                type="button"
+                aria-expanded={isOpen}
+                onClick={() => setOpen({ ...open, [id]: !isOpen })}
+                className="flex min-w-0 items-center gap-2 rounded-[4px] text-left text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {isOpen ? (
+                  <ChevronDown className="size-3.5 shrink-0 text-ink-2" aria-hidden />
+                ) : (
+                  <ChevronRight className="size-3.5 shrink-0 text-ink-2" aria-hidden />
+                )}
+                <b className="truncate font-semibold">{g.name}</b>
+                <span className="shrink-0 text-ink-2">{g.rows.length} to prepare</span>
+              </button>
+              {canEdit && (
+                <Button asChild size="sm" variant="outline" className="ml-auto">
+                  {/* ponytail: the bulk UTM dialog isn't exported from program-marketing, so link to that tab. */}
+                  <Link
+                    to="/programs/$ticketId"
+                    params={{ ticketId: id }}
+                    search={{ tab: "marketing" }}
+                  >
+                    Fill in bulk
+                  </Link>
+                </Button>
+              )}
+            </div>
+            {isOpen && (
+              <>
+                <div className="hidden grid-cols-[minmax(0,1.3fr)_minmax(0,1.4fr)_140px_72px] gap-3 border-t border-border px-4 py-2 text-[13px] text-ink-2 md:grid">
+                  <span>Activity</span>
+                  <span>UTM campaign</span>
+                  <span>Go-live date</span>
+                  <span />
+                </div>
+                <ul className="divide-y divide-border border-t border-border">
+                  {visible.map((item) => (
+                    <li key={item.id}>
+                      <PrepareRow item={item} />
+                    </li>
+                  ))}
+                </ul>
+                <div className="flex flex-wrap items-center gap-3 border-t border-border px-4 py-2.5 text-[13px] text-ink-2">
+                  {g.rows.length > PREVIEW_ROWS && (
+                    <button
+                      type="button"
+                      onClick={() => setAll({ ...all, [id]: !all[id] })}
+                      className="rounded-[4px] text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {all[id] ? "Show fewer" : `Show ${g.rows.length - PREVIEW_ROWS} more`}
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })}
+    </Card>
+  );
+}
+
+function PrepareRow({ item }: { item: MarketingItem }) {
+  const canEdit = useCan("activity.edit");
+  const done = useDone(item);
+  const needsUtm = /UTM/.test(item.detail);
+  const needsDate = /go-live date/.test(item.detail);
+  const [utm, setUtm] = useState("");
+  const [date, setDate] = useState("");
+  const save = useMutation({
+    mutationFn: () => {
+      const body = {
+        ...(utm.trim() ? { utm: utm.trim() } : {}),
+        ...(date ? { planned_date: date } : {}),
+      };
+      // ponytail: the endpoint takes planned_date (the plan editor sends it); ops-api's patch type just omits it.
+      return patchActivity(
+        item.ticket_id,
+        item.activity_id,
+        body as Parameters<typeof patchActivity>[2],
+      );
+    },
+    onSuccess: done,
+  });
+  const edited = !!utm.trim() || !!date;
+  const dash = <span className="text-ink-3">—</span>;
+  return (
+    <form
+      className="grid gap-2 px-4 py-3 md:grid-cols-[minmax(0,1.3fr)_minmax(0,1.4fr)_140px_72px] md:items-center md:gap-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (edited && !save.isPending) save.mutate();
+      }}
+    >
+      <div className="min-w-0">
+        <p className="truncate text-[14px] font-medium">{item.title}</p>
+        <p className="text-[13px] text-ink-2">
+          <span className="font-mono">#{item.activity_id}</span>
+          {item.client && <> · {item.client}</>}
+        </p>
+      </div>
+      {canEdit ? (
+        <>
+          {needsUtm ? (
+            <Input
+              aria-label={`UTM campaign for ${item.title}`}
+              value={utm}
+              onChange={(e) => setUtm(e.target.value)}
+              placeholder="UTM campaign"
+              className="min-w-0 font-mono placeholder:text-placeholder"
+            />
+          ) : (
+            dash
+          )}
+          {needsDate ? (
+            <Input
+              type="date"
+              aria-label={`Go-live date for ${item.title}`}
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+            />
+          ) : (
+            dash
+          )}
+          <div>
+            {edited && (
+              <Button type="submit" size="sm" disabled={save.isPending}>
+                {save.isPending && <Loader2 className="animate-spin" />}Save
+              </Button>
+            )}
+          </div>
+          {save.error && (
+            <div className="md:col-span-4">
+              <ErrorText error={save.error} />
+            </div>
+          )}
+        </>
+      ) : (
+        <p className="text-[13px] text-ink-2 md:col-span-3">{item.detail}</p>
+      )}
+    </form>
   );
 }
 
@@ -299,7 +427,7 @@ function RowShell({
   extra?: ReactNode;
 }) {
   return (
-    <div className="px-[18px] py-3.5">
+    <div className="px-4 py-3">
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
         <div className="min-w-0 flex-1">
           <p className="text-[14px] font-semibold">
@@ -311,10 +439,10 @@ function RowShell({
             >
               {item.program_name}
             </Link>
-            <span className="text-muted-foreground"> · </span>
+            <span className="text-ink-3"> · </span>
             {item.title}
           </p>
-          <p className="mt-0.5 text-[13px] text-secondary-foreground">
+          <p className="mt-0.5 text-[13px] text-ink-2">
             {item.client && <span>{item.client} · </span>}
             {item.detail}
           </p>
@@ -375,17 +503,11 @@ function GoLiveRow({ item }: { item: MarketingItem }) {
               className="w-[190px] font-mono"
             />
             <Button
-              variant={urgent ? "danger" : "success"}
+              variant={urgent ? "danger" : "secondary"}
               disabled={live.isPending}
               onClick={() => live.mutate()}
             >
-              {live.isPending ? (
-                <Loader2 className="animate-spin" />
-              ) : urgent ? (
-                <Zap />
-              ) : (
-                <CalendarCheck />
-              )}
+              {live.isPending && <Loader2 className="animate-spin" />}
               {urgent ? "Confirm go-live now" : "Set live with date"}
             </Button>
           </div>
@@ -436,10 +558,8 @@ function MissingRow({ item }: { item: MarketingItem }) {
         variant="secondary"
         disabled={!value.trim() || save.isPending}
       >
-        {save.isPending && save.variables && key in save.variables ? (
+        {save.isPending && save.variables && key in save.variables && (
           <Loader2 className="animate-spin" />
-        ) : (
-          <Link2 />
         )}
         {button}
       </Button>
@@ -451,7 +571,7 @@ function MissingRow({ item }: { item: MarketingItem }) {
       extra={
         canEdit && (
           <div className="mt-2.5 grid gap-2 sm:grid-cols-2">
-            {needsUtm && field("UTM", utm, setUtm, "utm", "he_mark/program_channel", "Add UTM")}
+            {needsUtm && field("UTM", utm, setUtm, "utm", "campaign_name", "Add UTM")}
             {needsProof &&
               field(
                 "Creative proof URL",
@@ -486,7 +606,7 @@ function WaitingRow({ item }: { item: MarketingItem }) {
             disabled={nudge.isPending || nudge.isSuccess}
             onClick={() => nudge.mutate()}
           >
-            {nudge.isPending ? <Loader2 className="animate-spin" /> : <Bell />}
+            {nudge.isPending && <Loader2 className="animate-spin" />}
             {nudge.isSuccess ? "Nudged" : "Nudge CSM"}
           </Button>
         )
@@ -494,7 +614,7 @@ function WaitingRow({ item }: { item: MarketingItem }) {
       extra={
         <>
           {nudge.data && (
-            <p className="mt-1.5 t-data-sm text-muted-foreground">
+            <p className="mt-1.5 text-[13px] text-ink-2">
               {nudge.data.queued
                 ? `Nudged ${nudge.data.recipients.join(", ")} just now`
                 : "No Slack channel linked: nudge recorded but not sent"}
@@ -546,10 +666,10 @@ function ResultsRow({ item }: { item: MarketingItem }) {
             >
               {(["views", "clicks", "sent", "opens"] as const).map((f) => (
                 <label key={f} className="space-y-1">
-                  <MonoLabel>
+                  <FieldLabel>
                     {f}
                     {f === "sent" || f === "opens" ? " (email)" : ""}
-                  </MonoLabel>
+                  </FieldLabel>
                   <Input
                     type="number"
                     min={0}
@@ -571,8 +691,8 @@ function ResultsRow({ item }: { item: MarketingItem }) {
             </form>
           )}
           {save.data?.totals.ctr != null && (
-            <p className="mt-1.5 t-data-sm text-muted-foreground">
-              Avg CTR to date: {(save.data.totals.ctr * 100).toFixed(1)}%
+            <p className="mt-1.5 text-[13px] text-ink-2">
+              Avg CTR to date: {save.data.totals.ctr.toFixed(1)}%
             </p>
           )}
           <ErrorText error={save.error} />
@@ -587,25 +707,22 @@ function ResultsRow({ item }: { item: MarketingItem }) {
 function GuardrailsCard() {
   return (
     <Card>
-      <CardHeader title="Execution guardrails" meta="Governance" />
-      <CardBody className="space-y-2.5">
+      <CardHeader title="How go-live works" />
+      <CardBody className="space-y-3 text-[13px]">
         {[
-          [
-            "No unapproved live",
-            "No activity goes live without a CSM approval. A live activity without one is flagged as a control breach.",
-          ],
+          ["Approval first", "Nothing goes live without CSM approval."],
           [
             "UTM required",
-            "An activity needs a UTM before it can go live, and keeps it while live.",
+            "An activity needs a UTM before it can go live and keeps it while live.",
           ],
           [
-            "Log results daily",
-            "Live activities need yesterday's views and clicks recorded so the CTR stays accurate.",
+            "Results daily",
+            "Live activities need yesterday's views and clicks, so the CTR stays accurate.",
           ],
         ].map(([t, d]) => (
-          <div key={t} className="surface-inset rounded-lg px-3 py-2.5">
-            <p className="text-[14px] font-semibold">{t}</p>
-            <p className="mt-0.5 text-[13px] text-secondary-foreground">{d}</p>
+          <div key={t}>
+            <p className="font-medium">{t}</p>
+            <p className="text-ink-2">{d}</p>
           </div>
         ))}
       </CardBody>
@@ -644,16 +761,18 @@ function TelemetryCard({ tickets }: { tickets: string[] }) {
         {res.some((r) => r.isLoading) && channels.length === 0 ? (
           <Skeleton className="h-24" />
         ) : channels.length === 0 ? (
-          <p className="text-[13px] text-muted-foreground">No views or clicks logged yet.</p>
+          <p className="text-[13px] text-ink-2">No views or clicks logged yet.</p>
         ) : (
           channels.map((c, n) => (
             <div key={c.channel}>
               <div className="flex items-baseline justify-between gap-2">
                 <span className="truncate text-[14px] font-medium capitalize">{c.channel}</span>
-                <span className="t-data-sm text-status-good">{c.ctr?.toFixed(1)}% CTR</span>
+                <span className="text-[14px] font-medium tabular-nums">
+                  {c.ctr?.toFixed(1)}% CTR
+                </span>
               </div>
               <Bar pct={((c.ctr ?? 0) / peak) * 100} tone="info" index={n} className="mt-1" />
-              <div className="mt-1 flex justify-between t-data-sm text-muted-foreground">
+              <div className="mt-1 flex justify-between text-[13px] tabular-nums text-ink-2">
                 <span>{c.views ? `${fmt(c.views)} views` : `${fmt(c.sent)} sent`}</span>
                 <span>{fmt(c.clicks)} clicks</span>
               </div>
@@ -705,7 +824,7 @@ function AddChannelDialog({
             </DialogDescription>
           </DialogHeader>
           <label className="block space-y-1">
-            <MonoLabel>Program</MonoLabel>
+            <FieldLabel>Program</FieldLabel>
             <Select value={ticket} onValueChange={setTicket}>
               <SelectTrigger>
                 <SelectValue placeholder="Choose a program" />
@@ -720,7 +839,7 @@ function AddChannelDialog({
             </Select>
           </label>
           <label className="block space-y-1">
-            <MonoLabel>Channel</MonoLabel>
+            <FieldLabel>Channel</FieldLabel>
             <Input
               value={channel}
               onChange={(e) => setChannel(e.target.value)}
@@ -729,7 +848,7 @@ function AddChannelDialog({
             />
           </label>
           <label className="block space-y-1">
-            <MonoLabel>Title</MonoLabel>
+            <FieldLabel>Title</FieldLabel>
             <Input value={title} onChange={(e) => setTitle(e.target.value)} required />
           </label>
           <ErrorText error={add.error} />

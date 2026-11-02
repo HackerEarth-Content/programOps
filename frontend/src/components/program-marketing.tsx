@@ -1,112 +1,100 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  AlertTriangle,
-  ChevronDown,
-  ChevronRight,
-  ExternalLink,
-  TriangleAlert,
-  X,
-} from "lucide-react";
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ComponentProps,
-  type FormEvent,
-  type ReactNode,
-} from "react";
+import { AlertTriangle, TriangleAlert } from "lucide-react";
+import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Chip, EmptyState, Skeleton, StatusDot } from "@/components/kit";
+import {
+  Bar,
+  Chip,
+  EmptyState,
+  KpiCell,
+  KpiStrip,
+  Notice,
+  ReadinessDots,
+  Skeleton,
+} from "@/components/kit";
+import { BulkUtmDialog } from "@/components/marketing/bulk-utm";
+import { GoLiveCalendar } from "@/components/marketing/calendar";
+import { ActivityDetail } from "@/components/marketing/detail";
+import {
+  errText,
+  isBlocked,
+  isReady,
+  maxGoLiveIso,
+  nextStep,
+  STATUS_LABEL,
+  todayIso,
+  weekKey,
+  weekLabel,
+} from "@/components/marketing/shared";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { registrationsQueryOptions, useCan } from "@/lib/api";
-import { formatDay, formatRange, formatWhen, safeUrl } from "@/lib/format";
 import {
-  activityAuditQuery,
-  addChannel,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import { registrationsQueryOptions, useCan } from "@/lib/api";
+import { formatDay, formatRange } from "@/lib/format";
+import {
   assignmentsQuery,
+  addChannel,
   ConflictError,
-  metricsQuery,
   nudgeActivity,
   nudgeAllForApproval,
   patchPlanActivity,
   planQuery,
   possibleDuplicates,
-  putMetrics,
   rereadPlan,
-  type ActivityMetrics,
   type ChannelInput,
   type PlanActivity,
-  type PlanPatch,
   type RereadResult,
 } from "@/lib/marketing-api";
-import {
-  activitySummaryQuery,
-  approveActivity,
-  goLive,
-  withdrawApproval,
-  type ActivityStatus,
-  type AuditEvent,
-} from "@/lib/ops-api";
+import { activitySummaryQuery, type ActivityStatus } from "@/lib/ops-api";
 import { cn } from "@/lib/utils";
 
-const STATUS_LABEL: Record<ActivityStatus, string> = {
-  not_started: "Not started",
-  wip: "In progress",
-  live: "Live",
-  off: "Done",
-};
-const SELECT_CLS =
-  "h-10 rounded-[8px] border border-border bg-surface px-3 text-[14px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60";
-const FIELD_CLS = "bg-raised";
-const GRID =
-  "flex flex-col gap-1.5 xl:grid xl:grid-cols-[minmax(0,2fr)_128px_minmax(0,1.6fr)_104px] xl:items-center xl:gap-4 2xl:grid-cols-[minmax(0,2.2fr)_minmax(0,1.4fr)_128px_minmax(0,1.8fr)_104px]";
+const FILTER_TRIGGER =
+  "h-8 w-auto min-w-[140px] gap-2 rounded-[6px] border-border bg-card px-2.5 text-[13px] shadow-none";
+// 5 columns when there is room beside the 380px panel; below that each row is two lines.
+const ROW_COLS = "min-[1360px]:grid-cols-[minmax(0,1fr)_84px_160px_100px_124px]";
 
-/** Not live or done yet, and still missing approval, a UTM or a go-live date. */
-const isBlocked = (a: PlanActivity) =>
-  a.status !== "off" && a.status !== "live" && (!a.approved_at || !a.utm || !a.planned_date);
-const missingOf = (a: PlanActivity) =>
-  [!a.approved_at && "Needs approval", !a.utm && "No UTM", !a.planned_date && "No date"].filter(
-    (x): x is string => !!x,
-  );
-
-const errText = (e: unknown) => (e instanceof Error ? e.message : "Action failed");
 const hashId = () => {
   const m = /^#a=(\d+)$/.exec(window.location.hash);
   return m ? Number(m[1]) : null;
 };
-const weekKey = (a: PlanActivity) => String(a.week ?? "none");
-const weekLabel = (k: string) => (k === "none" ? "Unscheduled" : `Week ${k}`);
-const todayIso = () => new Date().toISOString().slice(0, 10);
-/** Go-live dates run from today to 60 days out (the backend enforces the same window). */
-const maxGoLiveIso = () => new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10);
+const sortWeeks = (a: [string, unknown], b: [string, unknown]) => {
+  if (a[0] === "none") return 1;
+  if (b[0] === "none") return -1;
+  return Number(a[0]) - Number(b[0]);
+};
+const earliest = (items: PlanActivity[]) =>
+  items
+    .map((i) => i.planned_date)
+    .filter((d): d is string => !!d)
+    .sort()[0] ?? null;
 
-/** The week to open first: the one that contains today, else the next one, else the first. */
-function currentWeek(groups: [string, PlanActivity[]][]): string | null {
-  const today = todayIso();
-  const spans = groups.map(([k, items]) => {
-    const dates = items
-      .map((i) => i.planned_date)
-      .filter((d): d is string => !!d)
-      .sort();
-    return { k, from: dates[0] ?? null, to: dates[dates.length - 1] ?? null };
-  });
-  return (
-    spans.find((s) => s.from && s.to && s.from <= today && today <= s.to)?.k ??
-    spans.find((s) => s.from && s.from > today)?.k ??
-    groups[0]?.[0] ??
-    null
+/** True from the `lg` breakpoint up, where the detail panel sits beside the list instead of in a sheet. */
+function useWide() {
+  const [wide, setWide] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches,
   );
+  useEffect(() => {
+    const mql = window.matchMedia("(min-width: 1024px)");
+    const on = () => setWide(mql.matches);
+    mql.addEventListener("change", on);
+    return () => mql.removeEventListener("change", on);
+  }, []);
+  return wide;
 }
 
 export function ProgramMarketing({ ticketId }: { ticketId: string }) {
@@ -120,6 +108,7 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
   const canReread = useCan("integrations.link"); // the backend gates plan re-read on this, not on activity.edit
   const canApprove = useCan("activity.approve");
   const canAdd = useCan("activity.add_channel");
+  const wide = useWide();
 
   const [selectedId, setSelectedId] = useState<number | null>(hashId);
   const [week, setWeek] = useState("all");
@@ -127,13 +116,11 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
   const [statusFilter, setStatusFilter] = useState<"all" | ActivityStatus>("all");
   const [blockedOnly, setBlockedOnly] = useState(false);
   const [channel, setChannel] = useState("all");
-  const [open, setOpen] = useState<Record<string, boolean> | null>(null);
   const [adding, setAdding] = useState(false);
   const [bulkUtm, setBulkUtm] = useState(false);
   const [banner, setBanner] = useState<RereadResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const inspector = useRef<HTMLElement>(null);
 
   const select = (id: number | null) => {
     setSelectedId(id);
@@ -142,11 +129,6 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
       "",
       id === null ? window.location.pathname + window.location.search : `#a=${id}`,
     );
-    if (id !== null && window.innerWidth < 1024)
-      setTimeout(
-        () => inspector.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
-        50,
-      );
   };
 
   const reload = () => qc.invalidateQueries({ queryKey: ["programs", ticketId] });
@@ -198,16 +180,17 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
   const rows = useMemo(() => plan.data ?? [], [plan.data]);
   const duplicates = useMemo(() => possibleDuplicates(rows), [rows]);
   const channels = useMemo(() => [...new Set(rows.map((r) => r.channel))].sort(), [rows]);
-  const weekCounts = useMemo(() => {
-    const m = new Map<string, number>();
-    rows.forEach((r) => m.set(weekKey(r), (m.get(weekKey(r)) ?? 0) + 1));
-    return [...m.entries()].sort((a, b) => {
-      if (a[0] === "none") return 1;
-      if (b[0] === "none") return -1;
-      return Number(a[0]) - Number(b[0]);
-    });
+  const weekCards = useMemo(() => {
+    const m = new Map<string, PlanActivity[]>();
+    rows.forEach((r) => m.set(weekKey(r), [...(m.get(weekKey(r)) ?? []), r]));
+    return [...m.entries()].sort(sortWeeks);
   }, [rows]);
   const q = query.trim().toLowerCase();
+  // the calendar follows the week rail (search / status filters only narrow the list below it)
+  const calendarRows = useMemo(
+    () => (week === "all" ? rows : rows.filter((r) => weekKey(r) === week)),
+    [rows, week],
+  );
   const visible = rows.filter(
     (r) =>
       (week === "all" || weekKey(r) === week) &&
@@ -219,16 +202,9 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
   const groups = useMemo(() => {
     const m = new Map<string, PlanActivity[]>();
     visible.forEach((r) => m.set(weekKey(r), [...(m.get(weekKey(r)) ?? []), r]));
-    return [...m.entries()].sort((a, b) => {
-      if (a[0] === "none") return 1;
-      if (b[0] === "none") return -1;
-      return Number(a[0]) - Number(b[0]);
-    });
+    return [...m.entries()].sort(sortWeeks);
   }, [visible]);
   const selected = rows.find((r) => r.id === selectedId) ?? null;
-  const defaultOpen = useMemo(() => currentWeek(groups), [groups]);
-  const isOpen = (k: string) =>
-    week !== "all" ? true : open ? (open[k] ?? false) : k === defaultOpen;
 
   if (plan.isLoading) return <PlanSkeleton />;
   if (plan.isError)
@@ -246,6 +222,12 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
     );
 
   const s = summary.data;
+  const total = s?.total ?? rows.length;
+  const nLive = s?.live ?? rows.filter((r) => r.status === "live").length;
+  const nApproved = s?.approved ?? rows.filter((r) => r.approved_at).length;
+  const nUtm = rows.filter((a) => a.utm).length;
+  const nDate = rows.filter((a) => a.planned_date).length;
+  const pct = (n: number) => (total ? (100 * n) / total : 0);
   const regEnd = regs?.estimate.end ?? null;
   const regClosed = regEnd !== null && regEnd < todayIso();
   // `end` is only the real close date when it is known (linked event or CSM override); otherwise it is the start
@@ -260,158 +242,215 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
   const noUtm = blocked.filter((a) => !a.utm).length;
   const noDate = blocked.filter((a) => !a.planned_date).length;
   const afterClose = regEnd ? blocked.filter((a) => a.planned_date && a.planned_date > regEnd) : [];
-  const withUtm = rows.filter((a) => a.utm).length;
   const who = csm ?? "the CSM";
-  const toggleWeek = (k: string) =>
-    setOpen((cur) => {
-      const base = cur ?? Object.fromEntries(groups.map(([g]) => [g, g === defaultOpen]));
-      return { ...base, [k]: !(base[k] ?? false) };
-    });
+  const needs = [
+    unapproved > 0 && `${unapproved} the CSM's approval`,
+    noUtm > 0 && `${noUtm} a UTM`,
+    noDate > 0 && `${noDate} a go-live date`,
+  ].filter(Boolean);
+
+  const feedback = (
+    <>
+      {notice && (
+        <Dismissable tone="warn" onDismiss={() => setNotice(null)}>
+          {notice}
+        </Dismissable>
+      )}
+      {error && (
+        <Dismissable tone="danger" onDismiss={() => setError(null)}>
+          {error}
+        </Dismissable>
+      )}
+    </>
+  );
+  const detail = selected && (
+    <ActivityDetail
+      key={selected.id}
+      ticketId={ticketId}
+      a={selected}
+      csm={csm}
+      busy={pendingId === selected.id}
+      canApprove={canApprove}
+      canEdit={canEdit}
+      onClose={wide ? () => select(null) : undefined}
+      feedback={feedback}
+      act={(fn) => act(selected.id, fn)}
+      onNudge={() =>
+        act(selected.id, async () => {
+          const r = await nudgeActivity(ticketId, selected.id);
+          setNotice(
+            r.queued
+              ? `Nudged ${r.recipients.join(", ")} in Slack.`
+              : "Nudge recorded, but the program has no Slack channel.",
+          );
+        })
+      }
+    />
+  );
 
   return (
-    <div className="space-y-5">
-      <section
-        aria-label="Marketing summary"
-        className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3"
-      >
-        <StatTile
-          label="Live"
-          value={`${s?.live ?? 0} / ${s?.total ?? 0}`}
-          note={s && s.live > 0 ? `${s.live} running` : "Nothing running yet"}
+    <div className="space-y-4">
+      <KpiStrip label="Launch readiness">
+        <KpiCell label="Live" value={nLive} unit={`of ${total}`} pct={pct(nLive)} />
+        <KpiCell
+          label="Approved by the CSM"
+          value={nApproved}
+          unit={`of ${total}`}
+          pct={pct(nApproved)}
         />
-        <StatTile
-          label="Approved"
-          value={`${s?.approved ?? 0} / ${s?.total ?? 0}`}
-          warn={!!s && s.total > 0 && s.approved === 0}
-          note={
-            s && s.total > 0 && s.approved === 0
-              ? `All waiting on ${who}`
-              : `${s?.approved ?? 0} signed off`
-          }
-        />
-        <StatTile
-          label="Missing UTM"
-          value={String(rows.length - withUtm)}
-          note={`${withUtm} have a UTM`}
-        />
-        <StatTile
-          label="Possible duplicates"
-          value={String(duplicates.size)}
-          note="Same channel and name, overlapping dates"
-        />
-      </section>
+        <KpiCell label="UTM set" value={nUtm} unit={`of ${total}`} pct={pct(nUtm)} />
+        <KpiCell label="Go-live date set" value={nDate} unit={`of ${total}`} pct={pct(nDate)} />
+      </KpiStrip>
 
       {blocked.length > 0 && (
-        <section className="flex flex-wrap items-center gap-3 rounded-[12px] bg-warn-bg px-4 py-3.5">
-          <TriangleAlert aria-hidden className="size-5 shrink-0 text-warn" />
-          <div className="min-w-0 flex-[1_1_400px]">
-            <p className="font-medium">
-              {blocked.length} {blocked.length === 1 ? "activity" : "activities"} can't go live yet
-            </p>
-            <p className="text-[14px] text-ink-2">
-              {[
-                unapproved > 0 && `${unapproved} awaiting ${who}'s approval`,
-                noUtm > 0 && `${noUtm} without a UTM`,
-                noDate > 0 && `${noDate} without a go-live date`,
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-              {afterClose.length > 0
-                ? ` · ${afterClose.length === blocked.length ? "all" : afterClose.length} start ${regLabel} (${formatDay(regEnd)})`
-                : ""}
-            </p>
-          </div>
-          <Button
-            variant="ghost"
-            onClick={() => {
-              setBlockedOnly(true);
-              setWeek("all");
-            }}
-          >
-            Show them
-          </Button>
-          {canEdit && (noUtm > 0 || noDate > 0) && (
-            <Button variant="outline" onClick={() => setBulkUtm(true)}>
-              Add UTMs & dates in bulk
-            </Button>
-          )}
-          {canEdit && unapproved > 0 && (
-            <Button
-              variant="outline"
-              disabled={nudgeAll.isPending}
-              onClick={() => nudgeAll.mutate()}
-            >
-              Remind {who} in Slack
-            </Button>
-          )}
-        </section>
+        <Notice
+          actions={
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setBlockedOnly(true);
+                  setWeek("all");
+                }}
+              >
+                Show them
+              </Button>
+              {canEdit && (noUtm > 0 || noDate > 0) && (
+                <Button variant="outline" size="sm" onClick={() => setBulkUtm(true)}>
+                  Fill UTMs and dates
+                </Button>
+              )}
+              {canEdit && unapproved > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={nudgeAll.isPending}
+                  onClick={() => nudgeAll.mutate()}
+                >
+                  Remind {who} in Slack
+                </Button>
+              )}
+            </>
+          }
+        >
+          <b>
+            {blocked.length} {blocked.length === 1 ? "activity" : "activities"} can't go live yet.
+          </b>{" "}
+          Still waiting on {needs.join(", ")}.
+          {afterClose.length > 0 &&
+            ` ${afterClose.length === blocked.length ? "All" : afterClose.length} start ${regLabel} (${formatDay(regEnd)}).`}
+        </Notice>
       )}
 
       {banner && (
-        <Notice tone="ok" onDismiss={() => setBanner(null)}>
+        <Dismissable tone="ok" onDismiss={() => setBanner(null)}>
           <b>Plan synced:</b> {banner.added} new rows added, {banner.removed} removed,{" "}
           {banner.edits_kept} custom edits kept intact.
-        </Notice>
+        </Dismissable>
       )}
-      {!selected && notice && (
-        <Notice tone="warn" onDismiss={() => setNotice(null)}>
-          {notice}
-        </Notice>
-      )}
-      {!selected && error && (
-        <Notice tone="danger" onDismiss={() => setError(null)}>
-          {error}
-        </Notice>
+      {!selected && feedback}
+
+      {rows.length > 0 && (
+        <div className="hidden md:block">
+          <GoLiveCalendar
+            rows={calendarRows}
+            scope={week === "all" ? "All weeks" : weekLabel(week)}
+            selectedId={selectedId}
+            onSelect={select}
+            onFill={
+              canEdit && rows.some((a) => !a.planned_date && isBlocked(a))
+                ? () => setBulkUtm(true)
+                : undefined
+            }
+          />
+        </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-2.5">
+      {rows.length > 0 && (
+        <div
+          role="group"
+          aria-label="Weeks"
+          className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 md:mx-0 md:grid md:grid-cols-[repeat(auto-fit,minmax(150px,1fr))] md:overflow-visible md:px-0 md:pb-0"
+        >
+          {[["all", rows] as [string, PlanActivity[]], ...weekCards].map(([k, items]) => {
+            const n = items.filter(isReady).length;
+            const from = k === "all" ? null : earliest(items);
+            return (
+              <button
+                key={k}
+                type="button"
+                aria-pressed={week === k}
+                onClick={() => setWeek(k)}
+                className={cn(
+                  "w-[140px] shrink-0 rounded-lg border px-3 py-2.5 text-left md:w-auto",
+                  week === k
+                    ? "border-primary bg-accent-bg"
+                    : "border-border bg-card hover:bg-raised",
+                )}
+              >
+                <p className="text-[14px] font-medium">
+                  {k === "all" ? "All weeks" : weekLabel(k)}
+                </p>
+                <p className="text-[12px] text-ink-2">
+                  {k === "all"
+                    ? `${items.length} activities · `
+                    : from
+                      ? `from ${formatDay(from)} · `
+                      : ""}
+                  {n} of {items.length} ready
+                </p>
+                <Bar
+                  pct={items.length ? (100 * n) / items.length : 0}
+                  className="mt-2"
+                  label={`${k === "all" ? "All weeks" : weekLabel(k)} ready`}
+                />
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
         <Input
           type="search"
-          className={cn("h-10 w-64", FIELD_CLS)}
+          className="w-full sm:w-60"
           placeholder="Search title, channel or UTM"
           aria-label="Search activities"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <select
-          className={SELECT_CLS}
-          value={week}
-          onChange={(e) => setWeek(e.target.value)}
-          aria-label="Week"
-        >
-          <option value="all">All weeks ({rows.length})</option>
-          {weekCounts.map(([k, n]) => (
-            <option key={k} value={k}>
-              {weekLabel(k)} ({n})
-            </option>
-          ))}
-        </select>
-        <select
-          className={SELECT_CLS}
-          value={channel}
-          onChange={(e) => setChannel(e.target.value)}
-          aria-label="Channel"
-        >
-          <option value="all">All channels</option>
-          {channels.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
-        <select
-          className={SELECT_CLS}
+        <Select value={channel} onValueChange={setChannel}>
+          <SelectTrigger aria-label="Channel" className={FILTER_TRIGGER}>
+            <SelectValue>Channel: {channel === "all" ? "All" : channel}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All channels</SelectItem>
+            {channels.map((c) => (
+              <SelectItem key={c} value={c}>
+                {c}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value as "all" | ActivityStatus)}
-          aria-label="Status"
+          onValueChange={(v) => setStatusFilter(v as "all" | ActivityStatus)}
         >
-          <option value="all">Any status</option>
-          {(Object.keys(STATUS_LABEL) as ActivityStatus[]).map((st) => (
-            <option key={st} value={st}>
-              {STATUS_LABEL[st]}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger aria-label="Status" className={FILTER_TRIGGER}>
+            <SelectValue>
+              Status: {statusFilter === "all" ? "Any" : STATUS_LABEL[statusFilter]}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Any status</SelectItem>
+            {(Object.keys(STATUS_LABEL) as ActivityStatus[]).map((st) => (
+              <SelectItem key={st} value={st}>
+                {STATUS_LABEL[st]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <label className="flex cursor-pointer items-center gap-2 text-[14px] text-ink-2">
           <Checkbox checked={blockedOnly} onCheckedChange={(v) => setBlockedOnly(v === true)} />
           Blocked only
@@ -438,142 +477,108 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
           hint="It is read from the plan of action once one is attached in HubSpot."
         />
       ) : (
-        <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
-          <section className="surface min-w-0 overflow-hidden">
-            <div>
-              <div>
-                <div
-                  className={cn(
-                    GRID,
-                    "hidden border-b border-border px-5 py-2.5 text-[13px] text-ink-3 xl:grid",
-                  )}
-                >
-                  <span>Activity</span>
-                  <span className="hidden 2xl:block">Goal</span>
-                  <span>Go-live date</span>
-                  <span>Ready (approval · UTM · date)</span>
-                  <span>Status</span>
-                </div>
-                {groups.length === 0 && (
-                  <p className="px-5 py-8 text-center text-[14px] text-ink-2">
-                    No activities match these filters.
-                  </p>
-                )}
-                {groups.map(([wk, items]) => {
-                  const dates = items
-                    .map((i) => i.planned_date)
-                    .filter((d): d is string => !!d)
-                    .sort();
-                  const range = dates.length
-                    ? formatRange(dates[0], dates[dates.length - 1])
-                    : null;
-                  const late =
-                    !!regEnd &&
-                    items.some(
-                      (i) =>
-                        i.status !== "live" &&
-                        i.status !== "off" &&
-                        !!i.planned_date &&
-                        i.planned_date > regEnd,
-                    );
-                  const expanded = isOpen(wk);
-                  return (
-                    <div key={wk}>
-                      <button
-                        type="button"
-                        aria-expanded={expanded}
-                        onClick={() => toggleWeek(wk)}
-                        className="flex w-full items-center gap-2.5 border-b border-border bg-raised px-5 py-3.5 text-left text-[14px]"
-                      >
-                        {expanded ? (
-                          <ChevronDown className="size-4 text-ink-2" />
-                        ) : (
-                          <ChevronRight className="size-4 text-ink-2" />
-                        )}
-                        <span className="font-semibold">{weekLabel(wk)}</span>
-                        <span className="text-ink-2">
-                          {range ? `${range} · ` : ""}
-                          {items.length} {items.length === 1 ? "activity" : "activities"}
-                        </span>
-                        {late && (
-                          <span className="ml-auto rounded-full bg-warn-bg px-2 py-0.5 text-[13px] text-warn">
-                            {regLabel.charAt(0).toUpperCase() + regLabel.slice(1)} ·{" "}
-                            {formatDay(regEnd)}
-                          </span>
-                        )}
-                      </button>
-                      {expanded &&
-                        items.map((a) => (
-                          <ActivityRow
-                            key={a.id}
-                            a={a}
-                            selected={selectedId === a.id}
-                            duplicate={duplicates.has(a.id)}
-                            onSelect={() => select(a.id === selectedId ? null : a.id)}
-                          />
-                        ))}
-                    </div>
-                  );
-                })}
-              </div>
+        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+          <section aria-label="Activities" className="surface min-w-0 overflow-hidden">
+            <div
+              className={cn(
+                "hidden gap-3 border-b border-border px-4 py-2.5 text-[13px] text-ink-2 min-[1360px]:grid",
+                ROW_COLS,
+              )}
+            >
+              <span>Activity</span>
+              <span>Go-live</span>
+              <span>UTM campaign</span>
+              <span>Ready</span>
+              <span>Next step</span>
             </div>
-            <p className="px-5 py-3 text-[13px] text-ink-3">
-              Showing {visible.length} of {rows.length} planned activities
-            </p>
+            {groups.length === 0 && (
+              <p className="px-4 py-8 text-center text-[14px] text-ink-2">
+                No activities match these filters.
+              </p>
+            )}
+            {groups.map(([wk, items]) => {
+              const from = earliest(items);
+              const dates = items
+                .map((i) => i.planned_date)
+                .filter((d): d is string => !!d)
+                .sort();
+              const late =
+                !!regEnd &&
+                items.some(
+                  (i) =>
+                    i.status !== "live" &&
+                    i.status !== "off" &&
+                    !!i.planned_date &&
+                    i.planned_date > regEnd,
+                );
+              return (
+                <div key={wk}>
+                  {week === "all" && (
+                    <div className="flex flex-wrap items-baseline gap-x-2 border-b border-border bg-raised px-4 py-2 text-[13px]">
+                      <b className="font-semibold">{weekLabel(wk)}</b>
+                      <span className="text-ink-2">
+                        {from ? `${formatRange(dates[0], dates[dates.length - 1])} · ` : ""}
+                        {items.length} {items.length === 1 ? "activity" : "activities"}
+                      </span>
+                      {late && (
+                        <span className="ml-auto text-warn">
+                          Starts {regLabel} · {formatDay(regEnd)}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {items.map((a) => (
+                    <ActivityRow
+                      key={a.id}
+                      a={a}
+                      selected={selectedId === a.id}
+                      duplicate={duplicates.has(a.id)}
+                      onSelect={() => select(a.id === selectedId ? null : a.id)}
+                    />
+                  ))}
+                </div>
+              );
+            })}
+            <div className="flex flex-wrap justify-between gap-2 px-4 py-2.5 text-[13px] text-ink-2">
+              <span>
+                Showing {visible.length} of {rows.length} planned activities
+              </span>
+              <span className="hidden sm:inline">Approval · UTM · go-live date</span>
+            </div>
           </section>
 
-          <aside
-            ref={inspector}
-            aria-label="Activity details"
-            className="surface min-w-0 p-5 lg:sticky lg:top-24 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto"
-          >
-            {selected ? (
-              <Inspector
-                key={selected.id}
-                ticketId={ticketId}
-                a={selected}
-                csm={csm}
-                busy={pendingId === selected.id}
-                canApprove={canApprove}
-                canEdit={canEdit}
-                onClose={() => select(null)}
-                feedback={
-                  <>
-                    {notice && (
-                      <Notice tone="warn" onDismiss={() => setNotice(null)}>
-                        {notice}
-                      </Notice>
-                    )}
-                    {error && (
-                      <Notice tone="danger" onDismiss={() => setError(null)}>
-                        {error}
-                      </Notice>
-                    )}
-                  </>
-                }
-                act={(fn) => act(selected.id, fn)}
-                onNudge={() =>
-                  act(selected.id, async () => {
-                    const r = await nudgeActivity(ticketId, selected.id);
-                    setNotice(
-                      r.queued
-                        ? `Nudged ${r.recipients.join(", ")} in Slack.`
-                        : "Nudge recorded, but the program has no Slack channel.",
-                    );
-                  })
-                }
-              />
-            ) : (
-              <>
-                <p className="font-medium">Select an activity</p>
-                <p className="mt-1 text-[14px] text-ink-2">
-                  Open a row to approve it, set its UTM and creative proof, log results and read its
-                  history.
-                </p>
-              </>
-            )}
-          </aside>
+          {wide && (
+            <aside
+              aria-label="Activity details"
+              className="surface min-w-0 lg:sticky lg:top-24 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto"
+            >
+              {detail || (
+                <div className="p-4">
+                  <p className="font-medium">Select an activity</p>
+                  <p className="mt-1 text-[13px] text-ink-2">
+                    Open a row to approve it, set its UTM and go-live date, add creative proof, log
+                    results and read its history.
+                  </p>
+                </div>
+              )}
+            </aside>
+          )}
         </div>
+      )}
+
+      {!wide && (
+        <Sheet open={!!selected} onOpenChange={(o) => !o && select(null)}>
+          <SheetContent
+            side="bottom"
+            className="max-h-[88vh] gap-0 overflow-y-auto rounded-t-xl p-0 pr-0"
+          >
+            <SheetTitle className="sr-only">{selected?.title ?? "Activity details"}</SheetTitle>
+            <SheetDescription className="sr-only">
+              Approve the activity, set its UTM and go-live date, and save.
+            </SheetDescription>
+            <div className="pt-4 pr-6">{detail}</div>
+          </SheetContent>
+        </Sheet>
       )}
 
       <AddChannelDialog
@@ -590,6 +595,7 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
         open={bulkUtm}
         onOpenChange={setBulkUtm}
         rows={blocked.filter((a) => !a.utm || !a.planned_date)}
+        allRows={rows}
         onSave={async (entries) => {
           const failed: string[] = [];
           for (const [a, body] of entries) {
@@ -614,27 +620,8 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
   );
 }
 
-function StatTile({
-  label,
-  value,
-  note,
-  warn,
-}: {
-  label: string;
-  value: string;
-  note: string;
-  warn?: boolean;
-}) {
-  return (
-    <div className="surface px-4 py-3.5">
-      <p className="text-[14px] text-ink-2">{label}</p>
-      <p className="mt-0.5 text-[24px] font-semibold leading-8">{value}</p>
-      <p className={cn("text-[13px]", warn ? "text-warn" : "text-ink-3")}>{note}</p>
-    </div>
-  );
-}
-
-function Notice({
+/** A quiet notice with a Dismiss button (reread result, conflicts, errors). */
+function Dismissable({
   tone,
   children,
   onDismiss,
@@ -643,40 +630,29 @@ function Notice({
   children: ReactNode;
   onDismiss: () => void;
 }) {
-  const cls = {
-    ok: "bg-ok-bg text-ok",
-    warn: "bg-warn-bg text-warn",
-    danger: "bg-danger-bg text-danger",
-  }[tone];
   return (
-    <div
-      role={tone === "danger" ? "alert" : "status"}
-      className={cn(
-        "flex items-center justify-between gap-3 rounded-[10px] px-3.5 py-2.5 text-[14px]",
-        cls,
-      )}
-    >
-      <span>{children}</span>
-      <button
-        className="shrink-0 text-[14px] underline-offset-2 hover:underline"
-        onClick={onDismiss}
+    <div role={tone === "danger" ? "alert" : "status"}>
+      <Notice
+        tone={tone}
+        actions={
+          <Button variant="ghost" size="sm" onClick={onDismiss}>
+            Dismiss
+          </Button>
+        }
       >
-        Dismiss
-      </button>
+        {children}
+      </Notice>
     </div>
   );
 }
 
 function PlanSkeleton() {
   return (
-    <div className="space-y-5">
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3">
-        {[0, 1, 2, 3].map((i) => (
-          <Skeleton key={i} className="h-[88px]" />
-        ))}
-      </div>
+    <div className="space-y-4">
+      <Skeleton className="h-[88px]" />
       <Skeleton className="h-12" />
-      <Skeleton className="h-[420px]" />
+      <Skeleton className="h-[200px]" />
+      <Skeleton className="h-[360px]" />
     </div>
   );
 }
@@ -692,705 +668,63 @@ function ActivityRow({
   duplicate: boolean;
   onSelect: () => void;
 }) {
-  const missing = missingOf(a);
+  const step = nextStep(a);
   const overdue =
     !!a.planned_date && a.planned_date < todayIso() && a.status !== "live" && a.status !== "off";
+  const date = a.planned_date ? (
+    <span
+      className={cn(overdue && "font-medium text-danger")}
+      title={overdue ? "Overdue" : undefined}
+    >
+      {formatDay(a.planned_date)}
+      {overdue && <span className="sr-only"> (overdue)</span>}
+    </span>
+  ) : (
+    <span className="text-ink-3">—</span>
+  );
+  const utm = a.utm ? (
+    <span className="font-mono text-[12px]">{a.utm}</span>
+  ) : (
+    <span className="text-ink-3">—</span>
+  );
   return (
     <button
       type="button"
       aria-pressed={selected}
       onClick={onSelect}
       className={cn(
-        GRID,
-        "w-full items-center border-b border-border px-5 py-3.5 text-left text-[14px]",
+        "flex w-full items-center gap-3 border-b border-border px-4 py-2.5 text-left text-[14px] min-[1360px]:grid",
+        ROW_COLS,
         selected ? "bg-selected" : "hover:bg-raised",
       )}
     >
-      <span className="flex min-w-0 items-center gap-2">
-        {a.breach && (
-          <TriangleAlert
-            className="size-4 shrink-0 text-danger"
-            aria-label="Live without approval"
-          />
-        )}
-        <span className="truncate font-medium">{a.title}</span>
-        <span className="shrink-0 rounded-[6px] bg-chip px-2 py-px text-[13px] text-ink-2">
-          {a.channel}
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-center gap-1.5">
+          {a.breach && (
+            <TriangleAlert
+              className="size-4 shrink-0 text-danger"
+              aria-label="Live without approval"
+            />
+          )}
+          <span className="truncate font-medium">{a.title}</span>
         </span>
-        {duplicate && (
-          <span className="shrink-0 rounded-[6px] bg-accent-bg px-2 py-px text-[13px] text-primary">
-            Possible duplicate
-          </span>
-        )}
+        <span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 text-[13px] text-ink-2">
+          <span className="font-mono text-[12px]">{a.code}</span>
+          <span>· {a.channel}</span>
+          <span className="min-[1360px]:hidden">· {date}</span>
+          <span className="min-w-0 truncate min-[1360px]:hidden">· {utm}</span>
+          {duplicate && <span className="text-primary">· Possible duplicate</span>}
+        </span>
       </span>
-      <span className="truncate text-ink-2 xl:hidden 2xl:block">
-        {a.audience ?? a.outcome ?? "—"}
+      <span className="hidden tabular-nums min-[1360px]:block">{date}</span>
+      <span className="hidden min-w-0 truncate min-[1360px]:block">{utm}</span>
+      <span className="hidden min-[1360px]:block">
+        <ReadinessDots approval={!!a.approved_at} utm={!!a.utm} date={!!a.planned_date} />
       </span>
-      <span
-        className={cn(
-          "flex flex-wrap items-center gap-x-1.5",
-          !a.planned_date && "text-ink-3",
-          overdue && "font-medium text-danger",
-        )}
-      >
-        {a.planned_date ? formatDay(a.planned_date) : "—"}
-        {overdue && <span className="text-[13px]">· overdue</span>}
-      </span>
-      <span className="flex flex-wrap items-center gap-1.5">
-        {a.status === "live" || a.status === "off" ? (
-          <span className="text-[13px] text-ink-2">
-            {a.status === "live"
-              ? `Live since ${formatDay((a.go_live_at ?? a.updated_at).slice(0, 10))}`
-              : `Completed ${formatDay((a.comes_off_at ?? a.updated_at).slice(0, 10))}`}
-          </span>
-        ) : missing.length === 0 ? (
-          <Chip tone="good">Ready</Chip>
-        ) : (
-          missing.map((m) => (
-            <span
-              key={m}
-              className="rounded-[6px] bg-warn-bg px-1.5 py-px text-[13px] font-medium text-warn"
-            >
-              {m}
-            </span>
-          ))
-        )}
-      </span>
-      <span>
-        <Chip tone={a.status === "live" ? "good" : "neutral"}>{STATUS_LABEL[a.status]}</Chip>
+      <span className="shrink-0">
+        <Chip tone={step.tone}>{step.label}</Chip>
       </span>
     </button>
-  );
-}
-
-function Inspector({
-  ticketId,
-  a,
-  csm,
-  busy,
-  canApprove,
-  canEdit,
-  onClose,
-  act,
-  onNudge,
-  feedback,
-}: {
-  feedback: ReactNode;
-  ticketId: string;
-  a: PlanActivity;
-  csm: string | null;
-  busy: boolean;
-  canApprove: boolean;
-  canEdit: boolean;
-  onClose: () => void;
-  act: (fn: () => Promise<unknown>) => void;
-  onNudge: () => void;
-}) {
-  const [confirming, setConfirming] = useState(false);
-  const [approving, setApproving] = useState(false);
-  const [utm, setUtm] = useState(a.utm ?? "");
-  const [proof, setProof] = useState(a.creative_proof_url ?? "");
-  const [date, setDate] = useState(a.planned_date ?? "");
-  const eligible = !!a.approved_at && !!a.utm && !!a.planned_date;
-  const missing = [
-    !a.approved_at && "CSM approval",
-    !a.utm && "UTM",
-    !a.planned_date && "go-live date",
-  ].filter(Boolean);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement | null;
-      const typing = !!t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName);
-      if (e.key === "Escape" && !typing && !document.querySelector("[role=dialog]")) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const save = (body: {
-    utm?: string | null;
-    planned_date?: string | null;
-    creative_proof_url?: string | null;
-  }) => act(() => patchPlanActivity(ticketId, a, body));
-
-  return (
-    <div className="flex flex-col gap-[18px]">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-[13px] text-ink-3">
-            {weekLabel(weekKey(a))} · {a.channel} · <span className="font-mono">{a.code}</span>
-          </p>
-          <h2 className="mt-0.5 text-[20px] font-semibold leading-6">{a.title}</h2>
-          <p className="mt-1 text-[14px] text-ink-2">{a.audience ?? a.outcome ?? a.hook ?? ""}</p>
-        </div>
-        <button
-          aria-label="Close details"
-          className="rounded p-1 text-ink-3 hover:text-foreground"
-          onClick={onClose}
-        >
-          <X className="size-4" />
-        </button>
-      </div>
-
-      {feedback}
-
-      <section className="flex flex-col gap-2.5 rounded-[10px] bg-raised p-3.5">
-        <div className="flex items-center justify-between">
-          <span className="font-medium">Approval</span>
-          {a.approved_at ? (
-            <Chip tone="good">Approved by {a.approved_by_name}</Chip>
-          ) : (
-            <Chip tone="warning">Waiting for {csm ?? "the CSM"}</Chip>
-          )}
-        </div>
-        <p className="text-[14px] text-ink-2">
-          {a.approved_at
-            ? `Approved ${formatWhen(a.approved_at)}.${a.status === "live" ? "" : " Changing the description or creative proof clears the approval."}`
-            : "Can't go live without CSM approval and a UTM."}
-        </p>
-        {canApprove && !a.approved_at && !approving && (
-          <Button disabled={busy} onClick={() => setApproving(true)}>
-            Approve activity
-          </Button>
-        )}
-        {canApprove && !a.approved_at && approving && (
-          <div className="space-y-2">
-            <p className="text-[14px] text-ink-2">
-              Approve “{a.title}” for {a.channel}? Editing its description or creative proof
-              afterwards clears the approval.
-            </p>
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                disabled={busy}
-                onClick={() => {
-                  act(() => approveActivity(ticketId, a.id));
-                  setApproving(false);
-                }}
-              >
-                {busy ? "Approving…" : "Confirm approval"}
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setApproving(false)}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        )}
-        {!a.approved_at && canEdit && (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onNudge}
-            className="self-start text-[14px] text-primary hover:underline disabled:opacity-50"
-          >
-            Remind {csm ?? "the CSM"} in Slack
-          </button>
-        )}
-        {canApprove && a.approved_at && !confirming && (
-          <Button variant="outline" onClick={() => setConfirming(true)}>
-            Withdraw approval
-          </Button>
-        )}
-        {canApprove && a.approved_at && confirming && (
-          <div className="space-y-2">
-            {a.status === "live" && (
-              <p className="flex items-start gap-1.5 text-[14px] text-danger">
-                <TriangleAlert className="mt-0.5 size-4 shrink-0" /> This activity is live.
-                Withdrawing the approval makes it a control breach and alerts the program channel.
-              </p>
-            )}
-            <div className="flex gap-2">
-              <Button
-                variant="danger"
-                size="sm"
-                disabled={busy}
-                onClick={() => {
-                  act(() => withdrawApproval(ticketId, a.id));
-                  setConfirming(false);
-                }}
-              >
-                Confirm withdraw
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        )}
-      </section>
-
-      <label className="flex flex-col gap-1.5 text-[14px]">
-        <span className="font-medium">UTM campaign</span>
-        <span className="flex gap-2">
-          <Input
-            className={cn("min-w-0 flex-1 font-mono text-[13px]", FIELD_CLS)}
-            value={utm}
-            readOnly={!canEdit}
-            placeholder="he_embark_onsite_banner"
-            onChange={(e) => setUtm(e.target.value)}
-            aria-label="UTM campaign"
-          />
-          {canEdit && (
-            <Button
-              variant="outline"
-              disabled={busy || utm.trim() === (a.utm ?? "")}
-              onClick={() => save({ utm: utm.trim() || null })}
-            >
-              Save
-            </Button>
-          )}
-        </span>
-      </label>
-
-      <label className="flex flex-col gap-1.5 text-[14px]">
-        <span className="font-medium">Go-live date</span>
-        <span className="flex gap-2">
-          <Input
-            type="date"
-            min={todayIso()}
-            max={maxGoLiveIso()}
-            className={cn("min-w-0 flex-1", FIELD_CLS)}
-            value={date}
-            readOnly={!canEdit}
-            aria-label="Go-live date"
-            onChange={(e) => setDate(e.target.value)}
-          />
-          {canEdit && (
-            <Button
-              variant="outline"
-              disabled={busy || date === (a.planned_date ?? "")}
-              onClick={() => save({ planned_date: date || null })}
-            >
-              Save
-            </Button>
-          )}
-        </span>
-        <span className="text-ink-3">The day this goes out: today up to 2 months ahead.</span>
-      </label>
-
-      <label className="flex flex-col gap-1.5 text-[14px]">
-        <span className="font-medium">Creative proof link</span>
-        <span className="flex gap-2">
-          <Input
-            className={cn("min-w-0 flex-1", FIELD_CLS)}
-            value={proof}
-            readOnly={!canEdit}
-            placeholder="https://drive.google.com/…"
-            onChange={(e) => setProof(e.target.value)}
-            aria-label="Creative proof link"
-          />
-          {safeUrl(a.creative_proof_url) && (
-            <Button variant="outline" asChild>
-              <a
-                href={safeUrl(a.creative_proof_url) ?? undefined}
-                target="_blank"
-                rel="noreferrer noopener"
-                aria-label="Open creative proof"
-              >
-                <ExternalLink className="size-4" />
-              </a>
-            </Button>
-          )}
-          {canEdit && (
-            <Button
-              variant="outline"
-              disabled={busy || proof.trim() === (a.creative_proof_url ?? "")}
-              onClick={() => save({ creative_proof_url: proof.trim() || null })}
-            >
-              Save
-            </Button>
-          )}
-        </span>
-      </label>
-
-      {canEdit && (
-        <label className="flex flex-col gap-1.5 text-[14px]">
-          <span className="font-medium">Status</span>
-          {a.status !== "live" && a.status !== "off" && (
-            <span className="text-ink-3">
-              {eligible ? "Ready to go live." : `Still needs: ${missing.join(", ")}.`}
-            </span>
-          )}
-          <select
-            className={SELECT_CLS}
-            aria-label={`Status of ${a.title}`}
-            value={a.status}
-            disabled={busy}
-            onChange={(e) => {
-              const st = e.target.value as ActivityStatus;
-              act(() =>
-                st === "live"
-                  ? goLive(ticketId, a.id)
-                  : patchPlanActivity(ticketId, a, { status: st }),
-              );
-            }}
-          >
-            {(Object.keys(STATUS_LABEL) as ActivityStatus[]).map((st) => (
-              <option
-                key={st}
-                value={st}
-                disabled={
-                  (st === "live" && a.status !== "live" && !eligible) ||
-                  (st === "off" && a.status !== "live" && a.status !== "off")
-                }
-              >
-                {STATUS_LABEL[st]}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-
-      <Telemetry ticketId={ticketId} a={a} />
-      <History id={a.id} />
-    </div>
-  );
-}
-
-function Telemetry({ ticketId, a }: { ticketId: string; a: PlanActivity }) {
-  const qc = useQueryClient();
-  const canEnter = useCan("metrics.enter");
-  const { data, isLoading, isError, error } = useQuery(metricsQuery(ticketId, a.id));
-  const [form, setForm] = useState({
-    date: new Date().toISOString().slice(0, 10),
-    views: "",
-    clicks: "",
-    sent: "",
-    opens: "",
-  });
-  const log = useMutation({
-    mutationFn: () => {
-      return putMetrics(ticketId, a.id, {
-        date: form.date,
-        ...(form.views !== "" && { views: Number(form.views) }),
-        ...(form.clicks !== "" && { clicks: Number(form.clicks) }),
-        ...(form.sent !== "" && { sent: Number(form.sent) }),
-        ...(form.opens !== "" && { opens: Number(form.opens) }),
-      });
-    },
-    onSuccess: (d: ActivityMetrics) => {
-      qc.setQueryData(metricsQuery(ticketId, a.id).queryKey, d);
-      setForm((f) => ({ ...f, views: "", clicks: "", sent: "", opens: "" }));
-    },
-  });
-  const t = data?.totals;
-  const points = (data?.days ?? []).map((d) => d.views ?? d.sent ?? 0);
-  const fmt = (n: number | undefined) =>
-    n === undefined ? "—" : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    log.mutate();
-  };
-  const tiles: [string, string][] = [
-    ["Views", fmt(t?.views)],
-    ["Clicks", fmt(t?.clicks)],
-    ["CTR", t?.ctr == null ? "—" : `${(t.ctr * 100).toFixed(1)}%`],
-  ];
-  const hasResults = (data?.days.length ?? 0) > 0;
-
-  return (
-    <section className="flex flex-col gap-2">
-      <h3 className="text-[14px] font-medium">Results</h3>
-      {isLoading && <Skeleton className="h-16" />}
-      {isError && <p className="text-[14px] text-danger">{errText(error)}</p>}
-      {data && (
-        <>
-          {hasResults && <Sparkline points={points} />}
-          <div className="grid grid-cols-3 gap-2">
-            {tiles.map(([k, v]) => (
-              <div key={k} className="rounded-[8px] bg-raised p-2.5">
-                <p className="text-[13px] text-ink-3">{k}</p>
-                <p className="font-semibold">{v}</p>
-              </div>
-            ))}
-            {t && (t.sent > 0 || t.opens > 0) && (
-              <>
-                <div className="rounded-[8px] bg-raised p-2.5">
-                  <p className="text-[13px] text-ink-3">Sent</p>
-                  <p className="font-semibold">{fmt(t.sent)}</p>
-                </div>
-                <div className="rounded-[8px] bg-raised p-2.5">
-                  <p className="text-[13px] text-ink-3">Opens</p>
-                  <p className="font-semibold">{fmt(t.opens)}</p>
-                </div>
-                <div className="rounded-[8px] bg-raised p-2.5">
-                  <p className="text-[13px] text-ink-3">Open rate</p>
-                  <p className="font-semibold">
-                    {t.open_rate == null ? "—" : `${(t.open_rate * 100).toFixed(1)}%`}
-                  </p>
-                </div>
-              </>
-            )}
-          </div>
-          {!hasResults && (
-            <p className="text-[13px] text-ink-3">Results appear here once the activity is live.</p>
-          )}
-        </>
-      )}
-      {canEnter && a.status === "live" && (
-        <form onSubmit={submit} className="space-y-2 border-t border-border pt-3">
-          <p className="text-[14px] font-medium">Log results</p>
-          <div className="grid grid-cols-2 gap-2">
-            <Input
-              type="date"
-              value={form.date}
-              required
-              className={FIELD_CLS}
-              onChange={(e) => setForm({ ...form, date: e.target.value })}
-              aria-label="Date"
-            />
-            {(["views", "clicks", "sent", "opens"] as const).map((k) => (
-              <Input
-                key={k}
-                type="number"
-                min={0}
-                inputMode="numeric"
-                placeholder={k[0]?.toUpperCase() + k.slice(1)}
-                aria-label={k}
-                value={form[k]}
-                onChange={(e) => setForm({ ...form, [k]: e.target.value })}
-                className={FIELD_CLS}
-              />
-            ))}
-          </div>
-          {log.isError && <p className="text-[14px] text-danger">{errText(log.error)}</p>}
-          <Button type="submit" variant="outline" disabled={log.isPending}>
-            {log.isPending ? "Saving…" : "Log results"}
-          </Button>
-        </form>
-      )}
-    </section>
-  );
-}
-
-function Sparkline({ points }: { points: number[] }) {
-  if (points.length < 2) return null;
-  const max = Math.max(...points, 1);
-  const d = points
-    .map((p, i) => `${i ? "L" : "M"}${(i / (points.length - 1)) * 300},${58 - (p / max) * 52}`)
-    .join(" ");
-  return (
-    <svg
-      viewBox="0 0 300 64"
-      className="h-14 w-full"
-      role="img"
-      aria-label="Daily views trend"
-      preserveAspectRatio="none"
-    >
-      <path
-        d={d}
-        pathLength={1}
-        fill="none"
-        stroke="var(--accent)"
-        strokeWidth={2}
-        vectorEffect="non-scaling-stroke"
-        className="line-draw"
-        style={{ ["--len" as string]: 1 }}
-      />
-    </svg>
-  );
-}
-
-const FIELD_LABEL: Record<string, string> = {
-  utm: "UTM",
-  planned_date: "Go-live date",
-  creative_proof_url: "Creative proof",
-  go_live_at: "Went live at",
-  comes_off_at: "Done at",
-  tracker_ref: "Tracker ref",
-  target_note: "Target note",
-};
-const fieldLabel = (f: string) =>
-  FIELD_LABEL[f] ?? f.charAt(0).toUpperCase() + f.slice(1).replace(/_/g, " ");
-
-/** One audit event as a short headline plus, for field edits, the before and after values. */
-function describe(e: AuditEvent): { title: string; from?: string; to?: string } {
-  const v = (x: unknown) => {
-    if (x === null || x === undefined || x === "") return "empty";
-    if (e.field === "status") return STATUS_LABEL[x as ActivityStatus] ?? String(x);
-    if (e.field === "planned_date" || e.field === "go_live_at" || e.field === "comes_off_at")
-      return formatDay(String(x).slice(0, 10));
-    return String(x);
-  };
-  switch (e.action) {
-    case "activity_updated":
-      return { title: fieldLabel(e.field ?? "field"), from: v(e.old), to: v(e.new) };
-    case "approved":
-      return { title: "Approved" };
-    case "approval_withdrawn":
-      return { title: "Approval withdrawn" };
-    case "approval_reset":
-      return { title: "Approval cleared by an edit" };
-    case "channel_added":
-      return { title: "Added manually" };
-    default: {
-      const t = e.action.replace(/_/g, " ");
-      return { title: t.charAt(0).toUpperCase() + t.slice(1) };
-    }
-  }
-}
-
-function History({ id }: { id: number }) {
-  const { data, isLoading, isError, error } = useQuery(activityAuditQuery(id));
-  const items = data?.items ?? [];
-  const days = new Map<string, AuditEvent[]>();
-  for (const e of items) {
-    const day = formatDay(e.at.slice(0, 10));
-    days.set(day, [...(days.get(day) ?? []), e]);
-  }
-  return (
-    <details className="group border-t border-border pt-3.5 text-[14px]">
-      <summary className="flex cursor-pointer list-none items-center gap-1.5 font-medium">
-        <ChevronRight className="size-4 text-ink-2 transition-transform group-open:rotate-90" />
-        History
-        {data && <span className="font-normal text-ink-3">· {items.length}</span>}
-      </summary>
-      <div className="mt-3 space-y-4">
-        {isLoading && <Skeleton className="h-12" />}
-        {isError && <p className="text-danger">{errText(error)}</p>}
-        {data && items.length === 0 && <p className="text-ink-3">No changes yet.</p>}
-        {[...days].map(([day, events]) => (
-          <div key={day}>
-            <p className="mb-1.5 text-[13px] font-medium uppercase tracking-wide text-ink-3">
-              {day}
-            </p>
-            <ol className="space-y-3 border-l border-border pl-3.5">
-              {events.map((e) => {
-                const d = describe(e);
-                return (
-                  <li key={e.id} className="relative">
-                    <span
-                      aria-hidden
-                      className="absolute -left-[19px] top-1.5 size-2 rounded-full bg-border"
-                    />
-                    <p className="font-medium">{d.title}</p>
-                    {d.to !== undefined && (
-                      <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-ink-2">
-                        <span className="rounded-[6px] bg-chip px-1.5 py-px text-ink-3 line-through">
-                          {d.from}
-                        </span>
-                        <span aria-hidden>→</span>
-                        <span className="break-all rounded-[6px] bg-chip px-1.5 py-px">{d.to}</span>
-                      </p>
-                    )}
-                    <p className="mt-0.5 text-[13px] text-ink-3">
-                      {e.actor_name} · {formatWhen(e.at)}
-                    </p>
-                  </li>
-                );
-              })}
-            </ol>
-          </div>
-        ))}
-      </div>
-    </details>
-  );
-}
-
-function BulkUtmDialog({
-  open,
-  onOpenChange,
-  rows,
-  onSave,
-}: {
-  open: boolean;
-  onOpenChange: (o: boolean) => void;
-  rows: PlanActivity[];
-  onSave: (entries: [PlanActivity, PlanPatch][]) => Promise<void>;
-}) {
-  const [values, setValues] = useState<Record<number, string>>({});
-  const [dates, setDates] = useState<Record<number, string>>({});
-  const slug = (s: string) =>
-    s
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_|_$/g, "");
-  const suggest = () =>
-    setValues((cur) =>
-      Object.fromEntries(
-        rows
-          .filter((a) => !a.utm)
-          .map((a) => [
-            a.id,
-            cur[a.id]?.trim() || `he_${slug(a.channel)}_${slug(a.title)}`.slice(0, 60),
-          ]),
-      ),
-    );
-  const patchFor = (a: PlanActivity): PlanPatch => ({
-    ...(!a.utm && values[a.id]?.trim() ? { utm: values[a.id]!.trim() } : {}),
-    ...(!a.planned_date && dates[a.id] ? { planned_date: dates[a.id]! } : {}),
-  });
-  const filled = rows.filter((a) => Object.keys(patchFor(a)).length > 0);
-  const save = useMutation({
-    mutationFn: () => onSave(filled.map((a) => [a, patchFor(a)] as [PlanActivity, PlanPatch])),
-    onSuccess: () => {
-      setValues({});
-      setDates({});
-      onOpenChange(false);
-    },
-  });
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Add UTMs and go-live dates</DialogTitle>
-          <DialogDescription>
-            {rows.length} {rows.length === 1 ? "activity needs" : "activities need"} a UTM or a
-            go-live date. Fill in what you know; the UTM suggestions can be adjusted.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="max-h-[50vh] space-y-2 overflow-y-auto pr-1">
-          {rows.map((a) => (
-            <label
-              key={a.id}
-              className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_150px] items-center gap-3 text-[14px]"
-            >
-              <span className="min-w-0 truncate">
-                {a.title} <span className="text-ink-3">· {a.channel}</span>
-              </span>
-              <Input
-                className={cn("font-mono text-[13px]", FIELD_CLS)}
-                value={a.utm ?? values[a.id] ?? ""}
-                disabled={!!a.utm}
-                placeholder="he_channel_name"
-                aria-label={`UTM for ${a.title}`}
-                onChange={(e) => setValues({ ...values, [a.id]: e.target.value })}
-              />
-              <Input
-                type="date"
-                min={todayIso()}
-                max={maxGoLiveIso()}
-                className={FIELD_CLS}
-                value={a.planned_date ?? dates[a.id] ?? ""}
-                disabled={!!a.planned_date}
-                aria-label={`Go-live date for ${a.title}`}
-                onChange={(e) => setDates({ ...dates, [a.id]: e.target.value })}
-              />
-            </label>
-          ))}
-        </div>
-        {save.isError && (
-          <p role="alert" className="text-[14px] text-danger">
-            {errText(save.error)}
-          </p>
-        )}
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={suggest}>
-            Suggest UTMs
-          </Button>
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            disabled={filled.length === 0 || save.isPending}
-            onClick={() => save.mutate()}
-          >
-            {save.isPending ? "Saving…" : `Save ${filled.length || ""}`.trim()}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }
 
