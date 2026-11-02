@@ -193,3 +193,64 @@ async def test_hubspot_being_unreachable_is_a_502_not_a_crash(client_for, make_u
     hubspot.write_error = aiohttp.ClientResponseError(None, (), status=500)  # type: ignore[arg-type]
     again = await client.post("/programs/t1/hubspot/checklist", json=tick())
     assert (again.status_code, again.json()["code"]) == (502, "hubspot_unavailable")
+
+
+# ---- link the client ------------------------------------------------------------------
+
+
+async def test_linking_a_client_sets_company_name_on_the_ticket_and_in_the_portal(client_for, make_user, make_program, hubspot, db):
+    await make_program("t1")
+    client = await csm_client(client_for, make_user)
+    response = await client.post("/programs/t1/hubspot/client", json={"name": "  Booking   Holdings ", "expected": None})
+    assert response.status_code == 200 and response.json() == {"company_name": "Booking Holdings"}
+    assert hubspot.writes == [{"company_name": "Booking Holdings"}]
+    async with db() as session:
+        assert (await session.get(Program, "t1")).company_name == "Booking Holdings"
+        event = await session.scalar(select(ProgramEvent).where(ProgramEvent.action == "client_linked"))
+    assert (event.actor_name, event.field, event.old, event.new) == ("Priya S.", "company_name", None, "Booking Holdings")
+
+
+async def test_linking_the_client_that_is_already_there_writes_nothing(client_for, make_user, make_program, hubspot):
+    await make_program("t1")
+    hubspot.props["company_name"] = "Booking Holdings"
+    response = await (await csm_client(client_for, make_user)).post("/programs/t1/hubspot/client", json={"name": "Booking Holdings"})
+    assert response.status_code == 200 and hubspot.writes == []
+
+
+async def test_hubspot_wins_when_a_different_client_was_linked_since_the_caller_looked(client_for, make_user, make_program, hubspot, db):
+    await make_program("t1")
+    hubspot.props["company_name"] = "Barclays"  # someone linked it in HubSpot meanwhile
+    response = await (await csm_client(client_for, make_user)).post("/programs/t1/hubspot/client", json={"name": "Booking Holdings", "expected": None})
+    assert (response.status_code, response.json()["code"], response.json()["current"]) == (409, "hubspot_conflict", "Barclays")
+    assert hubspot.writes == []
+    async with db() as session:
+        assert (await session.get(Program, "t1")).company_name is None
+        refused = await session.scalar(select(ProgramEvent).where(ProgramEvent.action == "client_linked_refused"))
+    assert refused is not None
+
+
+async def test_changing_a_client_the_caller_knew_about_is_allowed(client_for, make_user, make_program, hubspot):
+    await make_program("t1")
+    hubspot.props["company_name"] = "Barclays"
+    response = await (await csm_client(client_for, make_user)).post("/programs/t1/hubspot/client", json={"name": "Booking Holdings", "expected": "Barclays"})
+    assert response.status_code == 200 and hubspot.writes == [{"company_name": "Booking Holdings"}]
+
+
+async def test_a_client_name_must_be_one_to_120_characters(client_for, make_user, make_program, hubspot):
+    await make_program("t1")
+    client = await csm_client(client_for, make_user)
+    for bad in ("", "   ", "x" * 121):
+        response = await client.post("/programs/t1/hubspot/client", json={"name": bad})
+        assert (response.status_code, response.json()["code"]) == (422, "invalid_client_name")
+    assert hubspot.writes == []
+
+
+async def test_linking_a_client_needs_the_flag_and_hubspot_write(client_for, make_user, make_program, hubspot, monkeypatch):
+    await make_program("t1")
+    for role in (Role.MARKETING, Role.ACCOUNT_MANAGER, Role.VIEWER):  # (a super admin holds every permission)
+        other = await client_for(await make_user(f"{role.value}@example.com", [role]))
+        assert (await other.post("/programs/t1/hubspot/client", json={"name": "Acme Co"})).status_code == 403
+    monkeypatch.setattr(settings, "HUBSPOT_WRITEBACK_ENABLED", False)
+    response = await (await csm_client(client_for, make_user)).post("/programs/t1/hubspot/client", json={"name": "Booking Holdings"})
+    assert (response.status_code, response.json()["code"]) == (503, "hubspot_writeback_disabled")
+    assert hubspot.writes == []

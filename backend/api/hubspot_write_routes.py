@@ -58,6 +58,15 @@ class StageOut(BaseModel):
     stage_label: str
 
 
+class ClientIn(BaseModel):
+    name: str
+    expected: str | None = None  # the client the caller saw when it opened the dialog: HubSpot wins if it differs now
+
+
+class ClientOut(BaseModel):
+    company_name: str
+
+
 @router.post("/checklist", response_model=ChecklistOut)
 async def set_checklist_item(
     ticket_id: str,
@@ -116,3 +125,33 @@ async def move_stage(
     await session.commit()
     logger.info("hubspot_write_done", ticket_id=ticket_id, user=access.user.email, action="stage_moved", new=stage_key)
     return StageOut(stage_key=stage_key, stage_label=PROGRAM_STAGES[stage_key]["label"])
+
+
+@router.post("/client", response_model=ClientOut)
+async def link_client(
+    ticket_id: str,
+    body: ClientIn,
+    session: AsyncSession = Depends(get_session),
+    access: Access = Depends(require_permission(Permission.HUBSPOT_WRITE)),
+) -> ClientOut:
+    """Link the client by setting the HubSpot ticket's `company_name`. 409 `hubspot_conflict` (with `current`) if a different
+    client was linked there since the caller looked. An internal hackathon with no HubSpot ticket: saved in the portal instead."""
+    program = await session.get(Program, ticket_id)
+    if program is not None and internal_programs.is_local_only(program):
+        name = writer.clean_client_name(body.name)
+        old, program.company_name = program.company_name, name
+        audit.record(
+            session, access.user, entity="hubspot_client", entity_id=ticket_id, ticket_id=ticket_id,
+            action="client_linked", field="company_name", old=old, new=name,
+        )
+        await session.commit()
+        return ClientOut(company_name=name)
+    logger.info("hubspot_write_requested", ticket_id=ticket_id, user=access.user.email, action="client_linked", new=body.name)
+    try:
+        name = await writer.set_company_name(session, access.user, ticket_id, name=body.name, expected=body.expected)
+    except DomainError as error:
+        await _refused(session, access, ticket_id, "client_linked", error, new=body.name)
+        raise
+    await session.commit()
+    logger.info("hubspot_write_done", ticket_id=ticket_id, user=access.user.email, action="client_linked", new=name)
+    return ClientOut(company_name=name)

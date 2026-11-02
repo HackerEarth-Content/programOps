@@ -133,3 +133,49 @@ async def move_stage(
         action="stage_moved", old=expected_stage_key, new=stage_key,
     )
     return stage_key
+
+
+_CLIENT_PROPERTY = "company_name"
+CLIENT_NAME_MAX = 120
+
+
+def clean_client_name(name: str) -> str:
+    """Collapse whitespace and check the length: 1 to CLIENT_NAME_MAX characters."""
+    cleaned = " ".join(name.split())
+    if not cleaned or len(cleaned) > CLIENT_NAME_MAX:
+        raise DomainError("invalid_client_name", f"Give a client name of 1 to {CLIENT_NAME_MAX} characters.", 422)
+    return cleaned
+
+
+async def set_company_name(
+    session: AsyncSession,
+    actor: User,
+    ticket_id: str,
+    *,
+    name: str,
+    expected: str | None,
+    gateway: TicketGateway | None = None,
+) -> str:
+    """Link the client: set the ticket's `company_name`. `expected` is the client the caller last saw; HubSpot wins
+    (409) if a different client was set there since, so one person never silently overwrites another."""
+    _require_enabled()
+    name = clean_client_name(name)
+    gateway = gateway or HubSpotClient()
+    current = (await _read(gateway, ticket_id, _CLIENT_PROPERTY) or "").strip()
+    if current and current != name and current != (expected or "").strip():
+        raise DomainError(
+            "hubspot_conflict", "A different client was linked in HubSpot since you opened this. Review it and try again.", 409,
+            current=current,
+        )
+    if current != name:
+        await _write(gateway, ticket_id, {_CLIENT_PROPERTY: name})
+    program = await session.get(Program, ticket_id)
+    changed = current != name or (program is not None and program.company_name != name)
+    if program is not None:
+        program.company_name = name  # shown at once; the next sync confirms it
+    if changed:
+        audit.record(
+            session, actor, entity="hubspot_client", entity_id=ticket_id, ticket_id=ticket_id,
+            action="client_linked", field=_CLIENT_PROPERTY, old=current or None, new=name,
+        )
+    return name
