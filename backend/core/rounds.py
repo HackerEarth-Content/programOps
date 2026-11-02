@@ -39,7 +39,7 @@ class RoundSource(StrEnum):
     MANUAL = "manual"
 
 
-ROUND_EDITABLE = frozenset({"name", "kind", "starts_on", "ends_on", "cutoff_rule", "cutoff_value", "status"})
+ROUND_EDITABLE = frozenset({"name", "kind", "kind_label", "starts_on", "ends_on", "cutoff_rule", "cutoff_value", "status"})
 
 
 def _check_dates(starts_on: date | None, ends_on: date | None) -> None:
@@ -63,6 +63,14 @@ async def get(session: AsyncSession, ticket_id: str, round_id: int) -> ProgramRo
     return row
 
 
+def _kind_label(kind: str, label: str | None) -> str | None:
+    """A custom round must say what it is; the other kinds carry no label."""
+    label = (label or "").strip() or None
+    if kind == RoundKind.CUSTOM.value and not label:
+        raise DomainError("round_kind_label_required", "Say what kind of round this is.", 422)
+    return label if kind == RoundKind.CUSTOM.value else None
+
+
 async def create_round(
     session: AsyncSession,
     actor: User,
@@ -70,6 +78,7 @@ async def create_round(
     *,
     name: str,
     kind: RoundKind,
+    kind_label: str | None = None,
     starts_on: date | None,
     ends_on: date | None,
     cutoff_rule: str | None,
@@ -79,7 +88,7 @@ async def create_round(
     _check_dates(starts_on, ends_on)
     seq = (await session.scalar(select(func.max(ProgramRound.seq)).where(ProgramRound.ticket_id == ticket_id)) or 0) + 1
     row = ProgramRound(
-        ticket_id=ticket_id, seq=seq, name=name.strip(), kind=kind.value, starts_on=starts_on, ends_on=ends_on,
+        ticket_id=ticket_id, seq=seq, name=name.strip(), kind=kind.value, kind_label=_kind_label(kind.value, kind_label), starts_on=starts_on, ends_on=ends_on,
         cutoff_rule=cutoff_rule, cutoff_value=cutoff_value, source=source.value,
     )
     session.add(row)
@@ -94,6 +103,9 @@ async def update_round(session: AsyncSession, actor: User, row: ProgramRound, ch
     if unknown:
         raise DomainError("field_not_editable", f"Not editable here: {', '.join(sorted(unknown))}", 422)
     _check_dates(changes.get("starts_on", row.starts_on), changes.get("ends_on", row.ends_on))
+    if "kind" in changes or "kind_label" in changes:
+        kind = changes["kind"].value if isinstance(changes.get("kind"), StrEnum) else changes.get("kind", row.kind)
+        changes = {**changes, "kind_label": _kind_label(kind, changes.get("kind_label", row.kind_label))}
     for field, value in changes.items():
         value = value.value if isinstance(value, StrEnum) else value
         if isinstance(value, str):

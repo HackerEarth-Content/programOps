@@ -57,6 +57,7 @@ class RoundOut(BaseModel):
     seq: int
     name: str
     kind: RoundKind
+    kind_label: str | None = None
     starts_on: dt.date | None
     ends_on: dt.date | None
     cutoff_rule: str | None
@@ -69,6 +70,7 @@ class RoundOut(BaseModel):
 class RoundIn(BaseModel):
     name: str = Field(min_length=1)
     kind: RoundKind = RoundKind.ASSESSMENT
+    kind_label: str | None = None  # required when kind is "custom"
     starts_on: dt.date | None = None
     ends_on: dt.date | None = None
     cutoff_rule: str | None = None
@@ -81,6 +83,7 @@ class RoundPatch(BaseModel):
 
     name: str | None = Field(default=None, min_length=1)
     kind: RoundKind | None = None
+    kind_label: str | None = None
     starts_on: dt.date | None = None
     ends_on: dt.date | None = None
     cutoff_rule: str | None = None
@@ -105,7 +108,7 @@ async def _round_outs(session: AsyncSession, ticket_id: str, rows: list[ProgramR
     for r in rows:
         out.append(
             RoundOut(
-                id=r.id, seq=r.seq, name=r.name, kind=RoundKind(r.kind), starts_on=r.starts_on, ends_on=r.ends_on,
+                id=r.id, seq=r.seq, name=r.name, kind=RoundKind(r.kind), kind_label=r.kind_label, starts_on=r.starts_on, ends_on=r.ends_on,
                 cutoff_rule=r.cutoff_rule, cutoff_value=r.cutoff_value, status=RoundStatus(r.status),
                 source=RoundSource(r.source),
                 latest_counts=CountsOut.model_validate(counts[r.id]) if r.id in counts else None,
@@ -140,7 +143,7 @@ async def add_round(
     access: Access = Depends(require_permission(Permission.ROUNDS_EDIT)),
 ) -> RoundOut:
     row = await rounds.create_round(
-        session, access.user, ticket_id, name=body.name, kind=body.kind, starts_on=body.starts_on,
+        session, access.user, ticket_id, name=body.name, kind=body.kind, kind_label=body.kind_label, starts_on=body.starts_on,
         ends_on=body.ends_on, cutoff_rule=body.cutoff_rule, cutoff_value=body.cutoff_value, source=body.source,
     )
     await session.commit()

@@ -500,6 +500,7 @@ class ProgramRound(Base):
     seq: Mapped[int]
     name: Mapped[str]
     kind: Mapped[str] = mapped_column(default="assessment")
+    kind_label: Mapped[str | None]  # what a "custom" round is called (e.g. "Panel discussion"); None for the other kinds
     starts_on: Mapped[date | None] = mapped_column(Date)
     ends_on: Mapped[date | None] = mapped_column(Date)
     cutoff_rule: Mapped[str | None]  # the shortlisting criterion in words

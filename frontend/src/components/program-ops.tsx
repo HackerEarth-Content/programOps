@@ -593,7 +593,11 @@ function RoundRows({
             {round.name}
           </p>
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            <Chip>{titleCase(round.kind)}</Chip>
+            <Chip>
+              {round.kind === "custom" && round.kind_label
+                ? round.kind_label
+                : titleCase(round.kind)}
+            </Chip>
             {round.source === "sow" && <Chip>From SOW</Chip>}
           </div>
           {missing && (
@@ -765,7 +769,56 @@ function RoundRows({
   );
 }
 
-/** The funnel as one table, with one-hue bars under it for each round that has counts. */
+/** One-hue bars of each round's latest counts, as a share of the largest step. */
+function CountsBars({ rounds }: { rounds: RoundFull[] }) {
+  const withCounts = rounds.filter((r) => r.latest_counts);
+  if (withCounts.length === 0) return null;
+  return (
+    <Card aria-label="Round counts">
+      <CardHeader title="Round counts" meta="Latest counts · share of the largest step" divided />
+      <div className="space-y-4 p-4">
+        {withCounts.map((r) => {
+          const c = r.latest_counts!;
+          const rows = [
+            ["Invited", c.invited],
+            ["Attempted", c.attempted],
+            ["Cleared", c.cleared],
+            ["Shortlisted", c.shortlisted],
+          ] as const;
+          const base = Math.max(...rows.map(([, v]) => v ?? 0), 0);
+          return (
+            <div key={r.id} className="space-y-1.5">
+              <p className="text-[15px] font-semibold">{r.name}</p>
+              <div
+                role="img"
+                aria-label={`Funnel for ${r.name}: ${rows.map(([l, v]) => `${v == null ? "no figure" : n(v)} ${l.toLowerCase()}`).join(", ")}`}
+                className="grid gap-1.5"
+              >
+                {rows.map(([l, v]) => (
+                  <div key={l} className="flex items-center gap-3 text-[13px]">
+                    <span className="w-24 shrink-0 text-ink-2">{l}</span>
+                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-raised">
+                      <div
+                        className="h-2 rounded-full"
+                        style={{
+                          width: `${v == null || !base ? 0 : (v / base) * 100}%`,
+                          background: "var(--chart-1)",
+                        }}
+                      />
+                    </div>
+                    <span className="w-16 shrink-0 text-right tabular-nums">{cellN(v)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+/** The funnel as one table: each round's counts, with the actions to enter or correct them. */
 function RoundsTable({
   rounds,
   steps,
@@ -777,7 +830,6 @@ function RoundsTable({
   ticketId: string;
   onChanged: () => void;
 }) {
-  const withCounts = rounds.filter((r) => r.latest_counts);
   return (
     <Card aria-label="Round funnel">
       <CardHeader title="Round funnel" meta="Share of invited" />
@@ -810,46 +862,6 @@ function RoundsTable({
           </tbody>
         </table>
       </div>
-      {withCounts.length > 0 && (
-        <div className="space-y-4 border-t border-border p-4">
-          {withCounts.map((r) => {
-            const c = r.latest_counts!;
-            const rows = [
-              ["Invited", c.invited],
-              ["Attempted", c.attempted],
-              ["Cleared", c.cleared],
-              ["Shortlisted", c.shortlisted],
-            ] as const;
-            const base = Math.max(...rows.map(([, v]) => v ?? 0), 0);
-            return (
-              <div key={r.id} className="space-y-1.5">
-                {withCounts.length > 1 && <p className="text-[13px] font-medium">{r.name}</p>}
-                <div
-                  role="img"
-                  aria-label={`Funnel for ${r.name}: ${rows.map(([l, v]) => `${v == null ? "no figure" : n(v)} ${l.toLowerCase()}`).join(", ")}`}
-                  className="grid gap-1.5"
-                >
-                  {rows.map(([l, v]) => (
-                    <div key={l} className="flex items-center gap-3 text-[13px]">
-                      <span className="w-24 shrink-0 text-ink-2">{l}</span>
-                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-raised">
-                        <div
-                          className="h-2 rounded-full"
-                          style={{
-                            width: `${v == null || !base ? 0 : (v / base) * 100}%`,
-                            background: "var(--chart-1)",
-                          }}
-                        />
-                      </div>
-                      <span className="w-16 shrink-0 text-right tabular-nums">{cellN(v)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
     </Card>
   );
 }
@@ -989,6 +1001,48 @@ function SuggestedRounds({
   );
 }
 
+/** Round kind: Assessment, Project, Onsite or Custom. Custom opens a box to say what it is. */
+function KindFields({
+  kind,
+  label,
+  onKind,
+  onLabel,
+}: {
+  kind: RoundKind;
+  label: string;
+  onKind: (k: RoundKind) => void;
+  onLabel: (v: string) => void;
+}) {
+  const kinds = ROUND_KINDS.includes(kind) ? ROUND_KINDS : [...ROUND_KINDS, kind];
+  return (
+    <>
+      <Field label="Kind">
+        <Select value={kind} onChange={(e) => onKind(e.target.value as RoundKind)}>
+          {kinds.map((k) => (
+            <option key={k} value={k}>
+              {titleCase(k)}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      {kind === "custom" ? (
+        <Field label="Custom kind">
+          <Input
+            value={label}
+            onChange={(e) => onLabel(e.target.value)}
+            placeholder="e.g. Panel discussion"
+            maxLength={60}
+            required
+            autoFocus
+          />
+        </Field>
+      ) : (
+        <span />
+      )}
+    </>
+  );
+}
+
 /** Rename a round or change its kind, dates and cutoff. The audit trail records each field that changed. */
 function EditRound({
   ticketId,
@@ -1003,6 +1057,7 @@ function EditRound({
 }) {
   const [name, setName] = useState(round.name);
   const [kind, setKind] = useState(round.kind as RoundKind);
+  const [kindLabel, setKindLabel] = useState(round.kind_label ?? "");
   const [starts, setStarts] = useState(round.starts_on ?? "");
   const [ends, setEnds] = useState(round.ends_on ?? "");
   const [rule, setRule] = useState(round.cutoff_rule ?? "");
@@ -1012,6 +1067,7 @@ function EditRound({
       patchRound(ticketId, round.id, {
         name: name.trim(),
         kind,
+        kind_label: kind === "custom" ? kindLabel.trim() : null,
         starts_on: starts || null,
         ends_on: ends || null,
         cutoff_rule: rule.trim() || null,
@@ -1031,14 +1087,7 @@ function EditRound({
         <Field label="Name" className="lg:col-span-2">
           <Input value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
         </Field>
-        <Field label="Kind">
-          <Select value={kind} onChange={(e) => setKind(e.target.value as RoundKind)}>
-            {ROUND_KINDS.map((k) => (
-              <option key={k}>{k}</option>
-            ))}
-          </Select>
-        </Field>
-        <span />
+        <KindFields kind={kind} label={kindLabel} onKind={setKind} onLabel={setKindLabel} />
         <Field label="Starts">
           <Input type="date" value={starts} onChange={(e) => setStarts(e.target.value)} />
         </Field>
@@ -1089,6 +1138,7 @@ function AddRound({
 }) {
   const [name, setName] = useState("");
   const [kind, setKind] = useState<RoundKind>("assessment");
+  const [kindLabel, setKindLabel] = useState("");
   const [starts, setStarts] = useState("");
   const [ends, setEnds] = useState("");
   const [rule, setRule] = useState("");
@@ -1098,6 +1148,7 @@ function AddRound({
       createRound(ticketId, {
         name: name.trim(),
         kind,
+        kind_label: kind === "custom" ? kindLabel.trim() : null,
         starts_on: starts || null,
         ends_on: ends || null,
         cutoff_rule: rule.trim() || null,
@@ -1129,14 +1180,7 @@ function AddRound({
                 autoFocus
               />
             </Field>
-            <Field label="Kind">
-              <Select value={kind} onChange={(e) => setKind(e.target.value as RoundKind)}>
-                {ROUND_KINDS.map((k) => (
-                  <option key={k}>{k}</option>
-                ))}
-              </Select>
-            </Field>
-            <span />
+            <KindFields kind={kind} label={kindLabel} onKind={setKind} onLabel={setKindLabel} />
             <Field label="Starts">
               <Input type="date" value={starts} onChange={(e) => setStarts(e.target.value)} />
             </Field>
@@ -1184,7 +1228,12 @@ export function ProgramRounds({ ticketId }: { ticketId: string }) {
   if (rounds.isLoading) return <ListSkeleton />;
   if (rounds.isError)
     return <ErrorBox error={rounds.error} onRetry={() => void rounds.refetch()} />;
-  const list = rounds.data ?? [];
+  // earliest dates first; rounds with no dates yet go last, in their own order
+  const list = [...(rounds.data ?? [])].sort(
+    (a, b) =>
+      (a.starts_on ?? a.ends_on ?? "9999").localeCompare(b.starts_on ?? b.ends_on ?? "9999") ||
+      a.seq - b.seq,
+  );
   const suggested = suggestedQ.data ?? [];
   const summary = report.data?.funnel_summary;
   const latest = list
@@ -1222,6 +1271,7 @@ export function ProgramRounds({ ticketId }: { ticketId: string }) {
         />
       )}
       <DeliveryStages rounds={list} suggested={suggested} ticketId={ticketId} onChanged={refresh} />
+      <CountsBars rounds={list} />
       {report.isError && <ErrorBox error={report.error} onRetry={() => void report.refetch()} />}
       {list.length === 0 ? (
         <EmptyState

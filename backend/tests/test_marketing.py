@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select, text
@@ -419,7 +419,7 @@ async def test_operational_fields_can_still_change_after_approval(client_for, ma
 async def test_a_go_live_date_must_be_today_or_later_and_within_two_months(client_for, make_user, make_program, db):
     marketing, aid = await approved_activity(client_for, make_user, make_program, db)
     url = f"/programs/t1/activities/{aid}"
-    day = lambda n: (date.today() + timedelta(days=n)).isoformat()  # noqa: E731
+    day = lambda n: (datetime.now(timezone.utc).date() + timedelta(days=n)).isoformat()  # noqa: E731  (the rule uses the UTC date)
     past = await marketing.patch(url, json={"planned_date": day(-1)})
     far = await marketing.patch(url, json={"planned_date": day(61)})
     assert (past.status_code, past.json()["code"]) == (422, "go_live_date_in_past")

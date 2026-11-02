@@ -38,6 +38,22 @@ async def test_rounds_are_numbered_in_the_order_they_are_added(client_for, make_
     assert [r["name"] for r in (await client.get("/programs/t1/rounds")).json()] == ["Assessment", "Project", "Finale"]
 
 
+async def test_a_custom_round_needs_a_label_and_other_kinds_drop_it(client_for, make_user, make_program):
+    await make_program("t1")
+    client = await csm_client(client_for, make_user)
+    bad = await client.post("/programs/t1/rounds", json={"name": "Panel", "kind": "custom", "kind_label": "  "})
+    assert (bad.status_code, bad.json()["code"]) == (422, "round_kind_label_required")
+    made = await add_round(client, "Panel", kind="custom", kind_label=" Panel discussion ")
+    assert made["kind_label"] == "Panel discussion"
+    back = await client.patch(f"/programs/t1/rounds/{made['id']}", json={"kind": "project"})
+    assert back.json()["kind"] == "project" and back.json()["kind_label"] is None
+    again = await client.patch(f"/programs/t1/rounds/{made['id']}", json={"kind": "custom"})
+    assert again.status_code == 422
+    ok = await client.patch(f"/programs/t1/rounds/{made['id']}", json={"kind": "custom", "kind_label": "Demo day"})
+    assert ok.json()["kind_label"] == "Demo day"
+    assert (await add_round(client, "Plain", kind="assessment", kind_label="ignored"))["kind_label"] is None
+
+
 async def test_a_round_cannot_end_before_it_starts(client_for, make_user, make_program):
     await make_program("t1")
     client = await csm_client(client_for, make_user)

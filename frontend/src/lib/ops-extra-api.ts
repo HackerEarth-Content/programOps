@@ -8,11 +8,12 @@ const p = (t: string) => `/programs/${t}`;
 
 // ---- rounds ----------------------------------------------------------------------------
 export type RoundKind = "assessment" | "project" | "interview" | "onsite" | "custom";
-export const ROUND_KINDS: RoundKind[] = ["assessment", "project", "interview", "onsite", "custom"];
+// "interview" still exists on older rounds, but is no longer offered: use Custom and name it.
+export const ROUND_KINDS: RoundKind[] = ["assessment", "project", "onsite", "custom"];
 export type RoundStatus = Round["status"];
 export const ROUND_STATUSES: RoundStatus[] = ["planned", "live", "evaluating", "done"];
 
-export type RoundFull = Round & { source: "sow" | "manual" };
+export type RoundFull = Round & { source: "sow" | "manual"; kind_label: string | null };
 export const roundsFullQuery = (ticketId: string) =>
   queryOptions({
     queryKey: ["programs", ticketId, "rounds", "full"],
@@ -30,6 +31,8 @@ export type CountsFields = {
 export type RoundInput = {
   name: string;
   kind?: RoundKind;
+  /** What a "custom" round is called; required when kind is custom. */
+  kind_label?: string | null;
   starts_on?: string | null;
   ends_on?: string | null;
   cutoff_rule?: string | null;
