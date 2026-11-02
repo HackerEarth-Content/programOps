@@ -107,12 +107,15 @@ function ActivityHover({
  */
 export function GoLiveCalendar({
   rows,
+  allRows = rows,
   scope,
   selectedId,
   onSelect,
   onFill,
 }: {
   rows: PlanActivity[];
+  /** The whole plan: it fixes the calendar's dates and lanes, so picking a week only narrows what is drawn on it. */
+  allRows?: PlanActivity[];
   /** What the rows are (All weeks, Week 2): shown in the title with how many there are. */
   scope?: string | undefined;
   selectedId: number | null;
@@ -122,13 +125,27 @@ export function GoLiveCalendar({
   const dated = rows.filter((a) => dayOf(a));
   const undated = rows.filter((a) => !dayOf(a));
   const today = todayIso();
-  const nums = dated.map((a) => dayNum(dayOf(a)!));
-  const start = nums.length ? Math.min(...nums) : dayNum(today);
-  const end = nums.length ? Math.max(...nums) : start;
+  const planDays = allRows.filter((a) => dayOf(a)).map((a) => dayNum(dayOf(a)!));
+  const start = planDays.length ? Math.min(...planDays) : dayNum(today);
+  const end = planDays.length ? Math.max(...planDays) : start;
+  const picked = dated.map((a) => dayNum(dayOf(a)!));
+  // a week is picked: shade its own dates on the full-length calendar
+  const band =
+    rows.length < allRows.length && picked.length
+      ? { from: Math.min(...picked) - start, to: Math.max(...picked) - start + 1 }
+      : null;
   const weeks = Math.min(8, Math.max(3, Math.ceil((end - start + 1) / 7)));
   const days = weeks * 7;
   const todayPct = ((dayNum(today) - start) / days) * 100;
-  const lanes = [...new Set(rows.map((a) => a.channel))].sort();
+  // lanes come from the whole plan, ordered by when each channel first goes live, so they never jump around
+  const first = new Map<string, number>();
+  for (const a of allRows) {
+    const d = dayOf(a) ? dayNum(dayOf(a)!) : Infinity;
+    first.set(a.channel, Math.min(first.get(a.channel) ?? Infinity, d));
+  }
+  const lanes = [...first.keys()].sort(
+    (x, y) => first.get(x)! - first.get(y)! || x.localeCompare(y),
+  );
   const liveCount = rows.filter((a) => a.status === "live").length;
 
   // The day column under the cursor: highlighted across every lane, with its date and go-live count.
@@ -200,7 +217,7 @@ export function GoLiveCalendar({
         </ul>
       </header>
       <div className="px-4 pb-4">
-        {dated.length > 0 && (
+        {planDays.length > 0 && (
           <div className="relative overflow-x-auto">
             <div className="min-w-[560px]">
               <div className="grid grid-cols-[96px_minmax(0,1fr)]">
@@ -272,6 +289,16 @@ export function GoLiveCalendar({
                           style={{ left: `${(i / weeks) * 100}%`, width: `${100 / weeks}%` }}
                         />
                       ))}
+                      {band && (
+                        <div
+                          aria-hidden
+                          className="absolute inset-y-0 bg-primary/10"
+                          style={{
+                            left: `${(band.from / days) * 100}%`,
+                            width: `${((band.to - band.from) / days) * 100}%`,
+                          }}
+                        />
+                      )}
                       {todayPct >= 0 && todayPct < 100 && (
                         <div
                           aria-hidden
@@ -315,7 +342,7 @@ export function GoLiveCalendar({
           </div>
         )}
         {undated.length > 0 && (
-          <div className={cn("flex items-start gap-3", dated.length > 0 && "mt-3.5")}>
+          <div className={cn("flex items-start gap-3", planDays.length > 0 && "mt-3.5")}>
             <p className="w-24 shrink-0 pt-0.5 text-[13px] text-ink-2">
               Not scheduled{" "}
               <b className="font-semibold tabular-nums text-foreground">{undated.length}</b>

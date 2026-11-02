@@ -355,6 +355,7 @@ export function ProgramMarketing({ ticketId }: { ticketId: string }) {
         <div className="hidden md:block">
           <GoLiveCalendar
             rows={calendarRows}
+            allRows={rows}
             scope={week === "all" ? "All weeks" : weekLabel(week)}
             selectedId={selectedId}
             onSelect={select}
