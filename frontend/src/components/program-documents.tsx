@@ -1,27 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
-import {
-  AlertTriangle,
-  CalendarClock,
-  Download,
-  ExternalLink,
-  FileSignature,
-  Handshake,
-  Mail,
-  Megaphone,
-  MessageCircle,
-  Newspaper,
-  RefreshCw,
-  Share2,
-  type LucideIcon,
-} from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, RefreshCw } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Card,
   CardBody,
   CardHeader,
   Chip,
   EmptyState,
-  MonoLabel,
+  KpiCell,
+  KpiStrip,
+  Notice,
   Segmented,
   Skeleton,
   type Tone,
@@ -57,12 +45,12 @@ const fmtLong = (iso: string) =>
 const isToday = (today: string, start: string, end: string | null) =>
   today >= start && today <= (end ?? start);
 
-const CHANNEL: Record<PoaChannel, { icon: LucideIcon; tone: Tone }> = {
-  Email: { icon: Mail, tone: "info" },
-  Social: { icon: Share2, tone: "indigo" },
-  Community: { icon: MessageCircle, tone: "good" },
-  Newsletter: { icon: Newspaper, tone: "warning" },
-  Partner: { icon: Handshake, tone: "serious" },
+const CHANNEL: Record<PoaChannel, { tone: Tone }> = {
+  Email: { tone: "info" },
+  Social: { tone: "indigo" },
+  Community: { tone: "good" },
+  Newsletter: { tone: "warning" },
+  Partner: { tone: "serious" },
 };
 
 const NOW = "border-primary bg-primary/5";
@@ -118,36 +106,32 @@ export function ProgramDocuments({
 
   return (
     <section className="space-y-4 page-in" aria-label="Program documents">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="grid flex-1 gap-3 md:grid-cols-2">
-          <FileCard kind="Statement of Work" icon={FileSignature} doc={sow} />
-          <FileCard kind="Plan of Action" icon={Megaphone} doc={poa} />
-        </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <FileCard kind="Statement of Work" doc={sow} />
+        <FileCard kind="Plan of Action" doc={poa} />
       </div>
 
       {options.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3">
           {options.length > 1 ? (
             <Segmented value={active ?? "sow"} onChange={setView} options={options} />
-          ) : (
-            <span />
-          )}
-          <label className="flex items-center gap-2 t-body-sm text-muted-foreground">
-            <CalendarClock className="size-4" />
+          ) : null}
+          <label className="ml-auto flex items-center gap-2 text-[13px] text-ink-2">
             Tracking as of
             <Input
               type="date"
               value={today}
               onChange={(e) => e.target.value && setToday(e.target.value)}
-              className="w-36 font-mono"
+              className="h-8 w-36"
             />
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="sm"
               onClick={() => setToday(toKey(new Date()))}
-              className="underline-offset-2 hover:text-foreground hover:underline"
             >
               Reset
-            </button>
+            </Button>
           </label>
         </div>
       )}
@@ -166,66 +150,51 @@ export function ProgramDocuments({
   );
 }
 
-function FileCard({
-  kind,
-  icon: Icon,
-  doc,
-}: {
-  kind: string;
-  icon: LucideIcon;
-  doc: ProgramDocument<unknown> | null;
-}) {
+function FileCard({ kind, doc }: { kind: string; doc: ProgramDocument<unknown> | null }) {
   if (!doc)
     return (
-      <Card>
-        <div className="flex items-center gap-3 px-[18px] py-4">
-          <Icon className="size-5 text-muted-foreground" />
-          <div className="min-w-0">
-            <MonoLabel>{kind}</MonoLabel>
-            <p className="text-[14px] font-medium">Not uploaded</p>
-            <p className="t-body-sm text-muted-foreground">
-              Attach it to the HubSpot ticket and it will appear here.
-            </p>
-          </div>
+      <Card className="flex min-h-[68px] items-center px-4 py-3">
+        <div className="min-w-0">
+          <p className="text-[13px] text-ink-2">{kind}</p>
+          <p className="text-[14px] font-medium">Not uploaded</p>
+          <p className="text-[13px] text-ink-2">
+            Attach it to the HubSpot ticket and it will appear here.
+          </p>
         </div>
       </Card>
     );
   const file = doc.file;
   return (
-    <Card>
-      <div className="flex flex-wrap items-center gap-3 px-[18px] py-4">
-        <Icon className="size-5 shrink-0 text-primary" />
+    <Card className="px-4 py-3">
+      <div className="flex min-h-[44px] items-center gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <MonoLabel>{kind}</MonoLabel>
+          <p className="flex items-center gap-1.5 text-[13px] text-ink-2">
+            {kind}
             <Chip tone={doc.status === "ok" ? "good" : "warning"}>
-              {doc.status === "ok" ? "extracted" : "extraction failed"}
+              {doc.status === "ok" ? "Extracted" : "Extraction failed"}
             </Chip>
-          </div>
+          </p>
           <p className="truncate text-[14px] font-medium" title={file.file_name}>
             {file.file_name}
           </p>
-          <p className="t-data-sm text-muted-foreground">
-            {Math.max(1, Math.round(file.size_bytes / 1024))} KB · {file.hubspot_property}
+          <p className="text-[12px] text-ink-2">
+            {Math.max(1, Math.round(file.size_bytes / 1024))} KB
             {file.uploaded_at && ` · uploaded ${formatDate(file.uploaded_at)}`}
           </p>
         </div>
-        <div className="flex gap-1.5">
+        <div className="flex shrink-0 gap-1.5">
           <Button asChild size="sm" variant="outline">
             <a href={file.url} target="_blank" rel="noreferrer">
-              <ExternalLink className="size-3.5" /> View
+              View
             </a>
           </Button>
           <Button asChild size="sm" variant="outline">
-            <a href={`${file.url}?download=true`}>
-              <Download className="size-3.5" /> Download
-            </a>
+            <a href={`${file.url}?download=true`}>Download</a>
           </Button>
         </div>
       </div>
       {doc.status === "failed" && (
-        <p className="mx-[18px] mb-4 flex items-start gap-2 rounded-[8px] bg-status-warning/15 px-3 py-2 t-body-sm text-warn">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+        <p className="mt-2 text-[13px] text-warn">
           Couldn't extract details from this file ({doc.error ?? "unknown error"}). You can still
           view and download it.
         </p>
@@ -241,209 +210,197 @@ function feeLabel(sow: SowDetails): string | null {
   return `INR ${amount}${/tax/i.test(sow.fee) ? " + taxes" : ""}`;
 }
 
+function KvList({ rows }: { rows: { k: ReactNode; v: ReactNode }[] }) {
+  return (
+    <dl className="grid grid-cols-[minmax(0,140px)_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-[13px]">
+      {rows.map((r, i) => (
+        <div key={i} className="contents">
+          <dt className="text-ink-2">{r.k}</dt>
+          <dd className="min-w-0 break-words">{r.v}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 function SowView({ sow, today }: { sow: SowDetails; today: string }) {
+  const [full, setFull] = useState(false);
+  const fee = feeLabel(sow);
   return (
     <div className="space-y-4">
       <Card>
-        <div className="flex flex-wrap items-start justify-between gap-4 px-[18px] pt-4">
-          <div className="max-w-2xl">
-            <h2 className="t-headline-sm">{sow.title}</h2>
-            <p className="t-body-sm text-muted-foreground">
+        <div className="flex flex-wrap items-start justify-between gap-4 px-4 pt-4">
+          <div className="min-w-0">
+            <h2 className="text-[16px] font-semibold leading-6">{sow.title}</h2>
+            <p className="text-[13px] text-ink-2">
               {sow.customer} · Order dated {fmtLong(sow.order_date)}
             </p>
-            <p className="mt-3 text-[14px] leading-5">{sow.objective}</p>
           </div>
-          {feeLabel(sow) && (
+          {fee && (
             <div className="sm:text-right">
-              <MonoLabel>Contract value</MonoLabel>
-              <p className="t-data-lg">{feeLabel(sow)}</p>
-              <p className="t-body-sm text-muted-foreground">{known(sow.payment_terms)}</p>
+              <p className="text-[13px] text-ink-2">Contract value</p>
+              <p className="text-[14px] font-semibold">{fee}</p>
+              <p className="text-[13px] text-ink-2">{known(sow.payment_terms)}</p>
             </div>
           )}
         </div>
-        <CardBody className="mt-4 space-y-3">
-          {sow.commitments.length > 0 && (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              {sow.commitments.map((c) => (
-                <div key={c.label} className="surface-inset p-3">
-                  <p className="t-data-md">{c.value}</p>
-                  <p className="t-body-sm text-muted-foreground">{c.label}</p>
-                </div>
-              ))}
-            </div>
-          )}
-          <p className="t-body-sm text-muted-foreground">
-            <span className="font-medium text-secondary-foreground">Validity:</span> {sow.validity}{" "}
-            · <span className="font-medium text-secondary-foreground">Excludes:</span>{" "}
-            {sow.exclusions}
+        <p className="mt-3 max-w-[78ch] px-4 text-[14px] leading-5">{sow.objective}</p>
+        {sow.commitments.length > 0 && (
+          <KpiStrip label="Headline numbers" className="m-4 mb-0">
+            {sow.commitments.map((c) => (
+              <KpiCell key={c.label} label={c.label} value={c.value} />
+            ))}
+          </KpiStrip>
+        )}
+        <div className="mt-4 border-t border-border px-4 py-3.5">
+          <p className="text-[13px] font-medium">Validity and exclusions</p>
+          <p className={cn("mt-1 max-w-[110ch] text-[13px] text-ink-2", !full && "line-clamp-2")}>
+            <span className="font-medium text-foreground">Validity:</span> {sow.validity} ·{" "}
+            <span className="font-medium text-foreground">Excludes:</span> {sow.exclusions}
           </p>
-        </CardBody>
+          <button
+            type="button"
+            onClick={() => setFull(!full)}
+            className="text-[13px] text-primary hover:underline"
+          >
+            {full ? "Show less" : "Show full text"}
+          </button>
+        </div>
       </Card>
 
       <Card>
         <CardHeader
           title="Delivery timeline"
-          icon={<CalendarClock />}
           divided
           meta={sow.timeline.some((m) => !m.start) ? "Undated stages run in this order" : undefined}
         />
-        <ol className="divide-y divide-border">
-          {sow.timeline.map((m, i) => {
-            const end = m.start && m.end && m.end !== m.start ? m.end : null;
-            const now = !!today && !!m.start && isToday(today, m.start, end);
-            return (
-              <li
-                key={`${i}|${m.task}`}
-                className={cn("flex flex-wrap items-center gap-3 px-[18px] py-2.5", now && NOW)}
-              >
-                <span className="t-data-sm w-32 shrink-0">
-                  {m.start ? (
-                    <>
-                      {fmt(m.start)}
-                      {end ? ` – ${fmt(end)}` : m.open_ended ? " →" : ""}
-                    </>
-                  ) : (
-                    <span className="text-muted-foreground">Date TBC</span>
-                  )}
-                </span>
-                <span className="min-w-0 flex-1 text-[14px] font-medium">{m.task}</span>
-                {now && <Chip tone="info">now</Chip>}
-                <Chip className="h-auto min-h-[22px] whitespace-normal py-0.5 text-left">
-                  {m.owner}
-                </Chip>
-              </li>
-            );
-          })}
-        </ol>
+        <div className="relative overflow-x-auto">
+          <table className="w-full min-w-[520px] border-collapse text-[14px]">
+            <thead>
+              <tr className="border-b border-border text-left text-[12px] font-medium text-ink-2">
+                <th className="w-36 px-4 py-2.5">Date</th>
+                <th className="px-4 py-2.5">Stage</th>
+                <th className="px-4 py-2.5">Owner</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sow.timeline.map((m, i) => {
+                const end = m.start && m.end && m.end !== m.start ? m.end : null;
+                const now = !!today && !!m.start && isToday(today, m.start, end);
+                return (
+                  <tr
+                    key={`${i}|${m.task}`}
+                    className={cn("h-11 border-b border-border last:border-b-0", now && NOW)}
+                  >
+                    <td className="whitespace-nowrap px-4">
+                      {m.start ? (
+                        <>
+                          {fmt(m.start)}
+                          {end ? ` – ${fmt(end)}` : m.open_ended ? " →" : ""}
+                        </>
+                      ) : (
+                        <span className="text-ink-2">Date TBC</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 font-medium">
+                      {m.task}
+                      {now && (
+                        <Chip tone="info" className="ml-2">
+                          now
+                        </Chip>
+                      )}
+                    </td>
+                    <td className="px-4 py-2">
+                      <Chip className="h-auto min-h-[20px] whitespace-normal py-0.5 text-left">
+                        {m.owner}
+                      </Chip>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </Card>
 
-      <div className="grid gap-4 break-words lg:grid-cols-2 [&>*]:min-w-0">
+      <div className="grid items-start gap-4 break-words lg:grid-cols-2 [&>*]:min-w-0">
         {sow.rounds.length + sow.content.length > 0 && (
           <Card>
-            <CardHeader title="Rounds and content" divided />
-            <CardBody className="space-y-3 pt-3">
+            <CardHeader title="Rounds and content" />
+            <CardBody className="space-y-4">
               {sow.rounds.map((r) => (
                 <div key={r.name}>
-                  <p className="text-[14px] font-semibold">{r.name}</p>
-                  <ul className="mt-1 list-disc pl-5 t-body-sm text-muted-foreground">
-                    {r.details.map((d) => (
-                      <li key={d}>{d}</li>
-                    ))}
-                  </ul>
+                  <p className="text-[14px] font-medium">{r.name}</p>
+                  <p className="text-[13px] text-ink-2">{r.details.join(" · ")}</p>
                 </div>
               ))}
-              <div className="flex flex-wrap gap-1.5">
-                {sow.content.map((c) => (
-                  <Chip key={c} className="h-auto min-h-[22px] whitespace-normal py-0.5 text-left">
-                    {c}
-                  </Chip>
-                ))}
-              </div>
+              {sow.content.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {sow.content.map((c) => (
+                    <Chip
+                      key={c}
+                      className="h-auto min-h-[20px] whitespace-normal py-0.5 text-left"
+                    >
+                      {c}
+                    </Chip>
+                  ))}
+                </div>
+              )}
             </CardBody>
           </Card>
         )}
-        {(sow.client_requirements.length > 0 || sow.reports.length > 0) && (
-          <Card>
-            {sow.client_requirements.length > 0 && (
-              <>
-                <CardHeader title="Needed from client" divided />
-                <CardBody className="grid gap-2 pt-3 sm:grid-cols-2">
-                  {sow.client_requirements.map((r) => (
-                    <div key={r.item} className="surface-inset p-2.5">
-                      <p className="text-[14px] font-medium">{r.item}</p>
-                      <p className="t-body-sm text-muted-foreground">{r.details}</p>
+        <div className="space-y-4">
+          {sow.contacts.length > 0 && (
+            <Card>
+              <CardHeader title="Contacts" divided />
+              <ul className="divide-y divide-border">
+                {sow.contacts.map((c) => (
+                  <li
+                    key={`${c.name}-${c.contact}`}
+                    className="flex items-center justify-between gap-3 px-4 py-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-[14px] font-medium">{c.name}</p>
+                      <p className="text-[13px] text-ink-2">
+                        {c.role} ·{" "}
+                        <a href={`mailto:${c.contact}`} className="text-primary hover:underline">
+                          {c.contact}
+                        </a>
+                      </p>
                     </div>
-                  ))}
-                </CardBody>
-              </>
-            )}
-            {sow.reports.length > 0 && (
-              <>
-                <CardHeader
-                  title="Reports"
-                  divided
-                  className={sow.client_requirements.length ? "border-t border-border" : ""}
+                    <Chip>{c.side}</Chip>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
+          {(sow.sla.length > 0 ||
+            sow.services.length > 0 ||
+            sow.reports.length > 0 ||
+            sow.client_requirements.length > 0) && (
+            <Card>
+              <CardHeader title="Service levels and reporting" />
+              <CardBody>
+                <KvList
+                  rows={[
+                    ...sow.sla.map((s) => ({
+                      k: s.audience,
+                      v: `${s.response} first response · ${s.hours}`,
+                    })),
+                    ...sow.reports.map((r) => ({ k: r.type, v: r.frequency })),
+                    ...sow.client_requirements.map((r) => ({
+                      k: `Needed: ${r.item}`,
+                      v: r.details,
+                    })),
+                    ...(sow.services.length
+                      ? [{ k: "Services", v: sow.services.join(" · ") }]
+                      : []),
+                  ]}
                 />
-                <CardBody className="space-y-1 pt-3">
-                  {sow.reports.map((r) => (
-                    <p key={r.type} className="flex justify-between text-[14px]">
-                      <span>{r.type}</span>
-                      <span className="t-data-sm text-muted-foreground">{r.frequency}</span>
-                    </p>
-                  ))}
-                </CardBody>
-              </>
-            )}
-          </Card>
-        )}
-        {sow.contacts.length > 0 && (
-          <Card>
-            <CardHeader title="Contacts" divided />
-            <ul className="divide-y divide-border">
-              {sow.contacts.map((c) => (
-                <li
-                  key={`${c.name}-${c.contact}`}
-                  className="flex items-center justify-between gap-3 px-[18px] py-2.5"
-                >
-                  <div className="min-w-0">
-                    <p className="text-[14px] font-medium">
-                      {c.name}{" "}
-                      <span className="t-body-sm font-normal text-muted-foreground">
-                        · {c.role}
-                      </span>
-                    </p>
-                    <a
-                      href={`mailto:${c.contact}`}
-                      className="t-data-sm text-primary hover:underline"
-                    >
-                      {c.contact}
-                    </a>
-                  </div>
-                  <Chip>{c.side}</Chip>
-                </li>
-              ))}
-            </ul>
-          </Card>
-        )}
-        {(sow.sla.length > 0 || sow.services.length > 0) && (
-          <Card>
-            {sow.sla.length > 0 && (
-              <>
-                <CardHeader title="Service levels" divided />
-                <CardBody className="space-y-2 pt-3">
-                  {sow.sla.map((s) => (
-                    <div
-                      key={s.audience}
-                      className="surface-inset flex items-center justify-between p-3"
-                    >
-                      <div>
-                        <p className="text-[14px] font-medium">{s.audience}</p>
-                        <p className="t-data-sm text-muted-foreground">{s.hours}</p>
-                      </div>
-                      <span className="t-data-md">{s.response}</span>
-                    </div>
-                  ))}
-                </CardBody>
-              </>
-            )}
-            {sow.services.length > 0 && (
-              <>
-                <CardHeader
-                  title="Services"
-                  divided
-                  className={sow.sla.length ? "border-t border-border" : ""}
-                />
-                <CardBody className="pt-3">
-                  <ul className="list-disc pl-5 t-body-sm text-muted-foreground">
-                    {sow.services.map((s) => (
-                      <li key={s}>{s}</li>
-                    ))}
-                  </ul>
-                </CardBody>
-              </>
-            )}
-          </Card>
-        )}
+              </CardBody>
+            </Card>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -485,7 +442,7 @@ function PoaView({
       <Card>
         <div className="grid gap-4 p-[18px] sm:grid-cols-3">
           <div>
-            <MonoLabel>Campaign window</MonoLabel>
+            <p className="text-[13px] text-ink-2">Campaign window</p>
             <p className="mt-1 t-data-md">
               {poa.window_start && poa.window_end
                 ? `${fmt(poa.window_start)} → ${fmt(poa.window_end)}`
@@ -493,11 +450,13 @@ function PoaView({
             </p>
           </div>
           <div>
-            <MonoLabel>Activities</MonoLabel>
+            <p className="text-[13px] text-ink-2">Activities</p>
             <p className="mt-1 t-data-md">{poa.activities.length} planned</p>
           </div>
           <div>
-            <MonoLabel>{todays.length ? "Happening today" : "Next up"}</MonoLabel>
+            <p className="text-[13px] text-ink-2">
+              {todays.length ? "Happening today" : "Next up"}
+            </p>
             <p className="mt-1 text-[14px] font-medium">
               {todays.length
                 ? todays.map((a) => a.activity).join(", ")
@@ -510,12 +469,12 @@ function PoaView({
       </Card>
 
       {undated > 0 && (
-        <p className="rounded-[8px] bg-status-warning/15 px-3 py-2 t-body-sm text-warn">
+        <Notice>
           {undated} {undated === 1 ? "activity has" : "activities have"} no date in the document.
           {estimate?.start
             ? ` Their weeks are estimated from the registration start (${fmt(estimate.start)}${estimate.start_source ? `, ${estimate.start_source}` : ""}).`
             : ` Shown as "Date TBC" until the registration start is known.`}
-        </p>
+        </Notice>
       )}
 
       <div className="flex flex-wrap gap-1.5">
@@ -554,13 +513,13 @@ function PoaView({
                         <p className="t-data-md">{fmt(a.date)}</p>
                       ) : est ? (
                         <>
-                          <MonoLabel>Est.</MonoLabel>
+                          <span className="text-[12px] text-ink-2">Est.</span>
                           <p className="t-data-sm">
                             {fmt(est.from)} – {fmt(est.to)}
                           </p>
                         </>
                       ) : (
-                        <MonoLabel>Date TBC</MonoLabel>
+                        <span className="text-[13px] text-ink-2">Date TBC</span>
                       )}
                     </div>
                     <div className="min-w-0 flex-1">

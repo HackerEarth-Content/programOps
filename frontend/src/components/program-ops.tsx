@@ -5,21 +5,9 @@ import {
   useQueryClient,
   type UseMutationResult,
 } from "@tanstack/react-query";
-import {
-  AlertTriangle,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Hash,
-  History,
-  Pencil,
-  Plus,
-  RefreshCw,
-  Trash2,
-  X,
-} from "lucide-react";
+import { AlertTriangle, Hash, MoreHorizontal, Plus, RefreshCw, X } from "lucide-react";
 import { Link } from "@tanstack/react-router";
-import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   Avatar,
@@ -32,7 +20,8 @@ import {
   HEALTH_NAMES,
   HealthPill,
   Kpi,
-  LogList,
+  KpiCell,
+  KpiStrip,
   MonoLabel,
   Num,
   Segmented,
@@ -41,9 +30,19 @@ import {
 } from "@/components/kit";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { lookupSlackChannel, useCan } from "@/lib/api";
+import { lookupSlackChannel, registrationsQueryOptions, useCan } from "@/lib/api";
 import { assignmentsQuery } from "@/lib/marketing-api";
 import { formatDate, formatDateTime, timeAgo } from "@/lib/format";
 import {
@@ -60,7 +59,6 @@ import {
   type Health,
 } from "@/lib/ops-api";
 import {
-  AUDIT_ENTITIES,
   ROUND_KINDS,
   ROUND_STATUSES,
   addDependency,
@@ -100,7 +98,7 @@ import {
   type SubjectType,
   type TimelineChange,
 } from "@/lib/ops-extra-api";
-import { logSentence } from "@/lib/history";
+import { groupLog, logSentence, splitList } from "@/lib/history";
 import { cn } from "@/lib/utils";
 
 // ---- shared bits ------------------------------------------------------------------------------
@@ -189,11 +187,6 @@ function OwnerSelect({
   );
 }
 
-const HEALTH_TONE: Record<Health, Tone> = {
-  good: "good",
-  warning: "warning",
-  critical: "critical",
-};
 const ROUND_TONE: Record<RoundStatus, Tone> = {
   planned: "neutral",
   live: "info",
@@ -339,95 +332,6 @@ export function ReportStrip({ ticketId }: { ticketId: string }) {
 
 // ==== ROUNDS ====================================================================================
 
-type FunnelStage = { key: string; name: string; value: number | null };
-const stagesOf = (s: FunnelStep): FunnelStage[] => [
-  { key: "invited", name: "Invited", value: s.invited },
-  { key: "took", name: "Attempted", value: s.attempted },
-  { key: "cleared", name: "Cleared", value: s.cleared },
-  { key: "short", name: "Shortlisted", value: s.shortlisted },
-];
-
-function FunnelCard({
-  steps,
-  summary,
-}: {
-  steps: FunnelStep[];
-  summary: {
-    participants: number | null;
-    final_shortlisted: number | null;
-    registered_to_shortlist_pct: number | null;
-  };
-}) {
-  return (
-    <Card>
-      <CardHeader
-        title="Round funnel"
-        meta={
-          summary.final_shortlisted != null && (
-            <span>
-              {n(summary.participants)} participants → {n(summary.final_shortlisted)} shortlisted ·{" "}
-              {pct(summary.registered_to_shortlist_pct)}
-            </span>
-          )
-        }
-        divided
-      />
-      <ol className="divide-y divide-border reveal">
-        {steps.map((s, si) => {
-          const stages = stagesOf(s);
-          const base = Math.max(...stages.map((x) => x.value ?? 0), 0);
-          return (
-            <li
-              key={s.round_id}
-              className="grid gap-3 px-[18px] py-3.5 md:grid-cols-[200px_1fr]"
-              style={{ ["--i" as string]: si }}
-            >
-              <div className="min-w-0">
-                <p className="truncate text-[14px] font-semibold">
-                  <span className="t-data-sm mr-1.5 text-muted-foreground">{s.seq}</span>
-                  {s.name}
-                </p>
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  <Chip tone="info">{pct(s.participation_pct)} took part</Chip>
-                  {s.clearance_pct != null && (
-                    <Chip tone="indigo">{pct(s.clearance_pct)} cleared</Chip>
-                  )}
-                  {s.shortlist_pct != null && (
-                    <Chip tone="good">{pct(s.shortlist_pct)} shortlisted</Chip>
-                  )}
-                  {s.drop_off != null && s.drop_off > 0 && (
-                    <Chip tone="warning">−{n(s.drop_off)} drop-off</Chip>
-                  )}
-                </div>
-                {s.as_of && (
-                  <p className="mt-1 t-data-sm text-muted-foreground">
-                    as of {formatDate(s.as_of)}
-                  </p>
-                )}
-              </div>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 sm:grid-cols-4">
-                {stages.map((st, i) => (
-                  <div key={st.key} className="min-w-0">
-                    <div className="mb-1 flex items-baseline justify-between gap-2">
-                      <MonoLabel>{st.name}</MonoLabel>
-                      <span className="t-data-sm">{n(st.value)}</span>
-                    </div>
-                    <Bar
-                      pct={st.value == null || !base ? 0 : (st.value / base) * 100}
-                      tone={(["info", "indigo", "warning", "good"] as const)[i] ?? "info"}
-                      index={si * 4 + i}
-                    />
-                  </div>
-                ))}
-              </div>
-            </li>
-          );
-        })}
-      </ol>
-    </Card>
-  );
-}
-
 const COUNT_FIELDS = ["invited", "attempted", "cleared", "shortlisted"] as const;
 
 function CountsForm({
@@ -548,7 +452,7 @@ function CountsHistory({
   if (!data?.length)
     return <p className="t-body-sm text-muted-foreground">No counts recorded yet.</p>;
   return (
-    <div className="overflow-x-auto">
+    <div className="relative overflow-x-auto">
       <table className="w-full min-w-[640px] border-collapse">
         <thead>
           <tr className="border-b border-border text-left">
@@ -615,22 +519,31 @@ function CountsHistory({
   );
 }
 
-function RoundCard({
+const dash = <span className="text-ink-3">–</span>;
+const cellN = (v: number | null | undefined) => (v == null ? dash : n(v));
+const sub = (v: number | null | undefined, text: string) =>
+  v == null ? null : (
+    <span className="block text-[12px] font-normal text-ink-2">{`${v}% ${text}`}</span>
+  );
+
+type RoundPanel = "history" | "edit" | "enter" | "round" | "delete";
+
+/** One funnel row per round (counts with their percentages) plus an expandable panel for forms and history. */
+function RoundRows({
   round,
+  step,
   ticketId,
   onChanged,
-  index,
 }: {
   round: RoundFull;
+  step: FunnelStep | undefined;
   ticketId: string;
   onChanged: () => void;
-  index: number;
 }) {
   const canEnter = useCan("counts.enter");
   const canEdit = useCan("rounds.edit");
-  const [open, setOpen] = useState<"history" | "enter" | "edit" | null>(null);
-  const [renaming, setRenaming] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [open, setOpen] = useState<RoundPanel | null>(null);
+  const toggle = (p: RoundPanel) => setOpen(open === p ? null : p);
   const save = useMutation({
     mutationFn: ({ asOf, f }: { asOf: string; f: CountsFields }) =>
       recordCounts(ticketId, round.id, { as_of: asOf, ...f }),
@@ -661,172 +574,408 @@ function RoundCard({
     round.status === "done" ||
     (!!round.ends_on && round.ends_on < today());
   const missing = ended && !c;
+  const dropOff = step?.drop_off;
   return (
-    <Card className="rise" style={{ ["--i" as string]: index }}>
-      <div className="flex flex-wrap items-start justify-between gap-3 px-[18px] pt-4">
-        <div className="min-w-0">
-          <h3 className="flex flex-wrap items-center gap-2 text-[16px] font-semibold leading-[22px]">
-            <span className="t-data-sm text-muted-foreground">{round.seq}</span>
+    <>
+      <tr className="border-t border-border align-top">
+        <td className="px-4 py-3">
+          <p className="text-[14px] font-medium">
+            <span className="mr-1.5 text-[13px] text-ink-2">{round.seq}</span>
             {round.name}
-            <Chip tone={ROUND_TONE[round.status]}>{round.status}</Chip>
-            <Chip>{round.kind}</Chip>
-            {round.source === "sow" && <Chip tone="indigo">from SOW</Chip>}
-          </h3>
-          <p className="mt-1 t-data-sm text-muted-foreground">
-            {formatDate(round.starts_on)} – {formatDate(round.ends_on)}
-            {round.cutoff_rule &&
-              ` · cutoff ${round.cutoff_rule}${round.cutoff_value != null ? ` ${round.cutoff_value}` : ""}`}
           </p>
-        </div>
-        {canEdit && (
-          <div className="flex items-center gap-1.5">
-            <Select
-              aria-label="Round status"
-              value={round.status}
-              disabled={setStatus.isPending}
-              onChange={(e) => setStatus.mutate(e.target.value as RoundStatus)}
-            >
-              {ROUND_STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </Select>
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            <Chip>{titleCase(round.kind)}</Chip>
+            {round.source === "sow" && <Chip>From SOW</Chip>}
+          </div>
+          {missing && (
+            <p className="mt-1 text-[13px] text-warn">
+              Counts missing: this round has ended and nothing has been recorded.
+            </p>
+          )}
+          {c && (
+            <p className="mt-1 text-[12px] text-ink-2" title={formatDateTime(c.entered_at)}>
+              as of {formatDate(c.as_of)} · {c.entered_by_name}
+            </p>
+          )}
+        </td>
+        <td className="px-3 py-3">
+          <Chip tone={ROUND_TONE[round.status]}>{titleCase(round.status)}</Chip>
+        </td>
+        <td className="px-3 py-3 text-right tabular-nums">
+          {cellN(c?.invited)}
+          {c?.invited ? sub(100, "of invited") : null}
+        </td>
+        <td className="px-3 py-3 text-right tabular-nums">
+          {cellN(c?.attempted)}
+          {sub(step?.participation_pct, "took part")}
+        </td>
+        <td className="px-3 py-3 text-right tabular-nums">
+          {cellN(c?.cleared)}
+          {sub(step?.clearance_pct, "cleared")}
+        </td>
+        <td className="px-3 py-3 text-right tabular-nums">
+          {cellN(c?.shortlisted)}
+          {sub(step?.shortlist_pct, "shortlisted")}
+        </td>
+        <td className="px-3 py-3 text-right tabular-nums">
+          {dropOff == null ? dash : dropOff > 0 ? `−${n(dropOff)}` : n(dropOff)}
+          {dropOff != null && (
+            <span className="block text-[12px] text-ink-2">invited, not attempted</span>
+          )}
+        </td>
+        <td className="px-4 py-2.5">
+          <div className="flex items-center justify-end gap-1">
             <Button
-              size="icon"
+              size="sm"
               variant="ghost"
-              aria-label="Edit round"
-              aria-expanded={renaming}
-              onClick={() => setRenaming((v) => !v)}
+              aria-expanded={open === "history"}
+              onClick={() => toggle("history")}
             >
-              <Pencil className="size-4" />
+              Counts history
             </Button>
-            {confirmDelete ? (
-              <>
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  disabled={remove.isPending}
-                  onClick={() => remove.mutate()}
-                >
-                  Delete round
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setConfirmDelete(false)}>
-                  Keep
-                </Button>
-              </>
-            ) : (
+            {canEnter && (
               <Button
-                size="icon"
-                variant="ghost"
-                aria-label="Delete round"
-                onClick={() => setConfirmDelete(true)}
+                size="sm"
+                variant="outline"
+                aria-expanded={open === (c ? "edit" : "enter")}
+                onClick={() => toggle(c ? "edit" : "enter")}
               >
-                <Trash2 className="size-4" />
+                {c ? "Edit counts" : "Enter counts"}
               </Button>
             )}
-          </div>
-        )}
-      </div>
-
-      <CardBody className="mt-3 space-y-3">
-        {renaming && (
-          <EditRound
-            ticketId={ticketId}
-            round={round}
-            onDone={() => {
-              setRenaming(false);
-              onChanged();
-            }}
-            onCancel={() => setRenaming(false)}
-          />
-        )}
-        {missing && (
-          <p className="flex items-center gap-2 rounded-[8px] bg-status-warning/15 px-3 py-2 t-body-sm text-warn">
-            <AlertTriangle className="size-4 shrink-0" /> Counts missing: this round has ended and
-            nothing has been recorded.
-          </p>
-        )}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-          {COUNT_FIELDS.map((f) => (
-            <div key={f}>
-              <MonoLabel>{f}</MonoLabel>
-              <p className="t-data-md">{c ? n(c[f]) : "–"}</p>
-            </div>
-          ))}
-        </div>
-        {c && (
-          <p className="t-data-sm text-muted-foreground" title={formatDateTime(c.entered_at)}>
-            as of {formatDate(c.as_of)} · {c.entered_by_name}
-          </p>
-        )}
-        <div className="flex flex-wrap gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            aria-expanded={open === "history"}
-            onClick={() => setOpen(open === "history" ? null : "history")}
-          >
-            <History className="size-3.5" /> Counts history
-            {open === "history" ? (
-              <ChevronDown className="size-3.5" />
-            ) : (
-              <ChevronRight className="size-3.5" />
+            {(canEnter || canEdit) && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="icon" variant="ghost" aria-label={`More actions for ${round.name}`}>
+                    <MoreHorizontal className="size-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {canEnter && c && (
+                    <DropdownMenuItem onSelect={() => setOpen("enter")}>
+                      Add a new date
+                    </DropdownMenuItem>
+                  )}
+                  {canEdit && (
+                    <>
+                      <DropdownMenuItem onSelect={() => setOpen("round")}>
+                        Edit round
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuLabel>Status</DropdownMenuLabel>
+                      <DropdownMenuRadioGroup
+                        value={round.status}
+                        onValueChange={(v) => setStatus.mutate(v as RoundStatus)}
+                      >
+                        {ROUND_STATUSES.map((s) => (
+                          <DropdownMenuRadioItem key={s} value={s}>
+                            {titleCase(s)}
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem className="text-danger" onSelect={() => setOpen("delete")}>
+                        Delete round
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
-          </Button>
-          {canEnter && c && (
-            <Button
-              size="sm"
-              variant="outline"
-              aria-expanded={open === "edit"}
-              onClick={() => setOpen(open === "edit" ? null : "edit")}
-            >
-              <Pencil className="size-3.5" /> Edit counts
-            </Button>
-          )}
-          {canEnter && (
-            <Button
-              size="sm"
-              variant={missing ? "default" : "outline"}
-              onClick={() => setOpen(open === "enter" ? null : "enter")}
-            >
-              <Plus className="size-3.5" /> {c ? "Add a new date" : "Enter counts"}
-            </Button>
-          )}
+          </div>
+        </td>
+      </tr>
+      {(open || setStatus.isError || remove.isError) && (
+        <tr>
+          <td colSpan={8} className="px-4 pb-3">
+            <div className="space-y-2">
+              {open === "history" && (
+                <CountsHistory ticketId={ticketId} round={round} onChanged={onChanged} />
+              )}
+              {open === "edit" && c && (
+                <>
+                  <p className="text-[13px] text-ink-2">
+                    Editing the counts as of {formatDate(c.as_of)}. The earlier values stay in the
+                    counts history.
+                  </p>
+                  <CountsForm
+                    withDate={false}
+                    initial={c}
+                    submitLabel="Save changes"
+                    pending={edit.isPending}
+                    error={edit.isError ? edit.error : null}
+                    onSubmit={(_, f) => edit.mutate({ id: c.id, f })}
+                    onCancel={() => setOpen(null)}
+                  />
+                </>
+              )}
+              {open === "enter" && (
+                <CountsForm
+                  withDate
+                  submitLabel="Record counts"
+                  pending={save.isPending}
+                  error={save.isError ? save.error : null}
+                  onSubmit={(asOf, f) => save.mutate({ asOf, f })}
+                  onCancel={() => setOpen(null)}
+                />
+              )}
+              {open === "round" && (
+                <EditRound
+                  ticketId={ticketId}
+                  round={round}
+                  onDone={() => {
+                    setOpen(null);
+                    onChanged();
+                  }}
+                  onCancel={() => setOpen(null)}
+                />
+              )}
+              {open === "delete" && (
+                <div className="flex flex-wrap items-center gap-2 text-[13px]">
+                  <span>Delete {round.name}? Its counts history goes with it.</span>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    disabled={remove.isPending}
+                    onClick={() => remove.mutate()}
+                  >
+                    Delete round
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setOpen(null)}>
+                    Keep
+                  </Button>
+                </div>
+              )}
+              <MutationError m={setStatus} />
+              <MutationError m={remove} />
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+/** The funnel as one table, with one-hue bars under it for each round that has counts. */
+function RoundsTable({
+  rounds,
+  steps,
+  ticketId,
+  onChanged,
+}: {
+  rounds: RoundFull[];
+  steps: FunnelStep[];
+  ticketId: string;
+  onChanged: () => void;
+}) {
+  const withCounts = rounds.filter((r) => r.latest_counts);
+  return (
+    <Card aria-label="Round funnel">
+      <CardHeader title="Round funnel" meta="Share of invited" />
+      <div className="relative overflow-x-auto">
+        <table className="w-full min-w-[920px] border-collapse text-[14px]">
+          <thead>
+            <tr className="text-left">
+              <th className="t-th px-4 pb-2 font-medium">Round</th>
+              <th className="t-th px-3 pb-2 font-medium">Status</th>
+              <th className="t-th px-3 pb-2 text-right font-medium">Invited</th>
+              <th className="t-th px-3 pb-2 text-right font-medium">Attempted</th>
+              <th className="t-th px-3 pb-2 text-right font-medium">Cleared</th>
+              <th className="t-th px-3 pb-2 text-right font-medium">Shortlisted</th>
+              <th className="t-th px-3 pb-2 text-right font-medium">Drop-off</th>
+              <th className="px-4 pb-2">
+                <span className="sr-only">Actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rounds.map((r) => (
+              <RoundRows
+                key={r.id}
+                round={r}
+                step={steps.find((s) => s.round_id === r.id)}
+                ticketId={ticketId}
+                onChanged={onChanged}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {withCounts.length > 0 && (
+        <div className="space-y-4 border-t border-border p-4">
+          {withCounts.map((r) => {
+            const c = r.latest_counts!;
+            const rows = [
+              ["Invited", c.invited],
+              ["Attempted", c.attempted],
+              ["Cleared", c.cleared],
+              ["Shortlisted", c.shortlisted],
+            ] as const;
+            const base = Math.max(...rows.map(([, v]) => v ?? 0), 0);
+            return (
+              <div key={r.id} className="space-y-1.5">
+                {withCounts.length > 1 && <p className="text-[13px] font-medium">{r.name}</p>}
+                <div
+                  role="img"
+                  aria-label={`Funnel for ${r.name}: ${rows.map(([l, v]) => `${v == null ? "no figure" : n(v)} ${l.toLowerCase()}`).join(", ")}`}
+                  className="grid gap-1.5"
+                >
+                  {rows.map(([l, v]) => (
+                    <div key={l} className="flex items-center gap-3 text-[13px]">
+                      <span className="w-24 shrink-0 text-ink-2">{l}</span>
+                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-raised">
+                        <div
+                          className="h-2 rounded-full"
+                          style={{
+                            width: `${v == null || !base ? 0 : (v / base) * 100}%`,
+                            background: "var(--chart-1)",
+                          }}
+                        />
+                      </div>
+                      <span className="w-16 shrink-0 text-right tabular-nums">{cellN(v)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </div>
-        {open === "edit" && c && (
+      )}
+    </Card>
+  );
+}
+
+/** The SOW's stages as a stepper: status and dates, "Date TBC" until they are set. */
+function DeliveryStages({
+  rounds,
+  suggested,
+  ticketId,
+  onChanged,
+}: {
+  rounds: RoundFull[];
+  suggested: { name: string; notes: string }[];
+  ticketId: string;
+  onChanged: () => void;
+}) {
+  const canEdit = useCan("rounds.edit");
+  const [setting, setSetting] = useState(false);
+  const sow = rounds.filter((r) => r.source === "sow");
+  const stages = [
+    ...sow.map((r) => ({
+      key: `r${r.id}`,
+      name: r.name,
+      status: r.status as RoundStatus | null,
+      dates:
+        r.starts_on || r.ends_on ? `${formatDate(r.starts_on)} – ${formatDate(r.ends_on)}` : null,
+    })),
+    ...suggested.map((s) => ({ key: `s${s.name}`, name: s.name, status: null, dates: null })),
+  ];
+  const undated = sow.find((r) => !r.starts_on || !r.ends_on);
+  if (stages.length === 0) return null;
+  return (
+    <Card aria-label="Delivery stages">
+      <CardHeader
+        title="Delivery stages"
+        meta={
+          <>
+            <span>From the SOW{undated || suggested.length ? " · dates are not set yet" : ""}</span>
+            {canEdit && undated && (
+              <Button size="sm" variant="outline" onClick={() => setSetting((v) => !v)}>
+                Set dates
+              </Button>
+            )}
+          </>
+        }
+      />
+      <CardBody className="space-y-4">
+        <ol className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {stages.map((s) => (
+            <li key={s.key} className="min-w-0">
+              <div className="mb-2 h-1 overflow-hidden rounded-full bg-border">
+                <div
+                  className={cn(
+                    "h-1 rounded-full",
+                    s.status === "done"
+                      ? "bg-ink-2"
+                      : s.status === "live" || s.status === "evaluating"
+                        ? "bg-primary"
+                        : "w-0",
+                  )}
+                  style={s.status && s.status !== "planned" ? { width: "100%" } : undefined}
+                />
+              </div>
+              <p className="text-[13px] font-medium">{s.name}</p>
+              <p className="flex flex-wrap items-center gap-1.5 text-[13px] text-ink-2">
+                {s.status && s.status !== "planned" ? (
+                  <Chip tone={ROUND_TONE[s.status]}>{titleCase(s.status)}</Chip>
+                ) : (
+                  <span>Not started</span>
+                )}
+                <span>{s.dates ?? "Date TBC"}</span>
+              </p>
+            </li>
+          ))}
+        </ol>
+        {setting && undated && (
           <div className="space-y-1.5">
-            <p className="t-body-sm text-muted-foreground">
-              Editing the counts as of {formatDate(c.as_of)}. The earlier values stay in the counts
-              history.
-            </p>
-            <CountsForm
-              withDate={false}
-              initial={c}
-              submitLabel="Save changes"
-              pending={edit.isPending}
-              error={edit.isError ? edit.error : null}
-              onSubmit={(_, f) => edit.mutate({ id: c.id, f })}
-              onCancel={() => setOpen(null)}
+            <p className="text-[13px] text-ink-2">Dates for {undated.name}.</p>
+            <EditRound
+              ticketId={ticketId}
+              round={undated}
+              onDone={() => {
+                setSetting(false);
+                onChanged();
+              }}
+              onCancel={() => setSetting(false)}
             />
           </div>
         )}
-        {open === "enter" && (
-          <CountsForm
-            withDate
-            submitLabel="Record counts"
-            pending={save.isPending}
-            error={save.isError ? save.error : null}
-            onSubmit={(asOf, f) => save.mutate({ asOf, f })}
-            onCancel={() => setOpen(null)}
-          />
-        )}
-        {open === "history" && (
-          <CountsHistory ticketId={ticketId} round={round} onChanged={onChanged} />
-        )}
-        <MutationError m={setStatus} />
-        <MutationError m={remove} />
       </CardBody>
+    </Card>
+  );
+}
+
+function SuggestedRounds({
+  ticketId,
+  onChanged,
+  nextSeq,
+  suggested,
+}: {
+  ticketId: string;
+  onChanged: () => void;
+  nextSeq: number;
+  suggested: { name: string; notes: string }[];
+}) {
+  const accept = useMutation({
+    mutationFn: (s: { name: string }) => createRound(ticketId, { name: s.name, source: "sow" }),
+    onSuccess: onChanged,
+  });
+  if (suggested.length === 0) return null;
+  return (
+    <Card aria-label="Suggested from the SOW">
+      <CardHeader title="Suggested from the SOW" meta={`Next round: ${nextSeq}`} divided />
+      <ul>
+        {suggested.map((s) => (
+          <li
+            key={s.name}
+            className="flex min-h-16 items-center justify-between gap-3 border-b border-border px-4 py-2.5 last:border-b-0"
+          >
+            <div className="min-w-0">
+              <p className="text-[14px] font-medium">{s.name}</p>
+              {s.notes && <p className="truncate text-[13px] text-ink-2">{s.notes}</p>}
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={accept.isPending}
+              onClick={() => accept.mutate(s)}
+            >
+              Accept
+            </Button>
+          </li>
+        ))}
+      </ul>
+      <MutationError m={accept} />
     </Card>
   );
 }
@@ -921,29 +1070,20 @@ function EditRound({
 function AddRound({
   ticketId,
   onChanged,
+  onClose,
   nextSeq,
 }: {
   ticketId: string;
   onChanged: () => void;
+  onClose: () => void;
   nextSeq: number;
 }) {
-  const { data: suggested = [] } = useQuery(suggestedRoundsQuery(ticketId));
-  const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [kind, setKind] = useState<RoundKind>("assessment");
   const [starts, setStarts] = useState("");
   const [ends, setEnds] = useState("");
   const [rule, setRule] = useState("");
   const [value, setValue] = useState("");
-  const reset = () => {
-    setName("");
-    setStarts("");
-    setEnds("");
-    setRule("");
-    setValue("");
-    setOpen(false);
-    onChanged();
-  };
   const add = useMutation({
     mutationFn: () =>
       createRound(ticketId, {
@@ -954,114 +1094,72 @@ function AddRound({
         cutoff_rule: rule.trim() || null,
         cutoff_value: value === "" ? null : Number(value),
       }),
-    onSuccess: reset,
-  });
-  const accept = useMutation({
-    mutationFn: (s: { name: string }) => createRound(ticketId, { name: s.name, source: "sow" }),
-    onSuccess: onChanged,
+    onSuccess: () => {
+      onClose();
+      onChanged();
+    },
   });
   return (
     <Card>
-      <CardHeader
-        title="Add a round"
-        meta={`next: round ${nextSeq}`}
-        divided={open || suggested.length > 0}
-      />
-      {suggested.length > 0 && (
-        <div className="space-y-2 px-[18px] py-3">
-          <MonoLabel>Suggested from the SOW</MonoLabel>
-          <ul className="space-y-1.5">
-            {suggested.map((s) => (
-              <li
-                key={s.name}
-                className="flex items-center justify-between gap-3 rounded-[8px] border border-border px-3 py-2"
-              >
-                <div className="min-w-0">
-                  <p className="text-[14px] font-medium">{s.name}</p>
-                  {s.notes && <p className="truncate t-body-sm text-muted-foreground">{s.notes}</p>}
-                </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={accept.isPending}
-                  onClick={() => accept.mutate(s)}
-                >
-                  <Check className="size-3.5" /> Accept
-                </Button>
-              </li>
-            ))}
-          </ul>
-          <MutationError m={accept} />
-        </div>
-      )}
-      <CardBody className={cn(!open && suggested.length === 0 && "pt-0")}>
-        {open ? (
-          <form
-            className="space-y-3"
-            onSubmit={(e) => {
-              e.preventDefault();
-              add.mutate();
-            }}
-          >
-            <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
-              <Field label="Name" className="lg:col-span-2">
-                <Input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Round 2: Coding assessment"
-                  required
-                />
-              </Field>
-              <Field label="Kind">
-                <Select value={kind} onChange={(e) => setKind(e.target.value as RoundKind)}>
-                  {ROUND_KINDS.map((k) => (
-                    <option key={k}>{k}</option>
-                  ))}
-                </Select>
-              </Field>
-              <span />
-              <Field label="Starts">
-                <Input type="date" value={starts} onChange={(e) => setStarts(e.target.value)} />
-              </Field>
-              <Field label="Ends">
-                <Input
-                  type="date"
-                  value={ends}
-                  min={starts}
-                  onChange={(e) => setEnds(e.target.value)}
-                />
-              </Field>
-              <Field label="Cutoff rule">
-                <Input
-                  value={rule}
-                  onChange={(e) => setRule(e.target.value)}
-                  placeholder="e.g. score >="
-                />
-              </Field>
-              <Field label="Cutoff value">
-                <Input
-                  type="number"
-                  value={value}
-                  onChange={(e) => setValue(e.target.value)}
-                  className="font-mono"
-                />
-              </Field>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button type="submit" size="sm" disabled={!name.trim() || add.isPending}>
-                Add round
-              </Button>
-              <Button type="button" size="sm" variant="ghost" onClick={() => setOpen(false)}>
-                Cancel
-              </Button>
-              <MutationError m={add} />
-            </div>
-          </form>
-        ) : (
-          <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
-            <Plus className="size-3.5" /> New round
-          </Button>
-        )}
+      <CardHeader title="Add a round" meta={`Next round: ${nextSeq}`} divided />
+      <CardBody className="pt-4">
+        <form
+          className="space-y-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            add.mutate();
+          }}
+        >
+          <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+            <Field label="Name" className="lg:col-span-2">
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Round 2: Coding assessment"
+                required
+                autoFocus
+              />
+            </Field>
+            <Field label="Kind">
+              <Select value={kind} onChange={(e) => setKind(e.target.value as RoundKind)}>
+                {ROUND_KINDS.map((k) => (
+                  <option key={k}>{k}</option>
+                ))}
+              </Select>
+            </Field>
+            <span />
+            <Field label="Starts">
+              <Input type="date" value={starts} onChange={(e) => setStarts(e.target.value)} />
+            </Field>
+            <Field label="Ends">
+              <Input
+                type="date"
+                value={ends}
+                min={starts}
+                onChange={(e) => setEnds(e.target.value)}
+              />
+            </Field>
+            <Field label="Cutoff rule">
+              <Input
+                value={rule}
+                onChange={(e) => setRule(e.target.value)}
+                placeholder="e.g. score >="
+              />
+            </Field>
+            <Field label="Cutoff value">
+              <Input type="number" value={value} onChange={(e) => setValue(e.target.value)} />
+            </Field>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button type="submit" size="sm" disabled={!name.trim() || add.isPending}>
+              Add round
+            </Button>
+            <Button type="button" size="sm" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <MutationError m={add} />
+          </div>
+        </form>
       </CardBody>
     </Card>
   );
@@ -1071,16 +1169,50 @@ export function ProgramRounds({ ticketId }: { ticketId: string }) {
   const refresh = useRefresh(ticketId);
   const rounds = useQuery(roundsFullQuery(ticketId));
   const report = useQuery(reportQuery(ticketId));
+  const suggestedQ = useQuery(suggestedRoundsQuery(ticketId));
   const canEdit = useCan("rounds.edit");
+  const [adding, setAdding] = useState(false);
   if (rounds.isLoading) return <ListSkeleton />;
   if (rounds.isError)
     return <ErrorBox error={rounds.error} onRetry={() => void rounds.refetch()} />;
   const list = rounds.data ?? [];
+  const suggested = suggestedQ.data ?? [];
+  const summary = report.data?.funnel_summary;
+  const latest = list
+    .map((r) => r.latest_counts)
+    .filter((c): c is NonNullable<typeof c> => !!c)
+    .sort((a, b) => b.as_of.localeCompare(a.as_of))[0];
   return (
     <div className="space-y-4 page-in">
-      {report.data && report.data.funnel.length > 0 && (
-        <FunnelCard steps={report.data.funnel} summary={report.data.funnel_summary} />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[16px] font-semibold">
+            {list.length} {list.length === 1 ? "round" : "rounds"}
+            {summary?.final_shortlisted != null &&
+              ` · ${n(summary.participants)} participants → ${n(summary.final_shortlisted)} shortlisted`}
+          </p>
+          {summary?.registered_to_shortlist_pct != null && (
+            <p className="text-[13px] text-ink-2">
+              {pct(summary.registered_to_shortlist_pct)} of registrations reach the shortlist.
+              {latest && ` Counts as of ${formatDate(latest.as_of)} by ${latest.entered_by_name}.`}
+            </p>
+          )}
+        </div>
+        {canEdit && (
+          <Button aria-expanded={adding} onClick={() => setAdding((v) => !v)}>
+            New round
+          </Button>
+        )}
+      </div>
+      {adding && canEdit && (
+        <AddRound
+          ticketId={ticketId}
+          onChanged={refresh}
+          onClose={() => setAdding(false)}
+          nextSeq={list.length + 1}
+        />
       )}
+      <DeliveryStages rounds={list} suggested={suggested} ticketId={ticketId} onChanged={refresh} />
       {report.isError && <ErrorBox error={report.error} onRetry={() => void report.refetch()} />}
       {list.length === 0 ? (
         <EmptyState
@@ -1088,11 +1220,21 @@ export function ProgramRounds({ ticketId }: { ticketId: string }) {
           hint="Add the rounds this program runs, or accept the ones suggested from the SOW."
         />
       ) : (
-        list.map((r, i) => (
-          <RoundCard key={r.id} round={r} ticketId={ticketId} onChanged={refresh} index={i} />
-        ))
+        <RoundsTable
+          rounds={list}
+          steps={report.data?.funnel ?? []}
+          ticketId={ticketId}
+          onChanged={refresh}
+        />
       )}
-      {canEdit && <AddRound ticketId={ticketId} onChanged={refresh} nextSeq={list.length + 1} />}
+      {canEdit && (
+        <SuggestedRounds
+          ticketId={ticketId}
+          onChanged={refresh}
+          nextSeq={list.length + 1}
+          suggested={suggested}
+        />
+      )}
     </div>
   );
 }
@@ -1420,10 +1562,17 @@ function SlackChannelField({
   );
 }
 
-function RaiseRequest({ ticketId, onChanged }: { ticketId: string; onChanged: () => void }) {
+function RaiseRequest({
+  ticketId,
+  onChanged,
+  onClose,
+}: {
+  ticketId: string;
+  onChanged: () => void;
+  onClose: () => void;
+}) {
   const { data: templates = [] } = useQuery(requestTemplatesQuery);
   const canLink = useCan("integrations.link"); // sending updates to a Slack channel takes the same permission as linking one
-  const [open, setOpen] = useState(false);
   const [templateId, setTemplateId] = useState("");
   const [detail, setDetail] = useState("");
   const [due, setDue] = useState("");
@@ -1442,16 +1591,10 @@ function RaiseRequest({ ticketId, onChanged }: { ticketId: string; onChanged: ()
       setDetail("");
       setDue("");
       setChannel("");
-      setOpen(false);
+      onClose();
       onChanged();
     },
   });
-  if (!open)
-    return (
-      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
-        <Plus className="size-3.5" /> Raise request
-      </Button>
-    );
   return (
     <Card>
       <CardHeader title="Raise a special request" divided />
@@ -1507,7 +1650,7 @@ function RaiseRequest({ ticketId, onChanged }: { ticketId: string; onChanged: ()
           >
             Raise request
           </Button>
-          <Button type="button" size="sm" variant="ghost" onClick={() => setOpen(false)}>
+          <Button type="button" size="sm" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
           <MutationError m={raise} />
@@ -1517,15 +1660,18 @@ function RaiseRequest({ ticketId, onChanged }: { ticketId: string; onChanged: ()
   );
 }
 
-function Composer({ ticketId, onChanged }: { ticketId: string; onChanged: () => void }) {
+const HEALTH_DOT: Record<Health, string> = {
+  good: "bg-ok",
+  warning: "bg-warn",
+  critical: "bg-danger",
+};
+
+function PostUpdate({ ticketId, onChanged }: { ticketId: string; onChanged: () => void }) {
   const canPost = useCan("update.post");
-  const canComment = useCan("comment.add");
+  const slack = useQuery(registrationsQueryOptions(ticketId)).data?.slack;
   const [health, setHealth] = useState<Health | null>(null);
   const [summary, setSummary] = useDraft(`${ticketId}:summary`);
   const [blockers, setBlockers] = useDraft(`${ticketId}:blockers`);
-  const [comment, setComment] = useDraft(`${ticketId}:comment`);
-  const feed = useInfiniteQuery(updatesFeedQuery(ticketId));
-  const last = feed.data?.pages.flatMap((pg) => pg.items).find((u) => u.health);
   const post = useMutation({
     mutationFn: () =>
       postUpdate(ticketId, {
@@ -1541,6 +1687,91 @@ function Composer({ ticketId, onChanged }: { ticketId: string; onChanged: () => 
       onChanged();
     },
   });
+  if (!canPost) return null;
+  return (
+    <Card>
+      <CardHeader title="Post update" meta="Goes to the program's Slack channel" />
+      <form
+        className="space-y-4 px-4 pb-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          post.mutate();
+        }}
+      >
+        <div>
+          <p className="mb-1.5 text-[13px] font-medium">How is it going?</p>
+          <div
+            role="radiogroup"
+            aria-label="Health"
+            className="inline-flex rounded-[8px] border border-border bg-secondary p-0.5"
+          >
+            {(["good", "warning", "critical"] as const).map((h) => (
+              <button
+                key={h}
+                type="button"
+                role="radio"
+                aria-checked={health === h}
+                onClick={() => setHealth(h)}
+                className={cn(
+                  "flex h-7 items-center gap-1.5 rounded-[6px] px-3 text-[13px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  health === h
+                    ? "bg-card text-foreground"
+                    : "text-secondary-foreground hover:text-foreground",
+                )}
+              >
+                <span
+                  aria-hidden
+                  className={cn("size-1.5 rounded-full", health === h ? HEALTH_DOT[h] : "bg-ink-3")}
+                />
+                {HEALTH_NAMES[h]}
+              </button>
+            ))}
+          </div>
+        </div>
+        <label className="block">
+          <span className="mb-1.5 block text-[13px] font-medium">Summary</span>
+          <Textarea
+            id="update-summary"
+            value={summary}
+            onChange={(e) => setSummary(e.target.value)}
+            rows={4}
+            placeholder="What happened today?"
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-[13px] font-medium">
+            Blockers <span className="font-normal text-ink-2">(optional)</span>
+          </span>
+          <Input
+            value={blockers}
+            onChange={(e) => setBlockers(e.target.value)}
+            placeholder="Anything holding the program up"
+          />
+        </label>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <span className="text-[13px] text-ink-2">Also posts to Slack</span>
+          <Chip>
+            {slack?.channel_id ? `#${slack.channel_name ?? slack.channel_id}` : "No channel linked"}
+          </Chip>
+          <div className="flex-1" />
+          {!health && summary.trim() && (
+            <span className="text-[13px] text-ink-2">Choose a health first.</span>
+          )}
+          <Button type="submit" disabled={!summary.trim() || !health || post.isPending}>
+            Post update
+          </Button>
+        </div>
+        <MutationError m={post} />
+      </form>
+    </Card>
+  );
+}
+
+function Feed({ ticketId, onChanged }: { ticketId: string; onChanged: () => void }) {
+  const canComment = useCan("comment.add");
+  const [comment, setComment] = useDraft(`${ticketId}:comment`);
+  const q = useInfiniteQuery(updatesFeedQuery(ticketId));
+  const items = q.data?.pages.flatMap((p) => p.items) ?? [];
   const talk = useMutation({
     mutationFn: () => postComment(ticketId, comment.trim()),
     onSuccess: () => {
@@ -1549,174 +1780,147 @@ function Composer({ ticketId, onChanged }: { ticketId: string; onChanged: () => 
       onChanged();
     },
   });
-  if (!canPost && !canComment) return null;
   return (
-    <Card>
-      {canPost && (
-        <>
-          <CardHeader title="Post update" meta="Goes to the program's Slack channel" divided />
-          <form
-            className="space-y-3 p-[18px]"
-            onSubmit={(e) => {
-              e.preventDefault();
-              post.mutate();
-            }}
-          >
-            <p className="t-body-sm text-muted-foreground">
-              {last ? (
-                <>
-                  Last update {timeAgo(last.created_at)} · health{" "}
-                  <HealthPill health={last.health as Health} />
-                </>
-              ) : (
-                "No update posted yet."
-              )}
-            </p>
-            <div role="radiogroup" aria-label="Health" className="flex items-center gap-1.5">
-              <MonoLabel className="mr-1">How is it going?</MonoLabel>
-              {(["good", "warning", "critical"] as const).map((h) => (
-                <button
-                  key={h}
-                  type="button"
-                  role="radio"
-                  aria-checked={health === h}
-                  onClick={() => setHealth(h)}
-                  className={cn(
-                    "chip h-7 cursor-pointer px-3 outline-none ring-offset-2 ring-offset-card focus-visible:ring-2 focus-visible:ring-primary",
-                    health === h && "ring-1 ring-current",
-                  )}
-                  data-tone={health === h ? HEALTH_TONE[h] : "neutral"}
-                >
-                  {HEALTH_NAMES[h]}
-                </button>
-              ))}
-            </div>
-            <Field label="Summary">
-              <Textarea
-                value={summary}
-                onChange={(e) => setSummary(e.target.value)}
-                rows={3}
-                placeholder="What happened today?"
-              />
-            </Field>
-            <Field label="Blockers">
-              <Input
-                value={blockers}
-                onChange={(e) => setBlockers(e.target.value)}
-                placeholder="Optional"
-              />
-            </Field>
-            <div className="flex items-center gap-2">
-              <Button
-                type="submit"
-                size="sm"
-                disabled={!summary.trim() || !health || post.isPending}
-              >
-                Post update
-              </Button>
-              {!health && summary.trim() && (
-                <span className="t-body-sm text-muted-foreground">Choose a health first.</span>
-              )}
-              <MutationError m={post} />
-            </div>
-          </form>
-        </>
-      )}
+    <Card className="flex flex-col">
+      <CardHeader title="Updates and comments" meta="Newest first" />
+      <div className="flex-1 px-4 pb-4">
+        {q.isLoading ? (
+          <ListSkeleton rows={2} />
+        ) : q.isError ? (
+          <ErrorBox error={q.error} onRetry={() => void q.refetch()} />
+        ) : items.length === 0 ? (
+          <EmptyState
+            title="Nothing posted yet"
+            hint="Daily updates and comments will appear here."
+          />
+        ) : (
+          <ul className="divide-y divide-border">
+            {items.map((u) => (
+              <li key={u.note_id} className="py-3 first:pt-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Avatar name={u.author_name} />
+                  <span className="text-[14px] font-medium">{u.author_name ?? "Unknown"}</span>
+                  <Chip>{titleCase(u.kind)}</Chip>
+                  {u.health && <HealthPill health={u.health} />}
+                  <span
+                    className="ml-auto text-[13px] text-ink-2"
+                    title={formatDateTime(u.created_at)}
+                  >
+                    {u.source !== "programops" && `${u.source} · `}
+                    {timeAgo(u.created_at)}
+                  </span>
+                </div>
+                <p className="mt-1.5 whitespace-pre-wrap text-[14px]">{u.body}</p>
+                {u.blockers && (
+                  <p className="mt-1 text-[13px] text-danger">
+                    <span className="mr-1.5 font-medium">Blockers</span>
+                    {u.blockers}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {q.hasNextPage && (
+          <div className="mt-3 text-center">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={q.isFetchingNextPage}
+              onClick={() => void q.fetchNextPage()}
+            >
+              {q.isFetchingNextPage ? "Loading…" : "Load older"}
+            </Button>
+          </div>
+        )}
+      </div>
       {canComment && (
         <form
-          className={cn("flex items-start gap-2 p-[18px]", canPost && "border-t border-border")}
+          className="border-t border-border p-4"
           onSubmit={(e) => {
             e.preventDefault();
             talk.mutate();
           }}
         >
-          <Textarea
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            rows={2}
-            placeholder="Add a comment"
-            aria-label="Comment"
-          />
-          <Button
-            type="submit"
-            size="sm"
-            variant="outline"
-            disabled={!comment.trim() || talk.isPending}
-          >
-            Comment
-          </Button>
-        </form>
-      )}
-      {talk.isError && (
-        <div className="px-[18px] pb-3">
+          <div className="flex items-center gap-2">
+            <Input
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="Add a comment"
+              aria-label="Comment"
+            />
+            <Button type="submit" variant="outline" disabled={!comment.trim() || talk.isPending}>
+              Comment
+            </Button>
+          </div>
           <MutationError m={talk} />
-        </div>
+        </form>
       )}
     </Card>
   );
 }
 
-function Feed({ ticketId }: { ticketId: string }) {
-  const q = useInfiniteQuery(updatesFeedQuery(ticketId));
-  const items = q.data?.pages.flatMap((p) => p.items) ?? [];
+const dayCell = (iso: string) => {
+  const parts = new Intl.DateTimeFormat("en-IN", {
+    weekday: "short",
+    day: "numeric",
+    timeZone: "Asia/Kolkata",
+  }).formatToParts(new Date(`${iso}T12:00:00+05:30`));
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  return `${get("weekday")} ${get("day")}`;
+};
+
+/** Which of the last 7 days have a daily update, from the updates already loaded. Today shows "Due" until one is posted. */
+function UpdateCadence({ ticketId }: { ticketId: string }) {
+  const canPost = useCan("update.post");
+  const feed = useInfiniteQuery(updatesFeedQuery(ticketId));
+  const posted = new Set(
+    (feed.data?.pages.flatMap((p) => p.items) ?? [])
+      .filter((u) => u.health)
+      .map((u) => istDay(u.created_at)),
+  );
+  const days = Array.from({ length: 7 }, (_, i) => istDay(new Date(Date.now() - (6 - i) * 864e5)));
+  const todayIso = days[6]!;
+  const done = days.filter((d) => posted.has(d)).length;
   return (
-    <Card>
-      <CardHeader title="Updates and comments" divided />
-      {q.isLoading ? (
-        <div className="p-[18px]">
-          <ListSkeleton rows={2} />
-        </div>
-      ) : q.isError ? (
-        <div className="p-[18px]">
-          <ErrorBox error={q.error} onRetry={() => void q.refetch()} />
-        </div>
-      ) : items.length === 0 ? (
-        <div className="p-[18px]">
-          <EmptyState
-            title="Nothing posted yet"
-            hint="Daily updates and comments will appear here."
-          />
-        </div>
-      ) : (
-        <ul className="divide-y divide-border">
-          {items.map((u) => (
-            <li key={u.note_id} className="px-[18px] py-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <Avatar name={u.author_name} />
-                <span className="text-[14px] font-medium">{u.author_name ?? "Unknown"}</span>
-                <Chip>{titleCase(u.kind)}</Chip>
-                {u.health && <HealthPill health={u.health} />}
-                <span
-                  className="ml-auto t-data-sm text-muted-foreground"
-                  title={formatDateTime(u.created_at)}
-                >
-                  {u.source !== "programops" && `${u.source} · `}
-                  {timeAgo(u.created_at)}
-                </span>
-              </div>
-              <p className="mt-1.5 whitespace-pre-wrap text-[14px]">{u.body}</p>
-              {u.blockers && (
-                <p className="mt-1 t-body-sm text-status-critical">
-                  <span className="t-mono-label mr-1.5">Blockers</span>
-                  {u.blockers}
-                </p>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      {q.hasNextPage && (
-        <div className="border-t border-border p-3 text-center">
+    <Card aria-label="Update cadence">
+      <CardHeader
+        title="Update cadence"
+        meta={<span>Daily update · last 7 days · {done} of 7 posted</span>}
+      />
+      <CardBody className="space-y-3">
+        <ol className="grid grid-cols-7 gap-1.5 sm:gap-2">
+          {days.map((d) => {
+            const isToday = d === todayIso;
+            const has = posted.has(d);
+            return (
+              <li
+                key={d}
+                className={cn(
+                  "min-w-0 rounded-[6px] border px-1.5 py-2 text-center text-[12px] leading-4 sm:text-[13px]",
+                  isToday ? "border-primary" : "border-border",
+                  has ? "bg-accent-bg text-foreground" : "text-ink-2",
+                )}
+              >
+                <b className="block truncate font-medium text-foreground">
+                  {dayCell(d)}
+                  {isToday && <span className="hidden sm:inline"> · today</span>}
+                </b>
+                {has ? "Posted" : isToday ? "Due" : "—"}
+              </li>
+            );
+          })}
+        </ol>
+        {canPost && !posted.has(todayIso) && (
           <Button
             size="sm"
-            variant="ghost"
-            disabled={q.isFetchingNextPage}
-            onClick={() => void q.fetchNextPage()}
+            variant="outline"
+            onClick={() => document.getElementById("update-summary")?.focus()}
           >
-            {q.isFetchingNextPage ? "Loading…" : "Load older"}
+            Post today's update
           </Button>
-        </div>
-      )}
+        )}
+      </CardBody>
     </Card>
   );
 }
@@ -2329,16 +2533,13 @@ function TimelineChanges({ ticketId, onChanged }: { ticketId: string; onChanged:
 }
 
 type OpsSection = "requests" | "blockers";
-const OPS_SECTIONS: { id: OpsSection; label: string }[] = [
-  { id: "requests", label: "Special requests" },
-  { id: "blockers", label: "Dependencies & changes" },
-];
 
 export function ProgramRequests({ ticketId }: { ticketId: string }) {
   const refresh = useRefresh(ticketId);
   const requests = useQuery(requestsFullQuery(ticketId));
   const canRaise = useCan("request.create");
   const [section, setSection] = useState<OpsSection>("requests");
+  const [raising, setRaising] = useState(false);
   const deps = useQuery(dependenciesQuery(ticketId)).data;
   const changes = useQuery(timelineChangesQuery(ticketId)).data;
   const comms = useQuery(communicationsQuery(ticketId)).data;
@@ -2358,98 +2559,126 @@ export function ProgramRequests({ ticketId }: { ticketId: string }) {
   );
   return (
     <div className="space-y-4 page-in">
-      <div className="grid items-start gap-4 xl:grid-cols-2">
-        <Composer ticketId={ticketId} onChanged={refresh} />
-        <Feed ticketId={ticketId} />
-      </div>
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-3">
-        <Kpi
+      <KpiStrip label="Requests summary">
+        <KpiCell
           label="Last update"
           value={lastUpdate ? timeAgo(lastUpdate.created_at) : "None yet"}
           sub={
             lastUpdate ? <HealthPill health={lastUpdate.health as Health} /> : "Post the first one"
           }
-          index={0}
         />
-        <Kpi
+        <KpiCell
           label="Open requests"
           value={open.length}
-          tone={overdueRequests ? "critical" : undefined}
-          sub={overdueRequests ? `${overdueRequests} overdue` : "none overdue"}
-          index={1}
+          sub={
+            overdueRequests ? (
+              <span className="text-danger">{overdueRequests} overdue</span>
+            ) : (
+              "None overdue"
+            )
+          }
         />
-        <Kpi
+        <KpiCell
           label="Client dependencies"
           value={deps?.impact.open ?? "–"}
-          tone={deps?.impact.overdue ? "critical" : undefined}
-          sub={deps?.impact.overdue ? `${deps.impact.overdue} overdue` : "none overdue"}
-          index={2}
+          sub={
+            deps?.impact.overdue ? (
+              <span className="text-danger">{deps.impact.overdue} overdue</span>
+            ) : (
+              "None overdue"
+            )
+          }
         />
-        <Kpi
+        <KpiCell
           label="Changes to decide"
           value={proposed}
-          tone={proposed ? "warning" : undefined}
-          sub={lateComms ? `${lateComms} overdue comms` : "timeline changes"}
-          index={3}
+          sub={
+            lateComms ? (
+              <span className="text-warn">{lateComms} overdue comms</span>
+            ) : (
+              "Timeline changes"
+            )
+          }
         />
+      </KpiStrip>
+
+      <UpdateCadence ticketId={ticketId} />
+
+      <div className="grid items-stretch gap-4 xl:grid-cols-2">
+        <PostUpdate ticketId={ticketId} onChanged={refresh} />
+        <Feed ticketId={ticketId} onChanged={refresh} />
       </div>
-      <div className="overflow-x-auto pb-1">
-        <Segmented
-          value={section}
-          onChange={setSection}
-          options={OPS_SECTIONS.map((o) => ({
-            ...o,
-            ...(o.id === "requests" && open.length ? { count: open.length } : {}),
-            ...(o.id === "blockers" && attention ? { count: attention } : {}),
-          }))}
-        />
-      </div>
-      {section === "requests" && (
-        <div className="max-w-3xl space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="text-[16px] font-semibold">Special requests</h2>
-              <p className="t-body-sm text-muted-foreground">
+
+      <Card>
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 pt-3.5">
+          <div className="max-w-full relative overflow-x-auto">
+            <Segmented
+              value={section}
+              onChange={setSection}
+              options={[
+                { id: "requests" as const, label: "Special requests", count: open.length },
+                { id: "blockers" as const, label: "Dependencies and changes", count: attention },
+              ]}
+            />
+          </div>
+          {canRaise && (
+            <Button
+              aria-expanded={raising}
+              onClick={() => {
+                setSection("requests");
+                setRaising(true);
+              }}
+            >
+              Raise request
+            </Button>
+          )}
+        </div>
+        <CardBody className="mt-3 space-y-4">
+          {section === "requests" ? (
+            <>
+              <p className="text-[13px] text-ink-2">
                 Anything the client or team asks for beyond the plan. Each one has a checklist to
                 tick off until it is done.
               </p>
-            </div>
-            {requests.data && (
-              <span className="t-data-sm text-muted-foreground">{open.length} open</span>
-            )}
-          </div>
-          {canRaise && <RaiseRequest ticketId={ticketId} onChanged={refresh} />}
-          {requests.isLoading ? (
-            <ListSkeleton rows={2} />
-          ) : requests.isError ? (
-            <ErrorBox error={requests.error} onRetry={() => void requests.refetch()} />
-          ) : requests.data?.length ? (
-            <>
-              {open.map(card)}
-              {resolved.length > 0 && (
-                <details className="space-y-4">
-                  <summary className="cursor-pointer t-body-sm text-muted-foreground">
-                    {resolved.length} resolved
-                  </summary>
-                  <div className="mt-4 space-y-4">{resolved.map(card)}</div>
-                </details>
+              {canRaise && raising && (
+                <RaiseRequest
+                  ticketId={ticketId}
+                  onChanged={refresh}
+                  onClose={() => setRaising(false)}
+                />
+              )}
+              {requests.isLoading ? (
+                <ListSkeleton rows={2} />
+              ) : requests.isError ? (
+                <ErrorBox error={requests.error} onRetry={() => void requests.refetch()} />
+              ) : requests.data?.length ? (
+                <>
+                  {open.map(card)}
+                  {resolved.length > 0 && (
+                    <details className="space-y-4">
+                      <summary className="cursor-pointer text-[13px] text-ink-2">
+                        {resolved.length} resolved
+                      </summary>
+                      <div className="mt-4 space-y-4">{resolved.map(card)}</div>
+                    </details>
+                  )}
+                </>
+              ) : (
+                <EmptyState
+                  title="No requests raised"
+                  hint="Special asks from the client or team show up here with a confirmation checklist."
+                />
               )}
             </>
           ) : (
-            <EmptyState
-              title="No requests raised"
-              hint="Special asks from the client or team show up here with a confirmation checklist."
-            />
+            <div className="grid items-start gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+              <Dependencies ticketId={ticketId} onChanged={refresh} />
+              <Communications ticketId={ticketId} onChanged={refresh} />
+              <TimelineChanges ticketId={ticketId} onChanged={refresh} />
+            </div>
           )}
-        </div>
-      )}
-      {section === "blockers" && (
-        <div className="grid items-start gap-4 lg:grid-cols-2 2xl:grid-cols-3">
-          <Dependencies ticketId={ticketId} onChanged={refresh} />
-          <Communications ticketId={ticketId} onChanged={refresh} />
-          <TimelineChanges ticketId={ticketId} onChanged={refresh} />
-        </div>
-      )}
+        </CardBody>
+      </Card>
     </div>
   );
 }
@@ -2457,47 +2686,244 @@ export function ProgramRequests({ ticketId }: { ticketId: string }) {
 // ==== ACTIVITY LOG ===============================================================================
 
 const ENTITY_LABEL: Record<string, string> = {
+  activity: "Activity",
+  activity_metrics: "Activity",
+  round: "Round",
+  rounds: "Round",
+  round_counts: "Round",
+  checklist: "Checklist",
+  phase: "Phase",
+  dependency: "Dependency",
+  communication: "Communication",
+  timeline_change: "Timeline",
+  update: "Update",
+  comment: "Comment",
+  note: "Note",
+};
+const chipLabel = (e: string) => ENTITY_LABEL[e] ?? titleCase(e);
+
+/** The type filter: each group is one or more audit entities. "other" is whatever no group claims. */
+const TYPE_GROUPS: { id: string; label: string; entities: string[] }[] = [
+  { id: "all", label: "All", entities: [] },
+  { id: "activity", label: "Activities", entities: ["activity", "activity_metrics"] },
+  { id: "round", label: "Rounds", entities: ["round", "rounds", "round_counts"] },
+  { id: "checklist", label: "Checklists", entities: ["checklist"] },
+  { id: "communication", label: "Communication", entities: ["communication"] },
+  { id: "update", label: "Updates and comments", entities: ["update", "comment", "note"] },
+  { id: "other", label: "Other", entities: [] },
+];
+const groupOf = (entity: string) =>
+  TYPE_GROUPS.find((g) => g.entities.includes(entity))?.id ?? "other";
+
+const utc = (at: string) => new Date(/[Zz]|[+-]\d{2}:\d{2}$/.test(at) ? at : `${at}Z`);
+const IST_DAY = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" });
+const istDay = (at: string | Date) => IST_DAY.format(typeof at === "string" ? utc(at) : at);
+const timeOf = (at: string) =>
+  utc(at)
+    .toLocaleTimeString("en-IN", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "Asia/Kolkata",
+    })
+    .replace(/\s?(am|pm)/i, (_, ap: string) => ` ${ap.toLowerCase()}`);
+const dayHeading = (iso: string) =>
+  iso === istDay(new Date())
+    ? "Today"
+    : iso === istDay(new Date(Date.now() - 864e5))
+      ? "Yesterday"
+      : formatDate(iso);
+
+/** Names already loaded by the other tabs' queries, keyed "entity:id", to turn "round 6" into a title. */
+function useNames(ticketId: string) {
+  const rounds = useQuery(roundsFullQuery(ticketId)).data;
+  const acts = useQuery(activitiesQuery(ticketId)).data;
+  const reqs = useQuery(requestsFullQuery(ticketId)).data;
+  const deps = useQuery(dependenciesQuery(ticketId)).data;
+  const comms = useQuery(communicationsQuery(ticketId)).data;
+  const changes = useQuery(timelineChangesQuery(ticketId)).data;
+  return useMemo(() => {
+    const m = new Map<string, string>();
+    rounds?.forEach((r) => m.set(`round:${r.id}`, r.name));
+    acts?.forEach((a) => m.set(`activity:${a.id}`, a.title));
+    reqs?.forEach((r) => m.set(`checklist:${r.id}`, r.title));
+    deps?.items.forEach((d) => m.set(`dependency:${d.id}`, d.title));
+    comms?.forEach((c) => m.set(`communication:${c.id}`, `${titleCase(c.kind)} to ${c.audience}`));
+    changes?.forEach((c) => m.set(`timeline_change:${c.id}`, c.label));
+    return m;
+  }, [rounds, acts, reqs, deps, comms, changes]);
+}
+
+const REF_ENTITY: Record<string, string> = {
   activity: "activity",
   round: "round",
-  rounds: "rounds",
-  round_counts: "round counts",
   checklist: "checklist",
-  phase: "phase",
   dependency: "dependency",
   communication: "communication",
-  timeline_change: "timeline change",
-  update: "update",
-  comment: "comment",
-  note: "note",
-  plan: "marketing plan",
-  registrations: "registrations",
-  registration_config: "registration settings",
-  registration_targets: "registration targets",
-  relevant_registrations: "relevant registrations",
-  activity_metrics: "activity results",
-  assignments: "assignments",
-  redash_link: "Redash link",
-  slack_link: "Slack link",
+  "timeline change": "timeline_change",
 };
-const entityName = (e: string) => ENTITY_LABEL[e] ?? label(e);
+/** logSentence with its raw ids ("activity 31", "counts (round 2)") swapped for names where we know them. */
+function humanSentence(e: AuditEvent, names: Map<string, string>) {
+  const s = logSentence(e).replace(/ \((round|activity) (\d+)\)/, (m, k: string, id: string) => {
+    const nm = names.get(`${k}:${id}`);
+    return nm ? ` for ${nm}` : m;
+  });
+  return s.replace(
+    /\b(activity|round|checklist|dependency|communication|timeline change) (\d+)\b/g,
+    (m, k: string, id: string) => {
+      const nm = names.get(`${REF_ENTITY[k]}:${id}`);
+      return nm ? (k === "checklist" ? `request ${nm}` : nm) : m;
+    },
+  );
+}
+
+/** A payload value as plain words: {"sent":100,"opens":10} becomes "Sent 100 · Opens 10". */
+function plain(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "empty";
+  if (typeof v === "boolean") return v ? "Yes" : "No";
+  if (typeof v === "number") return v.toLocaleString("en-IN");
+  if (Array.isArray(v)) return v.length ? v.map(plain).join(", ") : "none";
+  if (typeof v === "object")
+    return (
+      Object.entries(v as Record<string, unknown>)
+        .filter(([, x]) => x !== null && x !== undefined && x !== "")
+        .map(([k, x]) => `${titleCase(k)} ${plain(x)}`)
+        .join(" · ") || "empty"
+    );
+  const s = String(v);
+  return s.includes(";") ? splitList(s).join(", ") : s;
+}
+const changeLine = (e: AuditEvent) =>
+  e.field ? `${titleCase(e.field)}: ${plain(e.old)} → ${plain(e.new)}` : plain(e.new ?? e.old);
+const hasDetail = (e: AuditEvent) => e.field != null || (e.new != null && e.new !== "");
+
+const CHART_DAYS = 14;
+
+/** Events per day over the last 14 days, counted from the events loaded below. One hue, text summary for screen readers. */
+function EventsPerDay({ events }: { events: AuditEvent[] }) {
+  const days = Array.from({ length: CHART_DAYS }, (_, i) =>
+    istDay(new Date(Date.now() - (CHART_DAYS - 1 - i) * 864e5)),
+  );
+  const counts = new Map<string, number>(days.map((d) => [d, 0]));
+  for (const e of events) {
+    const d = istDay(e.at);
+    if (counts.has(d)) counts.set(d, (counts.get(d) ?? 0) + 1);
+  }
+  const total = [...counts.values()].reduce((a, b) => a + b, 0);
+  const max = Math.max(1, ...counts.values());
+  const summary = days
+    .filter((d) => counts.get(d))
+    .map((d) => `${counts.get(d)} on ${formatDate(d)}`)
+    .join(", ");
+  return (
+    <Card aria-label="Events per day">
+      <CardHeader
+        title="Events per day"
+        meta={
+          <span>
+            {formatDate(days[0]!)} – {formatDate(days[days.length - 1]!)} · {n(total)}{" "}
+            {total === 1 ? "event" : "events"}
+          </span>
+        }
+      />
+      <CardBody>
+        <div
+          role="img"
+          aria-label={`Events per day: ${summary || "none"}${summary ? ", none on other days" : " in the last 14 days"}`}
+          className="flex h-[132px] items-end gap-1 border-b border-ink-2"
+        >
+          {days.map((d) => {
+            const c = counts.get(d) ?? 0;
+            return (
+              <div
+                key={d}
+                title={`${formatDate(d)}: ${c} ${c === 1 ? "event" : "events"}`}
+                className="flex h-full min-w-0 flex-1 flex-col justify-end"
+              >
+                {c > 0 && (
+                  <span className="mb-0.5 text-center text-[12px] leading-4 text-ink-2">{c}</span>
+                )}
+                <div
+                  className="bar-rise mx-auto w-full max-w-[26px] rounded-t-[2px]"
+                  style={{
+                    height: c ? `${Math.max(3, (c / max) * 88)}px` : 0,
+                    background: "var(--chart-1)",
+                  }}
+                />
+              </div>
+            );
+          })}
+        </div>
+        <div aria-hidden className="mt-1.5 flex gap-1 text-[12px] leading-4 text-ink-2">
+          {days.map((d, i) => (
+            <span key={d} className="min-w-0 flex-1 text-center">
+              {i === 0 || d.endsWith("-01")
+                ? formatDate(d).replace(/ \d{4}$/, "")
+                : Number(d.slice(8))}
+            </span>
+          ))}
+        </div>
+      </CardBody>
+    </Card>
+  );
+}
 
 export function ProgramActivityLog({ ticketId }: { ticketId: string }) {
-  const [entity, setEntity] = useState<string>("all");
-  const q = useInfiniteQuery(auditFeedQuery(ticketId, entity === "all" ? null : entity));
-  const items = q.data?.pages.flatMap((p) => p.items) ?? [];
+  const [type, setType] = useState("all");
+  const [actor, setActor] = useState("");
+  const [search, setSearch] = useState("");
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const q = useInfiniteQuery(auditFeedQuery(ticketId, null));
+  const names = useNames(ticketId);
+  const items: AuditEvent[] = q.data?.pages.flatMap((p) => p.items) ?? [];
+  const actors = [...new Set(items.map((e) => e.actor_name))].sort();
+  const term = search.trim().toLowerCase();
+  const shown = items.filter(
+    (e) =>
+      (type === "all" || groupOf(e.entity) === type) &&
+      (!actor || e.actor_name === actor) &&
+      (!term ||
+        `${e.actor_name} ${humanSentence(e, names)} ${hasDetail(e) ? changeLine(e) : ""}`
+          .toLowerCase()
+          .includes(term)),
+  );
+  const count = (id: string) =>
+    id === "all" ? items.length : items.filter((e) => groupOf(e.entity) === id).length;
+  const options = TYPE_GROUPS.filter((g) => g.id !== "other" || count("other") > 0).map((g) => ({
+    id: g.id,
+    label: g.label,
+    count: count(g.id),
+  }));
+  const days = groupLog(shown, dayHeading);
+  const filtered = type !== "all" || actor || term;
   return (
-    <div className="space-y-3 page-in">
-      <div className="overflow-x-auto pb-1">
-        <Segmented
-          value={entity}
-          onChange={setEntity}
-          options={[
-            { id: "all", label: "All" },
-            ...AUDIT_ENTITIES.map((a) => ({ id: a as string, label: entityName(a) })),
-          ]}
+    <div className="space-y-4 page-in">
+      <EventsPerDay events={items} />
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="max-w-full relative overflow-x-auto">
+          <Segmented value={type} onChange={setType} options={options} />
+        </div>
+        <div className="flex-1" />
+        <Input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search events"
+          aria-label="Search events"
+          className="w-full sm:w-[220px]"
         />
+        <Select aria-label="Actor" value={actor} onChange={(e) => setActor(e.target.value)}>
+          <option value="">Everyone</option>
+          {actors.map((a) => (
+            <option key={a} value={a}>
+              {a}
+            </option>
+          ))}
+        </Select>
       </div>
-      <Card>
+
+      <Card aria-label="Activity feed">
         {q.isLoading ? (
           <div className="p-[18px]">
             <ListSkeleton rows={4} />
@@ -2506,30 +2932,95 @@ export function ProgramActivityLog({ ticketId }: { ticketId: string }) {
           <div className="p-[18px]">
             <ErrorBox error={q.error} onRetry={() => void q.refetch()} />
           </div>
-        ) : items.length === 0 ? (
-          <div className="p-[18px]">
-            <EmptyState
-              title="Nothing recorded yet"
-              hint={
-                entity === "all"
-                  ? "Changes to this program will be listed here."
-                  : "No events for this filter."
-              }
-            />
-          </div>
+        ) : shown.length === 0 ? (
+          <p className="px-[18px] py-8 text-center text-[14px] text-ink-2">
+            {filtered
+              ? "No loaded events match this filter."
+              : "Nothing recorded yet. Changes to this program will be listed here."}
+          </p>
         ) : (
-          <LogList events={items} sentence={logSentence} />
+          days.map((day) => (
+            <section key={day.day}>
+              <h3 className="border-y border-border bg-raised px-4 py-1.5 text-[13px] font-medium text-ink-2 first:border-t-0 lg:sticky lg:top-[57px] lg:z-[1]">
+                {day.label}
+              </h3>
+              <ul>
+                {day.entries.map((en) => {
+                  const first = en.events[0]!;
+                  const many = en.events.length > 1;
+                  const open = expanded[en.key];
+                  return (
+                    <li
+                      key={en.key}
+                      className="grid grid-cols-[auto_1fr_auto] items-start gap-x-3 border-b border-border px-4 py-2.5 last:border-b-0 sm:grid-cols-[64px_auto_1fr_auto]"
+                    >
+                      <time
+                        dateTime={first.at}
+                        title={`${first.at} · #${first.id}`}
+                        className="hidden pt-0.5 text-[13px] text-ink-2 sm:block"
+                      >
+                        {timeOf(first.at)}
+                      </time>
+                      <Avatar name={en.actor} className="mt-0.5" />
+                      <div className="min-w-0 text-[14px]">
+                        <span className="font-medium">{en.actor}</span>{" "}
+                        {humanSentence(first, names)}
+                        <time dateTime={first.at} className="ml-2 text-[13px] text-ink-2 sm:hidden">
+                          {timeOf(first.at)}
+                        </time>
+                        {many ? (
+                          <p className="text-[13px] text-ink-2">
+                            {en.events.length} changes ·{" "}
+                            <button
+                              type="button"
+                              aria-expanded={!!open}
+                              onClick={() => setExpanded({ ...expanded, [en.key]: !open })}
+                              className="text-primary hover:underline"
+                            >
+                              {open ? "Hide details" : "Show details"}
+                            </button>
+                          </p>
+                        ) : (
+                          hasDetail(first) && (
+                            <p className="text-[13px] text-ink-2">{changeLine(first)}</p>
+                          )
+                        )}
+                        {many && open && (
+                          <ul className="mt-1.5 space-y-1 border-l border-border pl-3 text-[13px] text-ink-2">
+                            {en.events.map((ev) => (
+                              <li key={ev.id} className="flex justify-between gap-3">
+                                <span>{changeLine(ev)}</span>
+                                <span className="shrink-0" title={`${ev.at} · #${ev.id}`}>
+                                  {timeOf(ev.at)}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                      <Chip>{chipLabel(first.entity)}</Chip>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ))
         )}
-        {q.hasNextPage && (
-          <div className="border-t border-border p-3 text-center">
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={q.isFetchingNextPage}
-              onClick={() => void q.fetchNextPage()}
-            >
-              {q.isFetchingNextPage ? "Loading…" : "Load older"}
-            </Button>
+        {(items.length > 0 || q.hasNextPage) && (
+          <div className="flex items-center justify-center gap-3 border-t border-border px-4 py-3 text-[13px] text-ink-2">
+            <span>
+              Showing {n(shown.length)} of {n(items.length)} loaded events
+            </span>
+            {q.hasNextPage && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={q.isFetchingNextPage}
+                onClick={() => void q.fetchNextPage()}
+              >
+                {q.isFetchingNextPage ? "Loading…" : "Load older"}
+              </Button>
+            )}
           </div>
         )}
       </Card>

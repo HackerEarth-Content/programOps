@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bar as RBar,
@@ -40,18 +40,19 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  Bar,
   Card,
   CardBody,
   CardHeader,
   Chip,
   EmptyState,
-  Kpi,
-  MonoLabel,
+  KpiCell,
+  KpiStrip,
+  Legend,
+  Notice,
   Num,
+  SegBar,
   Segmented,
   Skeleton,
-  type Tone,
 } from "@/components/kit";
 import {
   apiFetch,
@@ -134,6 +135,13 @@ function windowStats(est: RegistrationEstimate, nowMs = Date.now()) {
   return { length, elapsed, pace: est.target ? Math.round(est.target / length) : null };
 }
 
+/** Small grey caption (replaces the old uppercase mono label). */
+const MonoLabel = ({ className, ...rest }: ComponentProps<"span">) => (
+  <span className={cn("text-[12px] font-medium text-ink-3", className)} {...rest} />
+);
+
+const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
+
 type SubView = "pace" | "sources" | "relevant";
 
 // ---- the tab ------------------------------------------------------------------------------
@@ -177,11 +185,7 @@ export function ProgramRegistrationsTab({
     return (
       <div className="space-y-4">
         <Skeleton className="h-8 w-96 max-w-full" />
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {[0, 1, 2, 3].map((i) => (
-            <Skeleton key={i} className="h-[104px]" />
-          ))}
-        </div>
+        <Skeleton className="h-[104px]" />
         <Skeleton className="h-[420px]" />
       </div>
     );
@@ -214,59 +218,67 @@ export function ProgramRegistrationsTab({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center gap-2">
         <Segmented<SubView>
           value={view}
           onChange={setView}
           options={[
-            { id: "pace", label: "Daily Pace & Velocity" },
-            { id: "sources", label: "Sources & Attribution" },
-            { id: "relevant", label: "Relevant Registrations (CSM)" },
+            { id: "pace", label: "Daily pace & velocity" },
+            { id: "sources", label: "Sources & attribution" },
+            { id: "relevant", label: "Relevant registrations (CSM)" },
           ]}
-          className="max-w-full overflow-x-auto"
+          className="max-w-full relative overflow-x-auto"
         />
-        <div className="flex flex-wrap items-center gap-2">
-          {redashEnabled && slug && (
-            <Chip tone={data.redash.auto ? "info" : "neutral"}>
-              Redash #{slug} · synced {timeAgo(status.data?.redash_registrations_synced_at)}
-            </Chip>
-          )}
-          {redashEnabled && canLink && slug && (
-            <Button size="sm" disabled={sync.isPending} onClick={() => sync.mutate()}>
-              <RefreshCw className={cn(sync.isPending && "animate-spin")} />
-              {sync.isPending ? "Syncing…" : "Sync Redash now"}
-            </Button>
-          )}
+        <div className="flex-1" />
+        {redashEnabled && slug && (
+          <span className="inline-flex items-center gap-1.5 text-[13px] text-ink-2">
+            <span
+              aria-hidden
+              className={cn(
+                "size-1.5 rounded-full",
+                status.data?.redash_registrations_synced_at ? "bg-ok" : "bg-warn",
+              )}
+            />
+            Redash #{slug} ·{" "}
+            {status.data?.redash_registrations_synced_at
+              ? `synced ${timeAgo(status.data.redash_registrations_synced_at)}`
+              : "never synced"}
+            {data.redash.auto ? " · auto" : ""}
+          </span>
+        )}
+        {redashEnabled && canLink && slug && (
           <Button
             size="sm"
             variant="outline"
-            onClick={exportEntries}
-            disabled={!data.entries.length}
+            disabled={sync.isPending}
+            onClick={() => sync.mutate()}
           >
-            <Download />
-            Export CSV
+            <RefreshCw className={cn(sync.isPending && "animate-spin")} />
+            {sync.isPending ? "Syncing…" : "Sync Redash now"}
           </Button>
-          {canManage && (
-            <Button size="sm" variant="outline" onClick={() => setEditTargets(true)}>
-              <Pencil />
-              Edit target / dates
-            </Button>
-          )}
-        </div>
+        )}
+        <Button size="sm" variant="outline" onClick={exportEntries} disabled={!data.entries.length}>
+          <Download />
+          Export CSV
+        </Button>
+        {canManage && (
+          <Button size="sm" variant="outline" onClick={() => setEditTargets(true)}>
+            <Pencil />
+            Edit target and dates
+          </Button>
+        )}
       </div>
       {notice && (
-        <p
-          className={cn("t-body-sm", notice.ok ? "text-status-good" : "text-status-critical")}
-          role="status"
-        >
+        <p className={cn("text-[13px]", notice.ok ? "text-ok" : "text-danger")} role="status">
           {notice.text}
         </p>
       )}
 
-      <KpiStrip data={data} sources={sources.data} />
-      <TimelineLine data={data} />
+      <RegKpis data={data} sources={sources.data} />
 
-      {view === "pace" && <PacePanel ticketId={ticketId} data={data} isHiring={isHiring} />}
+      {view === "pace" && (
+        <PacePanel ticketId={ticketId} data={data} isHiring={isHiring} sources={sources.data} />
+      )}
       {view === "sources" && <SourcesPanel ticketId={ticketId} />}
       {view === "relevant" && <RelevantPanel ticketId={ticketId} data={data} />}
 
@@ -280,6 +292,7 @@ export function ProgramRegistrationsTab({
           canLink={canLink}
         />
       )}
+
       {editTargets && (
         <TargetsDialog
           ticketId={ticketId}
@@ -291,9 +304,9 @@ export function ProgramRegistrationsTab({
   );
 }
 
-// ---- KPI strip -----------------------------------------------------------------------------
+// ---- KPI strip (the four numbers) -----------------------------------------------------------------------------
 
-function KpiStrip({ data, sources }: { data: RegistrationsView; sources: Sources | undefined }) {
+function RegKpis({ data, sources }: { data: RegistrationsView; sources: Sources | undefined }) {
   const est = data.estimate;
   const raw = data.raw_total;
   const target = est.target;
@@ -326,106 +339,100 @@ function KpiStrip({ data, sources }: { data: RegistrationsView; sources: Sources
       : null;
   const slip =
     projected && est.end ? Math.round((isoMs(est.end) - isoMs(projected)) / dayMs) : null;
-  const paceTone: Tone | null = expected ? (raw >= expected ? "good" : "warning") : null;
+  const paceTone = expected ? (raw >= expected ? ("good" as const) : ("warning" as const)) : null;
 
   const report = sources?.report;
   const campaignCount = report?.lines.filter((l) => l.bucket === "activity").length ?? 0;
 
+  const ended = !!est.end && est.end < today;
+  const latestLine =
+    latest != null ? `+${latest.toLocaleString()} on ${fmt(latestDate)}` : "No days yet";
+
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      <Kpi
-        index={0}
+    <KpiStrip label="Registration numbers">
+      <KpiCell
         label="Total registrations"
         value={<Num value={raw} />}
         unit={target ? `/ ${target.toLocaleString()} target` : "no target set"}
-        sub={
-          <div className="space-y-1.5">
-            {target ? (
-              <>
-                <Bar pct={pctTarget ?? 0} />
-                <div className="flex justify-between">
-                  <span>
-                    {latest != null
-                      ? `+${latest.toLocaleString()} on ${fmt(latestDate)}`
-                      : "No days yet"}
-                  </span>
-                  <span>{pctTarget}% of target</span>
-                </div>
-              </>
-            ) : (
-              <span>
-                {latest != null
-                  ? `+${latest.toLocaleString()} on ${fmt(latestDate)}`
-                  : "No days yet"}
-              </span>
-            )}
-          </div>
-        }
+        pct={target ? Math.min(100, pctTarget ?? 0) : undefined}
+        bar={target && raw >= target ? "ok" : "accent"}
+        sub={target ? `${latestLine} · ${pctTarget}% of target` : latestLine}
       />
-      <Kpi
-        index={1}
+      <KpiCell
         label="Relevant registrations"
-        tone="indigo"
         value={<Num value={data.relevant_total} />}
         unit={raw ? `${Math.round((data.relevant_total / raw) * 1000) / 10}% of raw` : undefined}
-        sub="CSM-entered. Kept apart, never summed into the raw count."
+        sub="CSM-entered, kept apart and never summed into the raw count."
       />
-      <Kpi
-        index={2}
-        label="Runway & pacing"
+      <KpiCell
+        label="Runway and pacing"
         value={
-          daysLeft != null ? (
-            <Num value={daysLeft} />
-          ) : rate ? (
-            <Num value={Math.round(rate)} />
-          ) : (
-            "—"
-          )
-        }
-        unit={
-          daysLeft != null
-            ? `days left${est.end ? ` · ends ${fmt(est.end)}` : ""}`
-            : rate
-              ? "/ day average"
-              : undefined
-        }
-        chip={
-          paceTone && (
-            <Chip tone={paceTone}>{paceTone === "good" ? "Ahead of pace" : "Behind pace"}</Chip>
-          )
+          <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            {ended && est.end ? (
+              `Closed ${fmt(est.end)}`
+            ) : daysLeft != null ? (
+              <>
+                <Num value={daysLeft} />
+                <span className="text-[13px] font-normal text-ink-2">
+                  days left{est.end ? ` · ends ${fmt(est.end)}` : ""}
+                </span>
+              </>
+            ) : rate ? (
+              <>
+                <Num value={Math.round(rate)} />
+                <span className="text-[13px] font-normal text-ink-2">/ day average</span>
+              </>
+            ) : (
+              <span className="text-ink-3">—</span>
+            )}
+            {paceTone && (
+              <Chip tone={paceTone}>{paceTone === "good" ? "Ahead of pace" : "Behind pace"}</Chip>
+            )}
+          </span>
         }
         sub={
           daysLeft == null && !rate ? (
             "Needs a campaign window or some daily counts."
           ) : (
-            <div className="space-y-0.5">
-              {required != null && <div>Required: {required.toLocaleString()} / day</div>}
-              {needed === 0 && <div>Target reached</div>}
+            <>
+              {needed === 0 && <span className="block">Target reached.</span>}
+              {required != null && !ended && (
+                <span className="block">Required: {required.toLocaleString()} / day</span>
+              )}
               {projected && needed !== 0 && (
-                <div>
+                <span className="block">
                   Projected finish: {fmt(projected)}
                   {slip != null &&
                     slip !== 0 &&
                     ` (${Math.abs(slip)}d ${slip > 0 ? "early" : "late"})`}
-                </div>
+                </span>
               )}
-              {expected != null && <div>Expected by today: ~{expected.toLocaleString()}</div>}
-            </div>
+              {expected != null && (
+                <span className="block">
+                  Expected by {ended ? "the close" : "today"}: about {expected.toLocaleString()}
+                </span>
+              )}
+            </>
           )
         }
       />
-      <Kpi
-        index={3}
+      <KpiCell
         label="Attribution snapshot"
-        value={report ? <Num value={report.organic_pct} decimals={1} /> : "—"}
+        value={
+          report ? (
+            <Num value={report.organic_pct} decimals={1} />
+          ) : (
+            <span className="text-ink-3">—</span>
+          )
+        }
         unit={report ? "% organic" : undefined}
         sub={
           report
-            ? `${campaignCount} campaign ${campaignCount === 1 ? "source" : "sources"} · fetched ${timeAgo(sources?.fetched_at)}`
+            ? `${plural(campaignCount, "campaign source")} · fetched ${timeAgo(sources?.fetched_at)}`
             : "No attribution snapshot yet."
         }
       />
-    </div>
+    </KpiStrip>
   );
 }
 
@@ -440,7 +447,7 @@ function TimelineLine({ data }: { data: RegistrationsView }) {
       : null;
   if (!est.start && !est.target && !weeks)
     return (
-      <p className="t-body-sm text-muted-foreground">
+      <p className="text-[13px] text-ink-3">
         No registration timeline yet: the SOW states no window or target. Set one with Edit target /
         dates.
       </p>
@@ -452,7 +459,7 @@ function TimelineLine({ data }: { data: RegistrationsView }) {
         ? "set by the CSM"
         : est.start_source;
   return (
-    <p className="t-body-sm text-secondary-foreground">
+    <p className="text-[13px] text-ink-2">
       <span className="font-medium">Estimated timeline.</span>{" "}
       {est.start ? (
         <>
@@ -468,7 +475,7 @@ function TimelineLine({ data }: { data: RegistrationsView }) {
               </span>
             </>
           )}{" "}
-          <span className="text-muted-foreground">
+          <span className="text-ink-3">
             (start from {source}
             {!est.end_is_actual && est.end ? ", end estimated" : ""})
           </span>
@@ -476,7 +483,7 @@ function TimelineLine({ data }: { data: RegistrationsView }) {
       ) : (
         "Start date unknown: link the HackerEarth event or add the first day's count to anchor it."
       )}
-      {weeks && <span className="text-muted-foreground"> · SOW: {weeks} window</span>}
+      {weeks && <span className="text-ink-3"> · SOW: {weeks} window</span>}
     </p>
   );
 }
@@ -492,14 +499,30 @@ type DayRow = {
   live: Activity[];
 };
 
+// Round axis ticks: 4-5 steps of 1/2/5 x 10^n up to the first step at or above the max.
+function niceTicks(max: number): number[] {
+  if (!(max > 0)) return [0, 1];
+  const raw = max / 4;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const step = ([1, 2, 5, 10].find((m) => m * mag >= raw) ?? 10) * mag;
+  const out: number[] = [];
+  for (let v = 0; v < max + step; v += step) {
+    out.push(v);
+    if (v >= max) break;
+  }
+  return out;
+}
+
 function PacePanel({
   ticketId,
   data,
   isHiring,
+  sources,
 }: {
   ticketId: string;
   data: RegistrationsView;
   isHiring: boolean;
+  sources: Sources | undefined;
 }) {
   const activities = useQuery(activitiesQuery(ticketId));
   const docs = useQuery(programDocumentsQueryOptions(ticketId));
@@ -549,185 +572,287 @@ function PacePanel({
 
   const goLives = rows.filter((r) => r.live.length);
   const hasPace = rows.some((r) => r.pace != null);
+  const lastCum = [...rows].reverse().find((r) => r.cum != null);
+  const lastPace = [...rows].reverse().find((r) => r.pace != null);
+  const maxY = Math.max(0, ...rows.map((r) => Math.max(r.cum ?? 0, r.pace ?? 0, r.daily)));
+  const ticks = niceTicks(maxY);
+  const summary = lastCum
+    ? `Cumulative registrations rise from 0 to ${lastCum.cum!.toLocaleString()} on ${fmt(lastCum.date)}${
+        lastPace
+          ? `, against a target pace line that ends at ${lastPace.pace!.toLocaleString()}`
+          : ""
+      }.`
+    : "No registrations yet.";
+  const axis = { fontSize: 12, fill: "var(--color-ink-2)", fontFamily: "inherit" };
 
+  return (
+    <>
+      <Card>
+        <CardHeader
+          title="Registration velocity vs target pace"
+          meta={
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setAsTable((v) => !v)}
+              aria-pressed={asTable}
+            >
+              {asTable ? <TrendingUp /> : <Table2 />}
+              {asTable ? "View as chart" : "View as table"}
+            </Button>
+          }
+        />
+        <CardBody className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <ul className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-ink-2">
+              <Swatch mark={<span className="h-0.5 w-4 bg-primary" />}>Actual cumulative</Swatch>
+              <Swatch mark={<span className="size-2.5 rounded-[2px] bg-ink-2 opacity-35" />}>
+                Daily volume
+              </Swatch>
+              {hasPace && (
+                <Swatch mark={<span className="w-4 border-t border-dashed border-ink-2" />}>
+                  Target pace
+                </Swatch>
+              )}
+              {goLives.length > 0 && (
+                <Swatch mark={<span className="h-3 w-0 border-l border-dashed border-chart-2" />}>
+                  Marketing go-live
+                </Swatch>
+              )}
+            </ul>
+            {isHiring && data.roles.length > 0 && (
+              <Segmented
+                value={role}
+                onChange={setRole}
+                options={[
+                  { id: "all", label: "All roles" },
+                  ...data.roles.map((r) => ({ id: r, label: r })),
+                ]}
+                className="max-w-full relative overflow-x-auto"
+              />
+            )}
+          </div>
+
+          {!rows.length ? (
+            <EmptyState
+              title="No registrations yet"
+              hint="Daily counts appear here once Redash syncs or someone adds the first day."
+            />
+          ) : asTable ? (
+            <div className="max-h-[420px] overflow-auto rounded-lg border border-border">
+              <table className="w-full min-w-[420px]">
+                <thead className="sticky top-0 bg-card">
+                  <tr className="border-b border-border">
+                    <th className="t-th p-2.5 text-left">Date</th>
+                    <th className="t-th p-2.5 text-right">Daily</th>
+                    <th className="t-th p-2.5 text-right">Cumulative</th>
+                    {hasPace && <th className="t-th p-2.5 text-right">Target pace</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.date} className="border-b border-border last:border-0">
+                      <td className="p-2.5 text-[13px]">{fmtLong(r.date)}</td>
+                      <td className="p-2.5 text-right text-[13px]">{r.daily.toLocaleString()}</td>
+                      <td className="p-2.5 text-right text-[13px]">
+                        {r.cum?.toLocaleString() ?? <span className="text-ink-3">—</span>}
+                      </td>
+                      {hasPace && (
+                        <td className="p-2.5 text-right text-[13px]">
+                          {r.pace?.toLocaleString() ?? <span className="text-ink-3">—</span>}
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="h-[300px]" role="img" aria-label={summary}>
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={rows} margin={{ top: 24, right: 16, left: 0, bottom: 0 }}>
+                  <CartesianGrid
+                    vertical={false}
+                    stroke="var(--color-border)"
+                    strokeDasharray="3 4"
+                  />
+                  <XAxis
+                    dataKey="date"
+                    tickFormatter={fmt}
+                    minTickGap={32}
+                    tick={axis}
+                    axisLine={{ stroke: "var(--color-ink-2)" }}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    ticks={ticks}
+                    domain={[0, ticks[ticks.length - 1]!]}
+                    tickFormatter={compact}
+                    tick={axis}
+                    axisLine={false}
+                    tickLine={false}
+                    width={44}
+                  />
+                  <Tooltip content={<PaceTip />} cursor={{ stroke: "var(--color-border)" }} />
+                  {goLives.map((r) => (
+                    <ReferenceLine
+                      key={r.date}
+                      x={r.date}
+                      stroke="var(--color-chart-2)"
+                      strokeDasharray="4 3"
+                    />
+                  ))}
+                  <RBar
+                    dataKey="daily"
+                    fill="var(--color-ink-2)"
+                    fillOpacity={0.35}
+                    maxBarSize={20}
+                    isAnimationActive={motionOk()}
+                    animationDuration={500}
+                    animationEasing="ease-out"
+                  />
+                  {hasPace && (
+                    <Line
+                      dataKey="pace"
+                      type="linear"
+                      stroke="var(--color-ink-2)"
+                      strokeDasharray="4 4"
+                      strokeWidth={1}
+                      activeDot={false}
+                      isAnimationActive={motionOk()}
+                      animationDuration={500}
+                      animationEasing="ease-out"
+                      dot={(p: { index?: number; cx?: number; cy?: number }) => (
+                        <g key={`p${p.index}`}>
+                          {p.index === rows.indexOf(lastPace!) && p.cx != null && p.cy != null && (
+                            <text
+                              x={p.cx - 6}
+                              y={p.cy + 16}
+                              textAnchor="end"
+                              fontSize={12}
+                              fill="var(--color-ink-2)"
+                            >
+                              Target {lastPace!.pace!.toLocaleString()}
+                            </text>
+                          )}
+                        </g>
+                      )}
+                    />
+                  )}
+                  <Line
+                    dataKey="cum"
+                    type="linear"
+                    stroke="var(--color-chart-1)"
+                    strokeWidth={2}
+                    activeDot={{ r: 4 }}
+                    isAnimationActive={motionOk()}
+                    animationDuration={500}
+                    animationEasing="ease-out"
+                    dot={(p: { index?: number; cx?: number; cy?: number }) => (
+                      <g key={`c${p.index}`}>
+                        {p.index === rows.indexOf(lastCum!) && p.cx != null && p.cy != null && (
+                          <>
+                            <circle cx={p.cx} cy={p.cy} r={4} fill="var(--color-chart-1)" />
+                            <text
+                              x={p.cx - 8}
+                              y={p.cy - 10}
+                              textAnchor="end"
+                              fontSize={12}
+                              fontWeight={500}
+                              fill="var(--color-foreground)"
+                            >
+                              {lastCum!.cum!.toLocaleString()} on {fmt(lastCum!.date)}
+                            </text>
+                          </>
+                        )}
+                      </g>
+                    )}
+                  />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {goLives.length > 0 && !asTable && (
+            <ul className="flex flex-wrap gap-1.5">
+              {goLives.flatMap((r) =>
+                r.live.map((a) => (
+                  <li key={a.id}>
+                    <Chip tone="good" title={a.channel}>
+                      {fmt(r.date)}: {a.title}
+                    </Chip>
+                  </li>
+                )),
+              )}
+            </ul>
+          )}
+          {activities.isError && (
+            <p className="text-[13px] text-ink-3">
+              Go-live markers unavailable: {errMsg(activities.error)}
+            </p>
+          )}
+          <TimelineLine data={data} />
+        </CardBody>
+      </Card>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <SourceSplit sources={sources} />
+        <WindowCard est={est} />
+      </div>
+    </>
+  );
+}
+
+function Swatch({ mark, children }: { mark: ReactNode; children: ReactNode }) {
+  return (
+    <li className="inline-flex items-center gap-1.5">
+      <span aria-hidden className="inline-flex items-center">
+        {mark}
+      </span>
+      {children}
+    </li>
+  );
+}
+
+/** Organic vs everything else, from the existing attribution snapshot. */
+function SourceSplit({ sources }: { sources: Sources | undefined }) {
+  const report = sources?.report;
+  const organic = report ? Math.round(report.organic_pct * 10) / 10 : 0;
+  const other = Math.round((100 - organic) * 10) / 10;
+  const campaigns = report?.lines.filter((l) => l.bucket === "activity").length ?? 0;
   return (
     <Card>
       <CardHeader
-        title="Registration velocity vs target pace"
+        title="Where registrations came from"
         meta={
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => setAsTable((v) => !v)}
-            aria-pressed={asTable}
-          >
-            {asTable ? <TrendingUp /> : <Table2 />}
-            {asTable ? "View as chart" : "View as table"}
-          </Button>
+          sources?.fetched_at ? (
+            <span className="text-[13px]">Attribution fetched {timeAgo(sources.fetched_at)}</span>
+          ) : undefined
         }
       />
-      <CardBody className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 t-body-sm text-secondary-foreground">
-            <Legend swatch={<span className="h-0.5 w-4 bg-accent-fill" />}>
-              Actual cumulative
-            </Legend>
-            <Legend swatch={<span className="size-2.5 rounded-sm bg-chart-5/40" />}>
-              Daily volume
-            </Legend>
-            {hasPace && (
-              <Legend
-                swatch={<span className="w-4 border-t border-dashed border-muted-foreground" />}
-              >
-                Target pace
-              </Legend>
-            )}
-            {goLives.length > 0 && (
-              <Legend swatch={<span className="h-3 w-0 border-l border-dashed border-chart-2" />}>
-                Marketing go-live
-              </Legend>
-            )}
-          </div>
-          {isHiring && data.roles.length > 0 && (
-            <Segmented
-              value={role}
-              onChange={setRole}
-              options={[
-                { id: "all", label: "All roles" },
-                ...data.roles.map((r) => ({ id: r, label: r })),
+      <CardBody>
+        {report ? (
+          <>
+            <SegBar
+              label={`${organic}% organic, ${other}% other`}
+              parts={[
+                { label: `Organic ${organic}%`, value: organic },
+                { label: other >= 8 ? `${other}%` : "", value: other, muted: true },
               ]}
-              className="max-w-full overflow-x-auto"
             />
-          )}
-        </div>
-
-        {!rows.length ? (
-          <EmptyState
-            title="No registrations yet"
-            hint="Daily counts appear here once Redash syncs or someone adds the first day."
-          />
-        ) : asTable ? (
-          <div className="max-h-[420px] overflow-auto rounded-lg border border-border">
-            <table className="w-full min-w-[420px]">
-              <thead className="sticky top-0 bg-card">
-                <tr className="border-b border-border">
-                  <th className="t-th p-2.5 text-left">Date</th>
-                  <th className="t-th p-2.5 text-right">Daily</th>
-                  <th className="t-th p-2.5 text-right">Cumulative</th>
-                  {hasPace && <th className="t-th p-2.5 text-right">Target pace</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.date} className="border-b border-border last:border-0">
-                    <td className="t-data-sm p-2.5">{fmtLong(r.date)}</td>
-                    <td className="t-data-sm p-2.5 text-right">{r.daily.toLocaleString()}</td>
-                    <td className="t-data-sm p-2.5 text-right">{r.cum?.toLocaleString() ?? "—"}</td>
-                    {hasPace && (
-                      <td className="t-data-sm p-2.5 text-right">
-                        {r.pace?.toLocaleString() ?? "—"}
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+            <div className="mt-2.5">
+              <Legend
+                items={[
+                  { label: `Organic ${organic}%` },
+                  { label: `Other ${other}%`, muted: true },
+                  { label: plural(campaigns, "campaign source"), muted: true },
+                ]}
+              />
+            </div>
+          </>
         ) : (
-          <div
-            className="h-[340px]"
-            role="img"
-            aria-label="Cumulative and daily registrations against target pace"
-          >
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={rows} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
-                <CartesianGrid
-                  vertical={false}
-                  stroke="var(--color-border)"
-                  strokeDasharray="3 3"
-                />
-                <XAxis
-                  dataKey="date"
-                  tickFormatter={fmt}
-                  minTickGap={32}
-                  tick={{
-                    fontSize: 11,
-                    fill: "var(--color-muted-foreground)",
-                    fontFamily: "inherit",
-                  }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis
-                  tickFormatter={compact}
-                  domain={[0, (m: number) => Math.ceil(m * 1.08)]}
-                  tick={{
-                    fontSize: 11,
-                    fill: "var(--color-muted-foreground)",
-                    fontFamily: "inherit",
-                  }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <Tooltip content={<PaceTip />} cursor={{ stroke: "var(--color-border)" }} />
-                {goLives.map((r) => (
-                  <ReferenceLine
-                    key={r.date}
-                    x={r.date}
-                    stroke="var(--color-chart-2)"
-                    strokeDasharray="4 3"
-                  />
-                ))}
-                <RBar
-                  dataKey="daily"
-                  fill="var(--color-chart-5)"
-                  fillOpacity={0.35}
-                  maxBarSize={20}
-                  radius={[3, 3, 0, 0]}
-                  animationDuration={600}
-                />
-                {hasPace && (
-                  <Line
-                    dataKey="pace"
-                    type="linear"
-                    stroke="var(--color-muted-foreground)"
-                    strokeDasharray="5 4"
-                    strokeWidth={1.5}
-                    dot={false}
-                    activeDot={false}
-                    isAnimationActive={false}
-                  />
-                )}
-                <Line
-                  dataKey="cum"
-                  type="monotone"
-                  stroke="var(--color-primary)"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4 }}
-                  animationDuration={900}
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-
-        {goLives.length > 0 && !asTable && (
-          <ul className="flex flex-wrap gap-1.5">
-            {goLives.flatMap((r) =>
-              r.live.map((a) => (
-                <li key={a.id}>
-                  <Chip tone="good" title={a.channel}>
-                    {fmt(r.date)}: {a.title}
-                  </Chip>
-                </li>
-              )),
-            )}
-          </ul>
-        )}
-        {activities.isError && (
-          <p className="t-body-sm text-muted-foreground">
-            Go-live markers unavailable: {errMsg(activities.error)}
+          <p className="text-[13px] text-ink-2">
+            No attribution snapshot yet. Open Sources &amp; attribution to refresh it.
           </p>
         )}
       </CardBody>
@@ -735,12 +860,74 @@ function PacePanel({
   );
 }
 
-function Legend({ swatch, children }: { swatch: ReactNode; children: ReactNode }) {
+/** Bar from open to close, days open vs the SOW window. */
+function WindowCard({ est }: { est: RegistrationEstimate }) {
+  const { length, elapsed } = windowStats(est);
+  const today = todayKey();
+  const ended = !!est.end && est.end < today;
+  const notStarted = !!est.start && est.start > today;
+  const pct = length && elapsed != null ? (elapsed / length) * 100 : 0;
+  const days = (a: string, b: string) => Math.abs(Math.round((isoMs(a) - isoMs(b)) / dayMs));
+  const meta =
+    !est.start || !est.end
+      ? undefined
+      : ended
+        ? `Closed ${plural(days(today, est.end), "day")} ago`
+        : notStarted
+          ? `Opens in ${plural(days(est.start, today), "day")}`
+          : `${plural(days(est.end, today), "day")} left`;
+  let sow: string | null = null;
+  if (length && est.weeks_min && est.weeks_max) {
+    const lo = est.weeks_min * 7;
+    const hi = est.weeks_max * 7;
+    const w =
+      est.weeks_min === est.weeks_max
+        ? `${est.weeks_min}-week`
+        : `${est.weeks_min}–${est.weeks_max} week`;
+    sow = `${length >= lo && length <= hi ? "inside" : length > hi ? "longer than" : "shorter than"} the SOW's ${w} window`;
+  }
   return (
-    <span className="inline-flex items-center gap-1.5">
-      {swatch}
-      {children}
-    </span>
+    <Card>
+      <CardHeader
+        title="Registration window"
+        meta={meta && <span className="text-[13px]">{meta}</span>}
+      />
+      <CardBody>
+        {est.start && est.end && length ? (
+          <>
+            <div
+              className="mb-2 h-2 overflow-hidden rounded-full bg-border"
+              role="progressbar"
+              aria-label="Registration window elapsed"
+              aria-valuenow={Math.round(Math.min(100, pct))}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <div
+                className="h-full rounded-full bg-primary"
+                style={{ width: `${Math.min(100, pct)}%` }}
+              />
+            </div>
+            <div className="flex justify-between text-[13px] text-ink-2">
+              <span>Opened {fmt(est.start)}</span>
+              <span>
+                {est.end_is_actual || ended ? "Closed" : "Expected close"} {fmt(est.end)}
+              </span>
+            </div>
+            <p className="mt-2 text-[13px] text-ink-2">
+              {ended || notStarted
+                ? `Open for ${plural(length, "day")}`
+                : `Day ${elapsed} of ${length}`}
+              {sow ? `, ${sow}` : ""}.
+            </p>
+          </>
+        ) : (
+          <p className="text-[13px] text-ink-2">
+            No start and end dates yet. Set them with Edit target and dates.
+          </p>
+        )}
+      </CardBody>
+    </Card>
   );
 }
 
@@ -754,20 +941,20 @@ function PaceTip({ active, payload }: { active?: boolean; payload?: Array<{ payl
       <p className="mt-1 t-data-sm">+{d.daily.toLocaleString()} registrations</p>
       {d.cum != null && <p className="t-data-sm">Cumulative: {d.cum.toLocaleString()}</p>}
       {ahead != null && (
-        <p className={cn("t-data-sm", ahead >= 0 ? "text-status-good" : "text-status-warning")}>
+        <p className={cn("t-data-sm", ahead >= 0 ? "text-ok" : "text-warn")}>
           {ahead >= 0 ? "+" : ""}
           {ahead.toLocaleString()} {ahead >= 0 ? "ahead of" : "behind"} pace
         </p>
       )}
       {(d.live.length > 0 || d.acts.length > 0) && (
-        <div className="mt-2 space-y-0.5 border-t border-border pt-2 t-body-sm">
+        <div className="mt-2 space-y-0.5 border-t border-border pt-2 text-[13px]">
           {d.live.map((a) => (
             <p key={`l${a.id}`}>
-              <span className="text-status-good">Went live:</span> {a.title}
+              <span className="text-ok">Went live:</span> {a.title}
             </p>
           ))}
           {d.acts.map((a) => (
-            <p key={a.activity} className="text-muted-foreground">
+            <p key={a.activity} className="text-ink-3">
               Planned: {a.activity} · {a.channel}
             </p>
           ))}
@@ -778,8 +965,6 @@ function PaceTip({ active, payload }: { active?: boolean; payload?: Array<{ payl
 }
 
 // ---- Sources & attribution -------------------------------------------------------------
-
-const ACCENTS = ["chart-1", "chart-5", "chart-6", "chart-2", "chart-3", "chart-7", "chart-8"];
 
 function SourcesPanel({ ticketId }: { ticketId: string }) {
   const qc = useQueryClient();
@@ -814,15 +999,14 @@ function SourcesPanel({ ticketId }: { ticketId: string }) {
         }
       />
       <CardBody className="space-y-3">
-        <p className="t-body-sm text-secondary-foreground">
+        <p className="text-[13px] text-ink-2">
           {s?.fetched_at
             ? `Snapshot fetched ${timeAgo(s.fetched_at)}${s.stale ? " (stale)" : ""}. `
             : ""}
-          Organic and unmatched sources stay neutral grey; campaign UTMs get a colour and a lift
-          figure.
+          Organic and unmatched sources stay grey; campaign UTMs are blue and get a lift figure.
         </p>
         {(s?.error || refresh.isError) && (
-          <p className="t-body-sm text-status-critical" role="alert">
+          <p className="text-[13px] text-danger" role="alert">
             {refresh.isError ? errMsg(refresh.error) : `Last refresh failed: ${s?.error}`}
             {s?.report ? " Showing the last good snapshot." : ""}
           </p>
@@ -850,7 +1034,7 @@ function SourcesPanel({ ticketId }: { ticketId: string }) {
           />
         ) : (
           <>
-            <div className="overflow-x-auto">
+            <div className="relative overflow-x-auto">
               <table className="w-full min-w-[560px]">
                 <thead>
                   <tr className="border-b border-border">
@@ -860,7 +1044,7 @@ function SourcesPanel({ ticketId }: { ticketId: string }) {
                     <th className="t-th p-2.5 text-right">Lift</th>
                   </tr>
                 </thead>
-                <tbody className="reveal">
+                <tbody>
                   {s.report.lines.map((l, i) => (
                     <SourceRow
                       key={`${l.source_medium}|${l.campaign}`}
@@ -872,7 +1056,7 @@ function SourcesPanel({ ticketId }: { ticketId: string }) {
                 </tbody>
               </table>
             </div>
-            <div className="flex flex-wrap items-start justify-between gap-2 t-body-sm text-muted-foreground">
+            <div className="flex flex-wrap items-start justify-between gap-2 text-[13px] text-ink-3">
               <p className="max-w-xl">
                 Lift compares registrations per day before and after a go-live. It is concurrent,
                 not causal: other channels run at the same time.
@@ -891,7 +1075,6 @@ function SourcesPanel({ ticketId }: { ticketId: string }) {
 
 function SourceRow({ line, i, lift }: { line: SourceLine; i: number; lift: Lift | undefined }) {
   const neutral = line.bucket !== "activity";
-  const accent = ACCENTS[i % ACCENTS.length]!;
   const title =
     line.bucket === "activity"
       ? (line.activity_code ?? line.campaign)
@@ -906,26 +1089,24 @@ function SourceRow({ line, i, lift }: { line: SourceLine; i: number; lift: Lift 
             style={{
               background: neutral
                 ? line.bucket === "unmatched"
-                  ? "var(--color-muted-foreground)"
-                  : "var(--color-status-neutral)"
-                : `var(--color-${accent})`,
+                  ? "var(--color-ink-3)"
+                  : "var(--color-chart-4)"
+                : "var(--color-chart-1)",
             }}
           />
           <div className="min-w-0">
-            <p className={cn("t-data-md truncate", neutral && "text-secondary-foreground")}>
+            <p className={cn("truncate text-[14px] font-medium", neutral && "text-ink-2")}>
               {title}
             </p>
-            <p className="t-data-sm truncate text-muted-foreground">{line.source_medium}</p>
+            <p className="truncate font-mono text-[12px] text-ink-3">{line.source_medium}</p>
           </div>
         </div>
       </td>
-      <td className="t-data-md p-2.5 text-right">{line.users.toLocaleString()}</td>
-      <td className="t-data-sm p-2.5 text-right text-secondary-foreground">
-        {line.share_pct.toFixed(1)}%
-      </td>
+      <td className="p-2.5 text-right text-[14px]">{line.users.toLocaleString()}</td>
+      <td className="p-2.5 text-right text-[13px] text-ink-2">{line.share_pct.toFixed(1)}%</td>
       <td className="p-2.5 text-right">
         {neutral ? (
-          <span className="t-data-sm text-muted-foreground">
+          <span className="text-[13px] text-ink-3">
             {line.bucket === "unmatched" ? "N/A" : "Baseline"}
           </span>
         ) : lift?.lift_pct != null ? (
@@ -937,7 +1118,7 @@ function SourceRow({ line, i, lift }: { line: SourceLine; i: number; lift: Lift 
             {Math.round(lift.lift_pct)}% lift*
           </Chip>
         ) : (
-          <span className="t-data-sm text-muted-foreground">N/A</span>
+          <span className="text-[13px] text-ink-3">N/A</span>
         )}
       </td>
     </tr>
@@ -990,9 +1171,9 @@ function RelevantPanel({ ticketId, data }: { ticketId: string; data: Registratio
 
   return (
     <Card>
-      <CardHeader title="Relevant registrations" meta={<Chip tone="indigo">CSM managed</Chip>} />
+      <CardHeader title="Relevant registrations" meta={<Chip>CSM managed</Chip>} />
       <CardBody className="space-y-4">
-        <p className="t-body-sm text-secondary-foreground">
+        <p className="text-[13px] text-ink-2">
           Relevant counts are the CSM's own pre-screened numbers. They are stored apart from the
           Redash raw total ({data.raw_total.toLocaleString()}) and never added to it. Entries are
           append-only; a correction supersedes the old entry.
@@ -1000,7 +1181,7 @@ function RelevantPanel({ ticketId, data }: { ticketId: string; data: Registratio
 
         {canEnter && (
           <form
-            className="grid gap-3 rounded-lg bg-secondary/50 p-3 sm:grid-cols-2"
+            className="grid gap-3 rounded-lg border border-border p-3 sm:grid-cols-2"
             onSubmit={(e) => {
               e.preventDefault();
               if (validCount) add.mutate();
@@ -1021,7 +1202,6 @@ function RelevantPanel({ ticketId, data }: { ticketId: string; data: Registratio
                 required
                 value={form.count}
                 onChange={(e) => setForm({ ...form, count: e.target.value })}
-                className="font-mono"
               />
             </Field>
             <Field label="Criteria (optional)">
@@ -1041,18 +1221,13 @@ function RelevantPanel({ ticketId, data }: { ticketId: string; data: Registratio
                 <Check />
                 {add.isPending ? "Recording…" : "Record relevant entry"}
               </Button>
-              {add.isError && (
-                <span className="t-body-sm text-status-critical">{errMsg(add.error)}</span>
-              )}
+              {add.isError && <span className="text-[13px] text-danger">{errMsg(add.error)}</span>}
             </div>
           </form>
         )}
 
         <div>
-          <div className="mb-1.5 flex items-center justify-between">
-            <MonoLabel>Recent validations</MonoLabel>
-            <MonoLabel>Verified by</MonoLabel>
-          </div>
+          <MonoLabel className="mb-1.5 block">Recent validations</MonoLabel>
           {q.isLoading ? (
             <Skeleton className="h-32" />
           ) : q.isError ? (
@@ -1071,88 +1246,105 @@ function RelevantPanel({ ticketId, data }: { ticketId: string; data: Registratio
               hint="The CSM records validated counts here."
             />
           ) : (
-            <ul className="reveal space-y-1.5">
-              {entries.map((e, i) => (
-                <li
-                  key={e.id}
-                  className="rounded-lg bg-secondary/50 p-2.5"
-                  style={{ ["--i" as string]: i }}
-                >
-                  <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <span className="t-data-sm text-muted-foreground">{fmtLong(e.date)}</span>
-                    <span className="t-data-sm text-primary">
-                      +{e.count.toLocaleString()} relevant
-                    </span>
-                    <span className="t-body-sm text-secondary-foreground">{e.entered_by_name}</span>
-                  </div>
-                  <p className="mt-0.5 t-body-sm">
-                    {[e.criteria, e.note].filter(Boolean).join(" · ") || (
-                      <span className="text-muted-foreground">No note</span>
-                    )}
-                    {e.supersedes_id != null && (
-                      <span className="text-muted-foreground"> (corrects #{e.supersedes_id})</span>
-                    )}
-                  </p>
-                  {canEnter &&
-                    (fixing?.id === e.id ? (
-                      <form
-                        className="mt-2 flex flex-wrap items-center gap-2"
-                        onSubmit={(ev) => {
-                          ev.preventDefault();
-                          if (fixing.count !== "") fix.mutate(e);
-                        }}
-                      >
-                        <Input
-                          type="number"
-                          min={0}
-                          aria-label="Corrected count"
-                          value={fixing.count}
-                          onChange={(ev) => setFixing({ ...fixing, count: ev.target.value })}
-                          className="w-28"
-                        />
-                        <Input
-                          aria-label="Correction note"
-                          placeholder="Why the correction"
-                          value={fixing.note}
-                          onChange={(ev) => setFixing({ ...fixing, note: ev.target.value })}
-                          className="min-w-40 flex-1"
-                        />
-                        <Button size="sm" type="submit" disabled={fix.isPending}>
-                          Save
-                        </Button>
-                        <Button
-                          size="sm"
-                          type="button"
-                          variant="ghost"
-                          onClick={() => setFixing(null)}
-                        >
-                          Cancel
-                        </Button>
-                        {fix.isError && (
-                          <span className="t-body-sm text-status-critical">
-                            {errMsg(fix.error)}
-                          </span>
+            <div className="relative overflow-x-auto">
+              <table className="w-full min-w-[560px]">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="t-th p-2.5 text-left">Date</th>
+                    <th className="t-th p-2.5 text-right">Relevant</th>
+                    <th className="t-th p-2.5 text-left">Criteria and note</th>
+                    <th className="t-th p-2.5 text-left">Verified by</th>
+                    {canEnter && <th className="w-20" />}
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.map((e) => (
+                    <Fragment key={e.id}>
+                      <tr className="border-b border-border last:border-0">
+                        <td className="p-2.5 text-[13px] text-ink-2">{fmtLong(e.date)}</td>
+                        <td className="p-2.5 text-right text-[14px] font-medium">
+                          +{e.count.toLocaleString()}
+                        </td>
+                        <td className="p-2.5 text-[13px]">
+                          {[e.criteria, e.note].filter(Boolean).join(" · ") || (
+                            <span className="text-ink-3">—</span>
+                          )}
+                          {e.supersedes_id != null && (
+                            <span className="text-ink-3"> (corrects #{e.supersedes_id})</span>
+                          )}
+                        </td>
+                        <td className="p-2.5 text-[13px] text-ink-2">{e.entered_by_name}</td>
+                        {canEnter && (
+                          <td className="p-2.5 text-right">
+                            {fixing?.id !== e.id && (
+                              <button
+                                type="button"
+                                className="text-[13px] text-primary hover:underline"
+                                onClick={() =>
+                                  setFixing({ id: e.id, count: String(e.count), note: "" })
+                                }
+                              >
+                                Correct
+                              </button>
+                            )}
+                          </td>
                         )}
-                      </form>
-                    ) : (
-                      <button
-                        type="button"
-                        className="mt-1 t-body-sm text-primary hover:underline"
-                        onClick={() => setFixing({ id: e.id, count: String(e.count), note: "" })}
-                      >
-                        Correct
-                      </button>
-                    ))}
-                </li>
-              ))}
-            </ul>
+                      </tr>
+                      {canEnter && fixing?.id === e.id && (
+                        <tr className="border-b border-border last:border-0">
+                          <td colSpan={5} className="p-2.5">
+                            <form
+                              className="flex flex-wrap items-center gap-2"
+                              onSubmit={(ev) => {
+                                ev.preventDefault();
+                                if (fixing.count !== "") fix.mutate(e);
+                              }}
+                            >
+                              <Input
+                                type="number"
+                                min={0}
+                                aria-label="Corrected count"
+                                value={fixing.count}
+                                onChange={(ev) => setFixing({ ...fixing, count: ev.target.value })}
+                                className="w-28"
+                              />
+                              <Input
+                                aria-label="Correction note"
+                                placeholder="Why the correction"
+                                value={fixing.note}
+                                onChange={(ev) => setFixing({ ...fixing, note: ev.target.value })}
+                                className="min-w-40 flex-1"
+                              />
+                              <Button size="sm" type="submit" disabled={fix.isPending}>
+                                Save
+                              </Button>
+                              <Button
+                                size="sm"
+                                type="button"
+                                variant="ghost"
+                                onClick={() => setFixing(null)}
+                              >
+                                Cancel
+                              </Button>
+                              {fix.isError && (
+                                <span className="text-[13px] text-danger">{errMsg(fix.error)}</span>
+                              )}
+                            </form>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
-          <span className="t-data-sm">
+          <span className="text-[14px]">
             Total relevant:{" "}
-            <span className="text-primary">
+            <span className="font-semibold">
               {(q.data?.total ?? data.relevant_total).toLocaleString()}
             </span>
           </span>
@@ -1260,7 +1452,6 @@ function TargetsDialog({
               min={1}
               value={target}
               onChange={(e) => setTarget(e.target.value)}
-              className="font-mono"
             />
           </Field>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -1271,7 +1462,7 @@ function TargetsDialog({
               <Input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
             </Field>
           </div>
-          {save.isError && <p className="t-body-sm text-status-critical">{errMsg(save.error)}</p>}
+          {save.isError && <p className="text-[13px] text-danger">{errMsg(save.error)}</p>}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>
               Cancel
@@ -1311,29 +1502,32 @@ function Integrations({
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between gap-3 px-[18px] py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <span>
-          <span className="block text-[16px] font-semibold tracking-[-0.01em]">
-            Data entry &amp; integrations
-          </span>
-          <span className="t-body-sm text-muted-foreground">
-            Manual daily counts, Slack channel, Redash event
+          <span className="block text-[14px] font-semibold">Data entry &amp; integrations</span>
+          <span className="text-[13px] text-ink-2">
+            {data.redash.auto ? "Daily counts from Redash" : "Manual daily counts"} ·{" "}
+            {data.slack.channel_id
+              ? `Slack #${data.slack.channel_name ?? data.slack.channel_id}`
+              : "Slack channel not linked"}
+            {redashEnabled && ` · Redash ${data.redash.event_slug ?? "event not linked"}`}
           </span>
         </span>
         <ChevronDown
-          className={cn("size-4 text-muted-foreground transition-transform", open && "rotate-180")}
+          aria-hidden
+          className={cn("size-4 text-ink-3 transition-transform", open && "rotate-180")}
         />
       </button>
       {open && (
-        <div className="space-y-4 border-t border-border p-[18px]">
+        <div className="space-y-4 border-t border-border p-4">
           {canLink && <SlackChannelBox ticketId={ticketId} data={data} />}
           {canLink && redashEnabled && <RedashBox ticketId={ticketId} data={data} />}
           {manualOk ? (
             <EntryEditor ticketId={ticketId} data={data} isHiring={isHiring} />
           ) : (
             canManage && (
-              <p className="t-body-sm text-muted-foreground">
+              <p className="text-[13px] text-ink-3">
                 Daily counts come from Redash while auto mode is on. Switch to Manual above to enter
                 them by hand.
               </p>
@@ -1430,21 +1624,18 @@ function SlackChannelBox({ ticketId, data }: { ticketId: string; data: Registrat
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3">
       <span className="flex items-center gap-2 text-[14px] font-semibold">
-        <Hash className="size-4 text-muted-foreground" />
+        <Hash className="size-4 text-ink-3" />
         Slack channel
       </span>
       {!data.slack_configured && (
-        <span className="t-body-sm text-status-critical">
+        <span className="text-[13px] text-danger">
           Slack isn't connected yet. Ask an admin to connect it.
         </span>
       )}
       {returned && (
         <span
           role="status"
-          className={cn(
-            "basis-full t-body-sm",
-            returned.ok ? "text-status-good" : "text-status-critical",
-          )}
+          className={cn("basis-full text-[13px]", returned.ok ? "text-ok" : "text-danger")}
         >
           {returned.text}
         </span>
@@ -1454,7 +1645,7 @@ function SlackChannelBox({ ticketId, data }: { ticketId: string; data: Registrat
           <Chip tone="good">
             <Check className="size-3" />#{channel_name ?? channel_id}
           </Chip>
-          <span className="t-data-sm text-muted-foreground">{channel_id}</span>
+          <span className="t-data-sm text-ink-3">{channel_id}</span>
           <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
             Change
           </Button>
@@ -1466,19 +1657,17 @@ function SlackChannelBox({ ticketId, data }: { ticketId: string; data: Registrat
           </Button>
           {botStatus.data &&
             (botStatus.data.is_member ? (
-              <span className="t-body-sm text-status-good">The bot is in this channel.</span>
+              <span className="text-[13px] text-ok">The bot is in this channel.</span>
             ) : botStatus.data.is_private ? (
               <>
-                <span className="t-body-sm text-status-warning">
+                <span className="text-[13px] text-warn">
                   The bot isn't in this private channel.
                 </span>
                 <InviteBotLink ticketId={ticketId} channelId={channel_id as string} />
               </>
             ) : (
               <>
-                <span className="t-body-sm text-status-warning">
-                  The bot isn't in this channel yet.
-                </span>
+                <span className="text-[13px] text-warn">The bot isn't in this channel yet.</span>
                 <Button
                   size="sm"
                   variant="outline"
@@ -1489,13 +1678,9 @@ function SlackChannelBox({ ticketId, data }: { ticketId: string; data: Registrat
                 </Button>
               </>
             ))}
-          {join.isError && (
-            <span className="t-body-sm text-status-critical">{errMsg(join.error)}</span>
-          )}
-          {test.isSuccess && <span className="t-body-sm text-status-good">Test message sent.</span>}
-          {test.isError && (
-            <span className="t-body-sm text-status-critical">{errMsg(test.error)}</span>
-          )}
+          {join.isError && <span className="text-[13px] text-danger">{errMsg(join.error)}</span>}
+          {test.isSuccess && <span className="text-[13px] text-ok">Test message sent.</span>}
+          {test.isError && <span className="text-[13px] text-danger">{errMsg(test.error)}</span>}
         </>
       ) : (
         <>
@@ -1531,28 +1716,24 @@ function SlackChannelBox({ ticketId, data }: { ticketId: string; data: Registrat
             )}
           </form>
           {!channel_id && (
-            <p className="basis-full t-body-sm text-status-warning">
+            <p className="basis-full text-[13px] text-warn">
               Slack channel not added. Add one before posting updates.
             </p>
           )}
           {preview.state === "loading" && (
-            <span className="flex items-center gap-1 t-body-sm text-muted-foreground">
+            <span className="flex items-center gap-1 text-[13px] text-ink-3">
               <Loader2 className="size-3 animate-spin" />
               Looking up…
             </span>
           )}
-          {preview.state === "ok" && (
-            <span className="t-body-sm text-status-good">→ #{preview.text}</span>
-          )}
+          {preview.state === "ok" && <span className="text-[13px] text-ok">→ #{preview.text}</span>}
           {preview.state === "error" && (
-            <span className="t-body-sm text-status-critical">{preview.text}</span>
+            <span className="text-[13px] text-danger">{preview.text}</span>
           )}
           {preview.state === "error" && PRIVATE_ID.test(input.trim()) && (
             <InviteBotLink ticketId={ticketId} channelId={input.trim()} />
           )}
-          {save.isError && (
-            <span className="t-body-sm text-status-critical">{errMsg(save.error)}</span>
-          )}
+          {save.isError && <span className="text-[13px] text-danger">{errMsg(save.error)}</span>}
         </>
       )}
     </div>
@@ -1615,7 +1796,7 @@ function RedashBox({ ticketId, data }: { ticketId: string; data: RegistrationsVi
           ]}
         />
         {!configured && (
-          <span className="t-body-sm text-status-critical">
+          <span className="text-[13px] text-danger">
             Redash isn't connected yet. Ask an admin to connect it.
           </span>
         )}
@@ -1629,9 +1810,7 @@ function RedashBox({ ticketId, data }: { ticketId: string; data: RegistrationsVi
             {run.isPending ? "Fetching…" : "Fetch from Redash"}
           </Button>
           {notice && (
-            <span
-              className={cn("t-body-sm", notice.ok ? "text-status-good" : "text-status-critical")}
-            >
+            <span className={cn("text-[13px]", notice.ok ? "text-ok" : "text-danger")}>
               {notice.text}
             </span>
           )}
@@ -1672,11 +1851,11 @@ function RedashBox({ ticketId, data }: { ticketId: string; data: RegistrationsVi
             {check.isPending ? "Checking…" : "Check"}
           </Button>
           {check.isSuccess && (
-            <div className="flex basis-full flex-wrap items-center gap-3 rounded-lg bg-secondary/50 p-3">
+            <div className="flex basis-full flex-wrap items-center gap-3 rounded-lg bg-raised p-3">
               <div>
                 <MonoLabel>Is this the right event?</MonoLabel>
                 <p className="text-[14px] font-semibold">{check.data.event.name}</p>
-                <p className="t-body-sm text-muted-foreground">
+                <p className="text-[13px] text-ink-3">
                   {[
                     check.data.event.company,
                     check.data.event.type,
@@ -1700,19 +1879,17 @@ function RedashBox({ ticketId, data }: { ticketId: string; data: RegistrationsVi
             </div>
           )}
           {picked && (
-            <span className="t-body-sm text-muted-foreground">
+            <span className="text-[13px] text-ink-3">
               {picked.name} · {picked.company}
             </span>
           )}
           {events.isError && !notice && (
-            <span className="t-body-sm text-muted-foreground">
+            <span className="text-[13px] text-ink-3">
               Couldn't load active events (VPN?). You can still type the slug.
             </span>
           )}
           {notice && (
-            <span
-              className={cn("t-body-sm", notice.ok ? "text-status-good" : "text-status-critical")}
-            >
+            <span className={cn("text-[13px]", notice.ok ? "text-ok" : "text-danger")}>
               {notice.text}
             </span>
           )}
@@ -1853,7 +2030,7 @@ function EntryEditor({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-[14px] font-semibold">Update registrations</h3>
-          <p className="t-body-sm text-muted-foreground">
+          <p className="text-[13px] text-ink-3">
             Add daily counts manually or upload a CSV (date, {isHiring ? "role, " : ""}registrations
             and relevant are required, plus any extra columns).
           </p>
@@ -1876,19 +2053,15 @@ function EntryEditor({
         </Button>
       </div>
       {slack.notify && !slack.channel_id && (
-        <p className="t-body-sm text-muted-foreground">
+        <p className="text-[13px] text-ink-3">
           Notify Slack is on, but no channel is set. Nothing will be posted until you add one above.
         </p>
       )}
       {notice && (
         <p
           className={cn(
-            "t-body-sm",
-            notice.tone === "ok"
-              ? "text-status-good"
-              : notice.tone === "warn"
-                ? "text-status-warning"
-                : "text-status-critical",
+            "text-[13px]",
+            notice.tone === "ok" ? "text-ok" : notice.tone === "warn" ? "text-warn" : "text-danger",
           )}
         >
           {notice.text}
@@ -1944,7 +2117,7 @@ function EntryEditor({
                 />
               ))
             ) : (
-              <span className="t-body-sm text-muted-foreground">
+              <span className="text-[13px] text-ink-3">
                 None yet. Add things like "Source", "Shortlisted" or "Colleges".
               </span>
             )}
@@ -1972,13 +2145,13 @@ function EntryEditor({
       </div>
 
       {needsRole && (
-        <p className="t-body-sm text-status-warning">
+        <p className="text-[13px] text-warn">
           Hiring programs track registrations per role. Add at least one role above (e.g. Software
           Engineer) to start adding daily counts.
         </p>
       )}
       <form
-        className="flex flex-wrap items-end gap-2 rounded-lg bg-secondary/50 p-3"
+        className="flex flex-wrap items-end gap-2 rounded-lg bg-raised p-3"
         onSubmit={(e) => {
           e.preventDefault();
           add();
@@ -2088,10 +2261,10 @@ function EntryEditor({
               <tr key={e.id} className="border-b border-border last:border-0">
                 <td className="t-data-sm p-2">{fmt(e.date)}</td>
                 {isHiring && <td className="p-2 text-[14px]">{e.role || "-"}</td>}
-                <td className="t-data-sm p-2 text-right">{e.registrations}</td>
-                <td className="t-data-sm p-2 text-right">{e.relevant ?? "—"}</td>
+                <td className="t-data-sm p-2 text-right">{e.registrations.toLocaleString()}</td>
+                <td className="t-data-sm p-2 text-right">{e.relevant?.toLocaleString() ?? "—"}</td>
                 {fields.map((f) => (
-                  <td key={f} className="p-2 text-[14px] text-muted-foreground">
+                  <td key={f} className="p-2 text-[14px] text-ink-3">
                     {e.extra[f] || "-"}
                   </td>
                 ))}
@@ -2100,7 +2273,7 @@ function EntryEditor({
                     type="button"
                     aria-label={`Delete ${e.date} row`}
                     onClick={() => remove.mutate(e.id)}
-                    className="text-muted-foreground hover:text-status-critical focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="text-ink-3 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <Trash2 className="size-3.5" />
                   </button>
@@ -2122,10 +2295,17 @@ function RemovableChip({ label, onRemove }: { label: string; onRemove: () => voi
         type="button"
         aria-label={`Remove ${label}`}
         onClick={onRemove}
-        className="text-muted-foreground hover:text-foreground"
+        className="text-ink-3 hover:text-foreground"
       >
         <X className="size-3" />
       </button>
     </Chip>
+  );
+}
+
+/** Chart animation only when the person has not asked for reduced motion. */
+function motionOk(): boolean {
+  return (
+    typeof window !== "undefined" && !window.matchMedia("(prefers-reduced-motion: reduce)").matches
   );
 }

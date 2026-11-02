@@ -1,15 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Check, Loader2 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   ActionItem,
   Chip,
   HealthPill,
-  KpiTile,
+  KpiCell,
+  KpiStrip,
+  OkRow,
   Skeleton,
-  StatusDot,
-  type StatusTone,
+  SlotRow,
+  type Tone,
 } from "@/components/kit";
 import {
   AlertDialog,
@@ -37,6 +39,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   apiFetch,
@@ -61,6 +64,7 @@ import {
   orUnassigned,
 } from "@/lib/format";
 import { describeHistory } from "@/lib/history";
+import { linkHubspotClient } from "@/lib/system-api";
 import { assignmentsQuery, type Assignment } from "@/lib/marketing-api";
 import { needsQuery, reportQuery, roundsQuery, updatesQuery, type Round } from "@/lib/ops-api";
 import { programDocumentsQueryOptions } from "@/lib/program-documents";
@@ -73,21 +77,49 @@ import {
 } from "@/lib/system-api";
 import { cn } from "@/lib/utils";
 
+const nf = (n: number) => n.toLocaleString("en-US");
+const Dash = () => <span className="text-ink-3">–</span>;
+
 export function ProgramOverview({ ticketId, program }: { ticketId: string; program: Program }) {
+  // The "link the client" dialog is opened from both Program setup and Program brief.
+  const [linking, setLinking] = useState(false);
+  const canLink = useCan("hubspot.write");
+  const docs = useQuery(programDocumentsQueryOptions(ticketId)).data;
+  const sowClient = known(docs?.sow?.details?.customer);
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-      <div className="flex min-w-0 flex-col gap-5">
+    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="flex min-w-0 flex-col gap-4">
         <NeedsToday ticketId={ticketId} />
         <Kpis ticketId={ticketId} />
         <RoundPlan ticketId={ticketId} />
         <StageChecklist ticketId={ticketId} program={program} />
       </div>
-      <aside className="flex min-w-0 flex-col gap-5">
+      <aside className="flex min-w-0 flex-col gap-4">
+        <ProgramSetup
+          ticketId={ticketId}
+          program={program}
+          sowClient={sowClient}
+          canLink={canLink}
+          onLink={() => setLinking(true)}
+        />
         <LatestUpdate ticketId={ticketId} />
-        <Brief ticketId={ticketId} program={program} />
+        <Brief
+          ticketId={ticketId}
+          program={program}
+          sowClient={sowClient}
+          canLink={canLink}
+          onLink={() => setLinking(true)}
+        />
         <Notes ticketId={ticketId} />
         <HubspotHistory ticketId={ticketId} />
       </aside>
+      <LinkClientDialog
+        open={linking}
+        onOpenChange={setLinking}
+        sowClient={sowClient}
+        current={program.company_name ?? program.blackops_account_name}
+        ticketId={program.ticket_id}
+      />
     </div>
   );
 }
@@ -97,19 +129,27 @@ function Section({
   meta,
   children,
   className,
+  flush,
 }: {
   title: string;
   meta?: ReactNode;
   children: ReactNode;
   className?: string;
+  /** Rows run edge to edge under a divided header (lists, tables). */
+  flush?: boolean;
 }) {
   return (
-    <section className={cn("surface p-5", className)}>
-      <div className="mb-3 flex items-baseline justify-between gap-3">
-        <h2 className="text-[16px] font-semibold">{title}</h2>
-        {meta && <span className="text-[13px] text-ink-2">{meta}</span>}
+    <section className={cn("surface", className)}>
+      <div
+        className={cn(
+          "flex items-center justify-between gap-3 px-4 pt-3.5 pb-3",
+          flush && "border-b border-border",
+        )}
+      >
+        <h2 className="min-w-0 text-[14px] font-semibold leading-5">{title}</h2>
+        {meta && <span className="shrink-0 text-right text-[13px] text-ink-2">{meta}</span>}
       </div>
-      {children}
+      <div className={flush ? undefined : "px-4 pb-4"}>{children}</div>
     </section>
   );
 }
@@ -149,29 +189,32 @@ function NeedsToday({ ticketId }: { ticketId: string }) {
   );
   return (
     <Section
+      flush
       title="Needs you today"
       meta={items.length > 0 ? `${items.length} items · most urgent first` : undefined}
     >
       {isLoading ? (
-        <Skeleton className="h-28" />
+        <Skeleton className="m-4 h-20" />
       ) : isError ? (
-        <Button size="sm" variant="outline" onClick={() => refetch()}>
-          Couldn't load this list. Retry
-        </Button>
+        <div className="p-4">
+          <Button size="sm" variant="outline" onClick={() => refetch()}>
+            Couldn't load this list. Retry
+          </Button>
+        </div>
       ) : (
         <>
           {items.length === 0 ? (
-            <p className="text-[14px] text-ink-2">Nothing needs you today. All clear.</p>
+            <p className="px-4 py-3 text-[14px] text-ink-2">Nothing needs you today. All clear.</p>
           ) : (
-            <div className="flex flex-col gap-2">{items.map(row)}</div>
+            items.map(row)
           )}
           {checks.length > 0 && (
-            <div className="mt-4 space-y-2">
-              <p className="text-[12px] text-ink-3">
+            <>
+              <p className="border-b border-border px-4 pt-3 pb-2 text-[13px] text-ink-2">
                 Data checks · the numbers disagree, nobody is waiting on these
               </p>
-              <div className="flex flex-col gap-2">{checks.map(row)}</div>
-            </div>
+              {checks.map(row)}
+            </>
           )}
         </>
       )}
@@ -185,7 +228,7 @@ function Kpis({ ticketId }: { ticketId: string }) {
   const { data: r, isError, refetch } = useQuery(reportQuery(ticketId));
   if (isError) {
     return (
-      <div className="surface flex items-center justify-between px-5 py-3">
+      <div className="surface flex items-center justify-between px-4 py-3">
         <span className="text-[14px] text-ink-2">Couldn't load the program report.</span>
         <Button size="sm" variant="outline" onClick={() => refetch()}>
           Retry
@@ -193,15 +236,7 @@ function Kpis({ ticketId }: { ticketId: string }) {
       </div>
     );
   }
-  if (!r) {
-    return (
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
-        {[0, 1, 2, 3].map((i) => (
-          <Skeleton key={i} className="h-[112px]" />
-        ))}
-      </div>
-    );
-  }
+  if (!r) return <Skeleton className="h-[112px]" />;
   const { registrations: reg, marketing: m } = r;
   const screening = r.funnel.find((s) => s.as_of !== null);
   const attempted = screening?.attempted ?? null;
@@ -211,127 +246,68 @@ function Kpis({ ticketId }: { ticketId: string }) {
   const noneApproved = m.total > 0 && m.approved === 0;
   const met = reg.pct_of_target != null && reg.pct_of_target >= 100;
   return (
-    <section
-      aria-label="Key numbers"
-      className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3"
-    >
-      <KpiTile
+    <KpiStrip label="Program numbers">
+      <KpiCell
         label="Registrations"
-        value={reg.raw_total.toLocaleString("en-US")}
+        value={nf(reg.raw_total)}
         pct={reg.pct_of_target}
         bar={met ? "ok" : "accent"}
-        note={
-          target
-            ? `${formatPct(reg.pct_of_target)} of ${target.toLocaleString("en-US")} target`
-            : "No target set"
-        }
-        noteTone={met ? "ok" : "neutral"}
+        sub={target ? `${formatPct(reg.pct_of_target)} of ${nf(target)} target` : "No target set"}
       />
-      <KpiTile
+      <KpiCell
         label="Relevant"
-        value={reg.relevant_total.toLocaleString("en-US")}
+        value={nf(reg.relevant_total)}
         pct={reg.relevant_pct}
-        note={`${formatPct(reg.relevant_pct)} of registrations · CSM-entered`}
+        sub={`${formatPct(reg.relevant_pct)} of registrations · CSM-entered`}
       />
-      <KpiTile
+      <KpiCell
         label="Screening"
-        value={
-          screening
-            ? invited != null
-              ? `${attempted ?? 0} / ${invited}`
-              : (attempted ?? "—")
-            : "—"
-        }
+        value={screening ? attempted != null ? nf(attempted) : <Dash /> : <Dash />}
+        unit={screening && attempted != null && invited != null ? `/ ${nf(invited)}` : undefined}
         pct={screeningPct}
-        note={
+        sub={
           screening
-            ? `Attempted · ${screening.cleared ?? 0} cleared · ${screening.shortlisted ?? 0} shortlisted`
+            ? `${nf(screening.cleared ?? 0)} cleared · ${nf(screening.shortlisted ?? 0)} shortlisted`
             : "No counts entered yet"
         }
       />
-      <KpiTile
+      <KpiCell
         label="Marketing live"
-        value={`${m.live} / ${m.total}`}
+        value={nf(m.live)}
+        unit={`/ ${nf(m.total)}`}
         pct={m.total ? (100 * m.live) / m.total : 0}
         bar={noneApproved ? "warn" : "accent"}
-        note={noneApproved ? "None approved yet" : `${m.approved} approved`}
-        noteTone={noneApproved ? "warn" : "neutral"}
+        sub={
+          noneApproved ? (
+            <span className="text-warn">None approved yet</span>
+          ) : (
+            `${nf(m.approved)} approved`
+          )
+        }
       />
-    </section>
+    </KpiStrip>
   );
 }
 
 // ---- Round plan --------------------------------------------------------------------------------
 
-function roundStatus(r: Round): { text: string; tone: StatusTone } {
-  if (r.status === "done") return { text: "Done", tone: "ok" };
-  const dates = r.starts_on || r.ends_on ? formatRange(r.starts_on, r.ends_on) : null;
-  if (!dates) return { text: "Not scheduled", tone: "neutral" };
-  if (r.status === "live") return { text: `${dates} · live`, tone: "ok" };
-  if (r.status === "evaluating") return { text: `${dates} · evaluating`, tone: "neutral" };
-  return { text: dates, tone: "neutral" };
-}
+const today = () => new Date().toISOString().slice(0, 10);
 
-type Tile = {
-  key: string;
-  n: number;
-  name: string;
-  status: string;
-  tone: StatusTone;
-  round?: Round;
+const ROUND_CHIP: Record<Round["status"], { label: string; tone: Tone }> = {
+  planned: { label: "Planned", tone: "neutral" },
+  live: { label: "Live", tone: "info" },
+  evaluating: { label: "Evaluating", tone: "neutral" },
+  done: { label: "Done", tone: "good" },
 };
 
-const COUNT_LABELS = [
+type RoundRow = { key: string; name: string; round?: Round };
+
+const COUNT_COLS = [
   ["invited", "Invited"],
   ["attempted", "Attempted"],
   ["cleared", "Cleared"],
   ["shortlisted", "Shortlisted"],
 ] as const;
-
-/** One round: its status and the latest counts (or a flag that they are missing). */
-function RoundCard({ tile }: { tile: Tile }) {
-  const r = tile.round;
-  const c = r?.latest_counts ?? null;
-  const ended =
-    !!r &&
-    (r.status === "evaluating" || r.status === "done" || (!!r.ends_on && r.ends_on < today()));
-  return (
-    <div className="flex flex-col gap-2 rounded-[10px] bg-raised p-3.5">
-      <div>
-        <p className="text-[12px] text-ink-3">Round {tile.n}</p>
-        <p className="font-medium">{tile.name}</p>
-      </div>
-      <StatusDot tone={tile.tone} label={tile.status} hollow={tile.tone === "neutral"} />
-      {r && (
-        <>
-          {c ? (
-            <dl className="grid grid-cols-4 gap-1 border-t border-border pt-2">
-              {COUNT_LABELS.map(([key, label]) => (
-                <div key={key} className="min-w-0">
-                  <dt className="truncate text-[11px] text-ink-3">{label}</dt>
-                  <dd className="t-data-sm font-medium">
-                    {c[key] == null ? "–" : c[key].toLocaleString("en-US")}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-          ) : (
-            <p
-              className={cn(
-                "border-t border-border pt-2 text-[12px]",
-                ended ? "text-warn" : "text-ink-3",
-              )}
-            >
-              {ended ? "Counts missing: this round has ended" : "No counts yet"}
-            </p>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-const today = () => new Date().toISOString().slice(0, 10);
 
 function RoundPlan({ ticketId }: { ticketId: string }) {
   const rounds = useQuery(roundsQuery(ticketId));
@@ -339,31 +315,13 @@ function RoundPlan({ ticketId }: { ticketId: string }) {
   const report = useQuery(reportQuery(ticketId)).data;
   const sow = docs.data?.sow?.details ?? null;
   const planned = rounds.data ?? [];
-  const tiles: Tile[] =
+  const rows: RoundRow[] =
     planned.length > 0
-      ? planned.map((r, i) => {
-          const s = roundStatus(r);
-          return {
-            key: `round-${r.id}`,
-            n: i + 1,
-            name: r.name,
-            status: s.text,
-            tone: s.tone,
-            round: r,
-          };
-        })
-      : (sow?.rounds ?? []).map((r, i) => ({
-          key: `sow-${i}`,
-          n: i + 1,
-          name: r.name,
-          status: "Not scheduled",
-          tone: "neutral",
-        }));
+      ? planned.map((r) => ({ key: `round-${r.id}`, name: r.name, round: r }))
+      : (sow?.rounds ?? []).map((r, i) => ({ key: `sow-${i}`, name: r.name }));
   const meta = [
     sow ? "From SOW" : null,
-    report?.registrations.target
-      ? `target ${report.registrations.target.toLocaleString("en-US")} registrations`
-      : null,
+    report?.registrations.target ? `target ${nf(report.registrations.target)} registrations` : null,
     sow?.registration_window_weeks_min && sow.registration_window_weeks_max
       ? sow.registration_window_weeks_min === sow.registration_window_weeks_max
         ? `${sow.registration_window_weeks_min} week window`
@@ -373,18 +331,77 @@ function RoundPlan({ ticketId }: { ticketId: string }) {
     .filter(Boolean)
     .join(" · ");
   return (
-    <Section title="Rounds" meta={meta || undefined}>
+    <Section
+      flush
+      title="Rounds"
+      meta={
+        <span className="flex items-center gap-3">
+          {meta && <span className="hidden sm:inline">{meta}</span>}
+          <Button asChild size="sm" variant="ghost">
+            <Link to="/programs/$ticketId" params={{ ticketId }} search={{ tab: "rounds" }}>
+              Open rounds
+            </Link>
+          </Button>
+        </span>
+      }
+    >
       {rounds.isLoading ? (
-        <Skeleton className="h-20" />
-      ) : tiles.length === 0 ? (
-        <p className="text-[14px] text-ink-2">
+        <Skeleton className="m-4 h-20" />
+      ) : rows.length === 0 ? (
+        <p className="px-4 py-3 text-[14px] text-ink-2">
           No rounds yet. Add them in the Rounds tab, or upload the SOW in Documents.
         </p>
       ) : (
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-2.5">
-          {tiles.map((t) => (
-            <RoundCard key={t.key} tile={t} />
-          ))}
+        <div className="relative overflow-x-auto">
+          <table className="w-full min-w-[560px] border-collapse text-[14px]">
+            <thead>
+              <tr className="border-b border-border text-left t-th">
+                <th className="px-4 py-2 font-medium">Round</th>
+                <th className="px-2 py-2 font-medium">Status</th>
+                {COUNT_COLS.map(([k, label]) => (
+                  <th key={k} className="px-2 py-2 text-right font-medium last:pr-4">
+                    {label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((t) => {
+                const r = t.round;
+                const c = r?.latest_counts ?? null;
+                const ended =
+                  !!r &&
+                  (r.status === "evaluating" ||
+                    r.status === "done" ||
+                    (!!r.ends_on && r.ends_on < today()));
+                const dates =
+                  r && (r.starts_on || r.ends_on) ? formatRange(r.starts_on, r.ends_on) : null;
+                const chip = r ? ROUND_CHIP[r.status] : ROUND_CHIP.planned;
+                return (
+                  <tr key={t.key} className="border-b border-border last:border-b-0">
+                    <td className="min-w-0 px-4 py-2.5">
+                      <p className="font-medium">{t.name}</p>
+                      <p
+                        className={cn("text-[13px]", r && !c && ended ? "text-warn" : "text-ink-2")}
+                      >
+                        {r && !c && ended
+                          ? "Counts missing: this round has ended"
+                          : (dates ?? "Not scheduled")}
+                      </p>
+                    </td>
+                    <td className="px-2 py-2.5">
+                      <Chip tone={chip.tone}>{chip.label}</Chip>
+                    </td>
+                    {COUNT_COLS.map(([k]) => (
+                      <td key={k} className="px-2 py-2.5 text-right tabular-nums last:pr-4">
+                        {c && c[k] != null ? nf(c[k]) : <Dash />}
+                      </td>
+                    ))}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
     </Section>
@@ -494,6 +511,7 @@ function StageChecklist({ ticketId, program }: { ticketId: string; program: Prog
   };
   return (
     <Section
+      flush
       title={`${program.stage} stage checklist`}
       meta={
         c && rows.length > 0
@@ -502,100 +520,85 @@ function StageChecklist({ ticketId, program }: { ticketId: string; program: Prog
       }
     >
       {isLoading ? (
-        <Skeleton className="h-28" />
+        <Skeleton className="m-4 h-28" />
       ) : isError ? (
-        <Button size="sm" variant="outline" onClick={() => refetch()}>
-          Couldn't load the checklist. Retry
-        </Button>
-      ) : !c || rows.length === 0 ? (
-        <p className="text-[14px] text-ink-2">This stage has no checklist.</p>
-      ) : (
-        <>
-          <div
-            className="mb-3 h-2.5 overflow-hidden rounded-full bg-raised"
-            role="progressbar"
-            aria-label="Checklist progress"
-            aria-valuenow={Math.round((100 * c.completed_items.length) / rows.length)}
-            aria-valuemin={0}
-            aria-valuemax={100}
-          >
-            <div
-              className="h-2.5 rounded-full bg-ok transition-[width]"
-              style={{ width: `${(100 * c.completed_items.length) / rows.length}%` }}
-            />
-          </div>
-          <ul>
-            {visible.map((row) => {
-              const editable = canWrite;
-              return (
-                <li key={row.label} className="border-t border-border">
-                  <label
-                    className={cn(
-                      "flex items-center gap-3 py-2.5",
-                      editable ? "cursor-pointer" : "cursor-default",
-                      row.done && "text-ink-3",
-                    )}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={row.done}
-                      disabled={!editable}
-                      onChange={() => toggle(row.label, !row.done)}
-                      className="size-[18px] accent-ok"
-                    />
-                    <span className="flex-1">{row.label}</span>
-                    {!row.done && row.label === c.pending_items[0] && (
-                      <span className="text-[12px] text-ink-3">Next</span>
-                    )}
-                  </label>
-                </li>
-              );
-            })}
-          </ul>
-          {rows.length > SHOWN_ITEMS && (
-            <div className="mt-1">
-              <MoreButton onClick={() => setShowAll((v) => !v)}>
-                {showAll ? "Show fewer" : `Show ${rows.length - SHOWN_ITEMS} more`}
-              </MoreButton>
-            </div>
-          )}
-        </>
-      )}
-      {canWrite && (
-        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3">
-          <span className="text-[13px] text-ink-2">Move stage</span>
-          <select
-            aria-label="Move the HubSpot ticket to stage"
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
-            className="h-8 rounded-[8px] border border-border bg-surface px-2 text-[13px]"
-          >
-            <option value="">Choose a stage…</option>
-            {STAGES.filter(
-              (s) => s !== program.stage && !(internal && (s === "New" || s === "Pre Sales")),
-            ).map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!target}
-            onClick={() =>
-              setPending({
-                change: `move the ticket from ${program.stage} to ${target}`,
-                run: () =>
-                  moveHubspotStage(ticketId, {
-                    stage_key: stageKey(target),
-                    expected_stage_key: current,
-                  }),
-              })
-            }
-          >
-            Move
+        <div className="p-4">
+          <Button size="sm" variant="outline" onClick={() => refetch()}>
+            Couldn't load the checklist. Retry
           </Button>
+        </div>
+      ) : !c || rows.length === 0 ? (
+        <p className="px-4 py-3 text-[14px] text-ink-2">This stage has no checklist.</p>
+      ) : (
+        <ul className="px-4">
+          {visible.map((row) => (
+            <li key={row.label} className="border-b border-border last:border-b-0">
+              <label
+                className={cn(
+                  "flex items-center gap-3 py-2.5",
+                  canWrite ? "cursor-pointer" : "cursor-default",
+                  row.done && "text-ink-3",
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={row.done}
+                  disabled={!canWrite}
+                  onChange={() => toggle(row.label, !row.done)}
+                  className="size-4 accent-[var(--accent-fill)]"
+                />
+                <span className="min-w-0 flex-1">{row.label}</span>
+                {!row.done && row.label === c.pending_items[0] && <Chip tone="info">Next</Chip>}
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+      {(rows.length > SHOWN_ITEMS || canWrite) && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2.5 text-[13px] text-ink-2">
+          {rows.length > SHOWN_ITEMS && (
+            <MoreButton onClick={() => setShowAll((v) => !v)}>
+              {showAll ? "Show fewer" : `Show ${rows.length - SHOWN_ITEMS} more`}
+            </MoreButton>
+          )}
+          <div className="grow" />
+          {canWrite && (
+            <>
+              <span>Move stage</span>
+              <select
+                aria-label="Move the HubSpot ticket to stage"
+                value={target}
+                onChange={(e) => setTarget(e.target.value)}
+                className="h-8 rounded-[6px] border border-border bg-surface px-2 text-[13px] text-foreground"
+              >
+                <option value="">Choose a stage…</option>
+                {STAGES.filter(
+                  (s) => s !== program.stage && !(internal && (s === "New" || s === "Pre Sales")),
+                ).map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!target}
+                onClick={() =>
+                  setPending({
+                    change: `move the ticket from ${program.stage} to ${target}`,
+                    run: () =>
+                      moveHubspotStage(ticketId, {
+                        stage_key: stageKey(target),
+                        expected_stage_key: current,
+                      }),
+                  })
+                }
+              >
+                Move
+              </Button>
+            </>
+          )}
         </div>
       )}
       <HubspotConfirm
@@ -624,18 +627,16 @@ function LatestUpdate({ ticketId }: { ticketId: string }) {
       {isLoading ? (
         <Skeleton className="h-24" />
       ) : !latest ? (
-        <p className="text-[14px] text-ink-2">
+        <p className="text-[13px] text-ink-2">
           No update posted yet. Use Post update at the top of the page.
         </p>
       ) : (
         <>
-          <p className="whitespace-pre-wrap font-medium">{latest.body}</p>
+          <p className="whitespace-pre-wrap">{latest.body}</p>
           {latest.blockers && (
-            <p className="mt-2 rounded-[8px] bg-danger-bg px-3 py-2.5 text-[13px] text-danger">
-              Blocked: {latest.blockers}
-            </p>
+            <p className="mt-2 text-[13px] text-danger">Blocked: {latest.blockers}</p>
           )}
-          <p className="mt-2.5 text-[12px] text-ink-3">
+          <p className="mt-2.5 text-[13px] text-ink-2">
             {orUnassigned(latest.author_name)} · {formatWhen(latest.created_at)}
             {updates.length > 1 && (
               <>
@@ -657,33 +658,38 @@ function LatestUpdate({ ticketId }: { ticketId: string }) {
   );
 }
 
-function Brief({ ticketId, program }: { ticketId: string; program: Program }) {
+function Brief({
+  ticketId,
+  program,
+  sowClient,
+  canLink,
+  onLink,
+}: {
+  ticketId: string;
+  program: Program;
+  sowClient: string | null;
+  canLink: boolean;
+  onLink: () => void;
+}) {
   const docs = useQuery(programDocumentsQueryOptions(ticketId)).data;
   const regs = useQuery(registrationsQueryOptions(ticketId)).data;
   const sow = docs?.sow?.details ?? null;
   const linked = program.company_name ?? program.blackops_account_name;
-  const sowClient = known(sow?.customer);
   const est = regs?.estimate;
   const people = peopleByName(program);
-  const [linking, setLinking] = useState(false);
   const [assigning, setAssigning] = useState(false);
   const canAssign = useCan("users.manage");
   const assigned = useQuery(assignmentsQuery(ticketId)).data ?? [];
-  const [copied, setCopied] = useState(false);
   const rows: { k: string; v: ReactNode }[] = [
     {
       k: "Client",
       v: linked ? (
         linked
-      ) : sowClient ? (
+      ) : canLink ? (
         <span className="text-ink-2">
           Not linked ·{" "}
-          <button
-            type="button"
-            onClick={() => setLinking(true)}
-            className="text-primary hover:underline"
-          >
-            How to link {sowClient}
+          <button type="button" onClick={onLink} className="text-primary hover:underline">
+            {sowClient ? `Link ${sowClient}` : "Link client"}
           </button>
         </span>
       ) : (
@@ -737,45 +743,311 @@ function Brief({ ticketId, program }: { ticketId: string; program: Program }) {
   ];
   return (
     <Section title="Program brief">
-      <dl className="-mt-1">
+      <dl>
         {rows.map((r) => (
           <div
             key={r.k}
-            className="flex justify-between gap-4 border-t border-border py-2.5 text-[13px] first:border-t-0"
+            className="flex justify-between gap-4 border-t border-border py-2.5 text-[14px] first:border-t-0 first:pt-0"
           >
-            <dt className="shrink-0 text-ink-2">{r.k}</dt>
+            <dt className="shrink-0 text-[13px] text-ink-2">{r.k}</dt>
             <dd className="min-w-0 text-right">{r.v}</dd>
           </div>
         ))}
       </dl>
-      <Dialog open={linking} onOpenChange={setLinking}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Link {sowClient} in HubSpot</DialogTitle>
-            <DialogDescription>
-              ProgramOps reads the client from HubSpot and can't link it from here. The SOW names{" "}
-              <strong>{sowClient}</strong>. In HubSpot, open ticket {program.ticket_id}, associate
-              that company, then press Sync in the top bar. The client appears here after the sync.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                void navigator.clipboard?.writeText(sowClient ?? "");
-                setCopied(true);
-              }}
-            >
-              {copied ? "Copied" : "Copy name"}
-            </Button>
-            <Button variant="outline" onClick={() => setLinking(false)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
       {assigning && (
         <AssignDialog ticketId={ticketId} current={assigned} onClose={() => setAssigning(false)} />
+      )}
+    </Section>
+  );
+}
+
+function LinkClientDialog({
+  open,
+  onOpenChange,
+  sowClient,
+  current,
+  ticketId,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  sowClient: string | null;
+  /** The client shown now (null when none): HubSpot refuses the change if someone linked another meanwhile. */
+  current: string | null;
+  ticketId: string;
+}) {
+  const qc = useQueryClient();
+  const [name, setName] = useState("");
+  const link = useMutation({
+    mutationFn: () => linkHubspotClient(ticketId, { name, expected: current }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["programs"] });
+      onOpenChange(false);
+    },
+  });
+  const { reset } = link;
+  useEffect(() => {
+    if (open) {
+      setName(current ?? sowClient ?? "");
+      reset();
+    }
+  }, [open, current, sowClient, reset]);
+  const trimmed = name.trim();
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (trimmed) link.mutate();
+          }}
+          className="space-y-4"
+        >
+          <DialogHeader>
+            <DialogTitle>{current ? "Change the client" : "Link the client"}</DialogTitle>
+            <DialogDescription>
+              Sets the Company Name on HubSpot ticket {ticketId}, so HubSpot and ProgramOps show the
+              same client.{sowClient ? ` The SOW names ${sowClient}.` : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <label htmlFor="link-client-name" className="text-[13px] font-medium">
+              Client name
+            </label>
+            <Input
+              id="link-client-name"
+              value={name}
+              maxLength={120}
+              autoFocus
+              onChange={(e) => setName(e.target.value)}
+            />
+            <div className="flex items-center justify-between gap-2 text-[12px] text-ink-2">
+              <span>This updates the live HubSpot ticket.</span>
+              {sowClient && trimmed !== sowClient && (
+                <button
+                  type="button"
+                  onClick={() => setName(sowClient)}
+                  className="text-primary hover:underline"
+                >
+                  Use "{sowClient}" from the SOW
+                </button>
+              )}
+            </div>
+            {link.isError && (
+              <p role="alert" className="text-[13px] text-danger">
+                {link.error instanceof Error ? link.error.message : "Couldn't link the client."}
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!trimmed || trimmed === current || link.isPending}>
+              {link.isPending ? "Linking…" : current ? "Change client" : "Link client"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** The nine things a program needs to run, worked out from data the overview already loads. */
+function ProgramSetup({
+  ticketId,
+  program,
+  sowClient,
+  canLink,
+  onLink,
+}: {
+  ticketId: string;
+  program: Program;
+  sowClient: string | null;
+  canLink: boolean;
+  onLink: () => void;
+}) {
+  const docsQ = useQuery(programDocumentsQueryOptions(ticketId));
+  const regsQ = useQuery(registrationsQueryOptions(ticketId));
+  const roundsQ = useQuery(roundsQuery(ticketId));
+  const updatesQ = useQuery(updatesQuery(ticketId));
+  const report = useQuery(reportQuery(ticketId)).data;
+  const loading = docsQ.isLoading || regsQ.isLoading || roundsQ.isLoading || updatesQ.isLoading;
+  const docs = docsQ.data;
+  const est = regsQ.data?.estimate;
+  const sow = docs?.sow?.details ?? null;
+  const tab = (t: "registrations" | "rounds" | "requests") => (
+    <Button asChild size="sm" variant="outline" className="shrink-0">
+      <Link to="/programs/$ticketId" params={{ ticketId }} search={{ tab: t }}>
+        {t === "registrations"
+          ? "Connect Slack"
+          : t === "rounds"
+            ? "Set stage dates"
+            : "Post update"}
+      </Link>
+    </Button>
+  );
+  const linked = program.company_name ?? program.blackops_account_name;
+  const target = report?.registrations.target ?? est?.target ?? sow?.registration_target ?? null;
+  const slack = regsQ.data?.slack;
+  const datesSet =
+    (roundsQ.data ?? []).some((r) => r.starts_on || r.ends_on) ||
+    (sow?.timeline ?? []).some((m) => m.start || m.end);
+  const hasUpdate = (updatesQ.data?.items ?? []).some((n) => n.kind === "update");
+  const items: {
+    key: string;
+    done: boolean;
+    ok: ReactNode;
+    slot: ReactNode;
+    hint?: ReactNode;
+    action?: ReactNode;
+  }[] = [
+    {
+      key: "sow",
+      done: !!docs?.sow,
+      ok: (
+        <OkRow
+          label="Statement of Work uploaded"
+          value={docs?.sow?.file.uploaded_at ? formatDay(docs.sow.file.uploaded_at) : undefined}
+        />
+      ),
+      slot: "Statement of Work",
+      hint: "Not uploaded yet.",
+      action: (
+        <Button asChild size="sm" variant="outline" className="shrink-0">
+          <Link to="/programs/$ticketId" params={{ ticketId }} search={{ tab: "documents" }}>
+            Upload
+          </Link>
+        </Button>
+      ),
+    },
+    {
+      key: "poa",
+      done: !!docs?.poa,
+      ok: (
+        <OkRow
+          label="Plan of action uploaded"
+          value={docs?.poa?.file.uploaded_at ? formatDay(docs.poa.file.uploaded_at) : undefined}
+        />
+      ),
+      slot: "Plan of action",
+      hint: "Not uploaded yet.",
+      action: (
+        <Button asChild size="sm" variant="outline" className="shrink-0">
+          <Link to="/programs/$ticketId" params={{ ticketId }} search={{ tab: "documents" }}>
+            Upload
+          </Link>
+        </Button>
+      ),
+    },
+    {
+      key: "target",
+      done: target != null,
+      ok: <OkRow label="Registration target" value={target != null ? nf(target) : undefined} />,
+      slot: "Registration target",
+      hint: "No target set on the SOW.",
+    },
+    {
+      key: "window",
+      done: !!est?.start,
+      ok: (
+        <OkRow
+          label="Registration window"
+          value={
+            est?.start
+              ? `${formatDay(est.start)}${est.end ? ` – ${formatDay(est.end)}` : ""}`
+              : undefined
+          }
+        />
+      ),
+      slot: "Registration window",
+      hint: "No start date yet.",
+    },
+    {
+      key: "owner",
+      done: !!program.owner_name,
+      ok: <OkRow label="Owner assigned" value={program.owner_name ?? undefined} />,
+      slot: "Owner",
+      hint: "Nobody owns this program.",
+    },
+    {
+      key: "client",
+      done: !!linked,
+      ok: <OkRow label="Client linked" value={linked ?? undefined} />,
+      slot: "Client",
+      hint: sowClient
+        ? `${sowClient} is on the SOW but not linked in HubSpot.`
+        : "No client is set on this ticket.",
+      action: canLink ? (
+        <Button size="sm" variant="outline" className="shrink-0" onClick={onLink}>
+          Link client
+        </Button>
+      ) : undefined,
+    },
+    {
+      key: "slack",
+      done: !!slack?.channel_id,
+      ok: (
+        <OkRow
+          label="Slack channel connected"
+          value={slack?.channel_name ? `#${slack.channel_name}` : undefined}
+        />
+      ),
+      slot: "Slack channel",
+      hint: "Updates and reminders stay in ProgramOps only.",
+      action: tab("registrations"),
+    },
+    {
+      key: "dates",
+      done: datesSet,
+      ok: <OkRow label="Stage dates set" />,
+      slot: "Stage dates",
+      hint: "No round or SOW stage has dates.",
+      action: tab("rounds"),
+    },
+    {
+      key: "update",
+      done: hasUpdate,
+      ok: <OkRow label="Daily update posted" />,
+      slot: "First daily update",
+      hint: "None posted yet.",
+      action: tab("requests"),
+    },
+  ];
+  const done = items.filter((i) => i.done);
+  const missing = items.filter((i) => !i.done);
+  return (
+    <Section
+      title="Program setup"
+      meta={loading ? undefined : `${done.length} of ${items.length} complete`}
+    >
+      {loading ? (
+        <Skeleton className="h-40" />
+      ) : (
+        <>
+          <div
+            className="mb-2 h-1 overflow-hidden rounded-full bg-border"
+            role="progressbar"
+            aria-label="Program setup progress"
+            aria-valuenow={Math.round((100 * done.length) / items.length)}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <div
+              className="h-1 rounded-full bg-accent-fill"
+              style={{ width: `${(100 * done.length) / items.length}%` }}
+            />
+          </div>
+          {done.map((i) => (
+            <div key={i.key}>{i.ok}</div>
+          ))}
+          {missing.length > 0 && (
+            <div className={cn("flex flex-col gap-2", done.length > 0 && "mt-2")}>
+              {missing.map((i) => (
+                <SlotRow key={i.key} title={i.slot} hint={i.hint} action={i.action} />
+              ))}
+            </div>
+          )}
+        </>
       )}
     </Section>
   );
@@ -934,17 +1206,20 @@ function Notes({ ticketId }: { ticketId: string }) {
           <Textarea
             value={body}
             onChange={(e) => setBody(e.target.value)}
-            placeholder="Client confirmed creatives by Thursday"
+            placeholder="Write a note for the team…"
             aria-label="Internal note"
             rows={2}
-            className="min-h-16 bg-raised"
+            className="min-h-[72px]"
           />
           {add.isError && (
             <p className="text-[13px] text-danger">
               {add.error instanceof Error ? add.error.message : "Couldn't save the note."}
             </p>
           )}
-          <div className="flex justify-end">
+          <div className="flex items-center gap-2">
+            <span className="grow text-[13px] text-ink-2">
+              {!isLoading && notes.length === 0 ? "No internal notes yet." : ""}
+            </span>
             <Button type="submit" size="sm" variant="outline" disabled={!canSend}>
               {add.isPending && <Loader2 className="size-3.5 animate-spin" />}
               Add note
@@ -955,13 +1230,15 @@ function Notes({ ticketId }: { ticketId: string }) {
       {isLoading ? (
         <Skeleton className="mt-2 h-16" />
       ) : notes.length === 0 ? (
-        <p className="mt-2 text-[13px] text-ink-2">No internal notes yet.</p>
+        canEdit ? null : (
+          <p className="text-[13px] text-ink-2">No internal notes yet.</p>
+        )
       ) : (
         <ul className={cn("mt-2", showAll && "max-h-80 overflow-y-auto")}>
           {shown.map((n) => (
             <li key={n.note_id} className="border-t border-border py-2.5">
-              <p className="whitespace-pre-wrap text-[13px]">{n.body}</p>
-              <p className="text-[12px] text-ink-3">
+              <p className="whitespace-pre-wrap text-[14px]">{n.body}</p>
+              <p className="text-[13px] text-ink-2">
                 {n.author_name ??
                   (n.author_user_id != null
                     ? `HubSpot user ${n.author_user_id}`
@@ -983,6 +1260,7 @@ function HubspotHistory({ ticketId }: { ticketId: string }) {
   const shown = showAll ? history : history.slice(0, 3);
   return (
     <Section
+      flush
       title="HubSpot history"
       meta={
         history.length > 3 ? (
@@ -993,9 +1271,11 @@ function HubspotHistory({ ticketId }: { ticketId: string }) {
       }
     >
       {isLoading ? (
-        <Skeleton className="h-20" />
+        <Skeleton className="m-4 h-20" />
       ) : history.length === 0 ? (
-        <p className="text-[13px] text-ink-2">No changes recorded for this program yet.</p>
+        <p className="px-4 py-3 text-[13px] text-ink-2">
+          No changes recorded for this program yet.
+        </p>
       ) : (
         <ol className={cn(showAll && "max-h-96 overflow-y-auto")}>
           {shown.map((h, i) => {
@@ -1003,10 +1283,10 @@ function HubspotHistory({ ticketId }: { ticketId: string }) {
             return (
               <li
                 key={`${h.property_name}|${h.changed_at}|${i}`}
-                className="flex items-start justify-between gap-3 border-t border-border py-2.5 text-[13px] first:border-t-0"
+                className="flex items-start justify-between gap-3 border-b border-border px-4 py-2.5 text-[14px] last:border-b-0"
               >
                 <div className="min-w-0">
-                  <p>{line.text}</p>
+                  <p className="font-medium">{line.text}</p>
                   {(line.added.length > 0 || line.removed.length > 0) && (
                     <div className="mt-1.5 flex flex-wrap gap-1.5">
                       {line.added.map((a) => (
@@ -1021,7 +1301,7 @@ function HubspotHistory({ ticketId }: { ticketId: string }) {
                     </div>
                   )}
                 </div>
-                <span className="shrink-0 text-[12px] text-ink-3">{formatWhen(h.changed_at)}</span>
+                <span className="shrink-0 text-[13px] text-ink-2">{formatWhen(h.changed_at)}</span>
               </li>
             );
           })}

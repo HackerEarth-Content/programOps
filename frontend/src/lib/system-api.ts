@@ -45,3 +45,9 @@ export const moveHubspotStage = (
     `/programs/${ticketId}/hubspot/stage`,
     body,
   );
+
+/** Link the client: sets the HubSpot ticket's Company Name. 409 if a different client was linked there meanwhile. */
+export const linkHubspotClient = (
+  ticketId: string,
+  body: { name: string; expected: string | null },
+) => sendJson<{ company_name: string }>("POST", `/programs/${ticketId}/hubspot/client`, body);
