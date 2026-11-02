@@ -336,8 +336,20 @@ export type Checklist = {
   created_at: string;
   progress: { done: number; total: number };
   items: ChecklistItem[];
+  route?: string | null;
+  team?: RequestTeam | null;
 };
-export type Template = { id: number; name: string; kind: string; active: boolean };
+export type RequestTeam = "marketing" | "content";
+export type Template = {
+  id: number;
+  key: string;
+  name: string;
+  kind: string;
+  active: boolean;
+  /** "CSM → Marketing" / "CSM → Content" for the routed request types, else null. */
+  route: string | null;
+  team: RequestTeam | null;
+};
 export const requestsQuery = (ticketId: string) =>
   queryOptions({
     queryKey: ["programs", ticketId, "requests"],

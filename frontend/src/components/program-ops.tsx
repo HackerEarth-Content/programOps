@@ -5,10 +5,22 @@ import {
   useQueryClient,
   type UseMutationResult,
 } from "@tanstack/react-query";
-import { AlertTriangle, Hash, MoreHorizontal, Plus, RefreshCw, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Ban,
+  CheckCircle2,
+  Hash,
+  Inbox,
+  MoreHorizontal,
+  Plus,
+  RefreshCw,
+  X,
+} from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import { toast } from "sonner";
+import { DatePicker, DateTimePicker } from "@/components/date-picker";
+import { HubspotHistory } from "@/components/program-overview";
 import {
   Avatar,
   Bar,
@@ -66,18 +78,17 @@ import {
   communicationsQuery,
   countsHistoryQuery,
   createRound,
-  decideChange,
   deleteRound,
   dependenciesQuery,
   patchCommunication,
   patchDependency,
   patchRequest,
   patchRound,
+  previewRequest,
+  type RequestPreview,
   recordCounts,
   planCommunication,
-  proposeChange,
   raiseRequest,
-  setChangeTask,
   confirmChecklistItem,
   suggestedRoundsQuery,
   supersedeCounts,
@@ -95,8 +106,6 @@ import {
   type RequestStatus,
   type RoundKind,
   type RoundStatus,
-  type SubjectType,
-  type TimelineChange,
 } from "@/lib/ops-extra-api";
 import { groupLog, logSentence, splitList } from "@/lib/history";
 import { cn } from "@/lib/utils";
@@ -1361,7 +1370,10 @@ function RequestCard({
     <Card>
       <div className="flex items-start justify-between gap-3 px-[18px] pt-4">
         <div className="min-w-0">
-          <h3 className="text-[16px] font-semibold leading-[22px]">{c.title}</h3>
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-[16px] font-semibold leading-[22px]">{c.title}</h3>
+            {c.route && <Chip tone={c.team === "content" ? "am" : "marketing"}>{c.route}</Chip>}
+          </div>
           <p className="t-data-sm text-muted-foreground">
             {c.requested_by_name ?? "Unknown"} · {timeAgo(c.created_at)}
             {c.due_at && (
@@ -1480,86 +1492,88 @@ function RequestCard({
   );
 }
 
-type ChannelCheck = {
-  state: "idle" | "loading" | "ok" | "error";
-  text: string;
-  note?: string | undefined;
+const SLACK_ICON: Record<string, ReactNode> = {
+  inbox_tray: <Inbox className="inline size-4" aria-hidden />,
+  white_check_mark: <CheckCircle2 className="inline size-4" aria-hidden />,
+  arrows_counterclockwise: <RefreshCw className="inline size-4" aria-hidden />,
+  no_entry_sign: <Ban className="inline size-4" aria-hidden />,
 };
 
-/** A Slack channel ID with a live preview of the channel it points to, so nothing is saved against a wrong one. */
-function SlackChannelField({
-  ticketId,
-  value,
-  onChange,
-  onCheck,
-}: {
-  ticketId: string;
-  value: string;
-  onChange: (v: string) => void;
-  onCheck: (c: ChannelCheck) => void;
-}) {
-  const [check, setCheck] = useState<ChannelCheck>({ state: "idle", text: "" });
-  useEffect(() => {
-    const id = value.trim();
-    const next = (c: ChannelCheck) => {
-      setCheck(c);
-      onCheck(c);
-    };
-    if (!id) return next({ state: "idle", text: "" });
-    next({ state: "loading", text: "" });
-    let stale = false;
-    const t = setTimeout(() => {
-      lookupSlackChannel(ticketId, id)
-        .then(
-          (r) =>
-            !stale &&
-            next({
-              state: "ok",
-              text: `#${r.channel_name}`,
-              note: r.is_member
-                ? undefined
-                : r.is_private
-                  ? "The bot isn't in this private channel: in Slack, type /invite and pick the bot."
-                  : "The bot isn't in this channel yet. It joins public channels by itself with the first message.",
-            }),
-        )
-        .catch((e) => !stale && next({ state: "error", text: errorText(e) }));
-    }, 400);
-    return () => {
-      stale = true;
-      clearTimeout(t);
-    };
-    // onCheck is a state setter from the parent; the lookup must only rerun when the id changes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, ticketId]);
+/** Slack's *bold* and :emoji: markup drawn the way the message will look in the channel. */
+function SlackText({ text }: { text: string }) {
   return (
-    <Field label="Slack channel ID (optional)">
-      <Input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="C0123456789"
-        className="font-mono"
-        aria-describedby="slack-channel-preview"
-      />
-      <p
-        id="slack-channel-preview"
-        aria-live="polite"
-        className={cn(
-          "mt-1 min-h-5 t-body-sm",
-          check.state === "error" ? "text-status-critical" : "text-muted-foreground",
-        )}
-      >
-        {check.state === "loading" && "Looking up the channel…"}
-        {check.state === "ok" && `Posts to ${check.text}`}
-        {check.state === "ok" && check.note && (
-          <span className="block text-status-warning">{check.note}</span>
-        )}
-        {check.state === "error" && check.text}
-        {check.state === "idle" &&
-          "Updates for this request are posted there. Leave empty for none."}
-      </p>
-    </Field>
+    <div className="space-y-0.5 text-[13px] leading-5">
+      {text.split("\n").map((line, i) => (
+        <p key={i} className="break-words">
+          {line.split(/(\*[^*]+\*|:[a-z_]+:)/g).map((part, j) => {
+            if (/^\*[^*]+\*$/.test(part)) return <strong key={j}>{part.slice(1, -1)}</strong>;
+            const emoji = /^:([a-z_]+):$/.exec(part);
+            if (emoji)
+              return (
+                <span key={j} className="mr-1 align-text-bottom">
+                  {SLACK_ICON[emoji[1]!] ?? part}
+                </span>
+              );
+            return part;
+          })}
+        </p>
+      ))}
+    </div>
   );
+}
+
+function SlackPreview({
+  preview,
+  loading,
+}: {
+  preview: RequestPreview | undefined;
+  loading: boolean;
+}) {
+  return (
+    <div className="space-y-2">
+      <p className="text-[13px] font-medium">Slack message</p>
+      <div className="rounded-lg border border-border bg-raised p-3">
+        <div className="mb-2 flex items-center gap-2 text-[12px]">
+          <span className="grid size-5 place-items-center rounded-[4px] bg-accent-fill text-[11px] font-semibold text-on-accent">
+            P
+          </span>
+          <span className="font-medium">ProgramOps</span>
+          <span className="text-ink-2">APP · just now</span>
+        </div>
+        {preview ? (
+          <SlackText text={preview.text} />
+        ) : (
+          <p className="text-[13px] text-ink-2">
+            {loading ? "Building the preview…" : "Describe the request to see the message."}
+          </p>
+        )}
+      </div>
+      {preview && (
+        <p className="text-[13px] text-ink-2" aria-live="polite">
+          {preview.channel_id ? (
+            <>
+              Posts to this program&apos;s Slack channel{" "}
+              <span className="font-mono font-medium text-foreground">
+                {preview.channel_name ? `#${preview.channel_name}` : preview.channel_id}
+              </span>
+              .
+            </>
+          ) : (
+            "This program has no Slack channel linked, so nothing is posted. Link one under Registrations."
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function useDebounced<T>(value: T, ms = 350): T {
+  const [v, setV] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setV(value), ms);
+    return () => clearTimeout(id);
+  }, [value, ms]);
+  return v;
 }
 
 function RaiseRequest({
@@ -1572,89 +1586,104 @@ function RaiseRequest({
   onClose: () => void;
 }) {
   const { data: templates = [] } = useQuery(requestTemplatesQuery);
-  const canLink = useCan("integrations.link"); // sending updates to a Slack channel takes the same permission as linking one
+  // Two routes: CSM to Marketing and CSM to Content. (Without them, fall back to whatever active types exist.)
+  const active = templates.filter((t) => t.active);
+  const routed = active.filter((t) => t.team);
+  const choices = routed.length ? routed : active;
   const [templateId, setTemplateId] = useState("");
+  const chosen = templateId || (choices[0] ? String(choices[0].id) : "");
+  const [subject, setSubject] = useState("");
   const [detail, setDetail] = useState("");
   const [due, setDue] = useState("");
-  const [channel, setChannel] = useState("");
-  const [channelCheck, setChannelCheck] = useState<ChannelCheck>({ state: "idle", text: "" });
+  const body = {
+    template_id: Number(chosen),
+    title: subject.trim() || null,
+    detail: detail.trim() || null,
+    due_at: due ? `${due}T00:00:00` : null,
+  };
+  const debounced = useDebounced(body);
+  const preview = useQuery({
+    queryKey: ["request-preview", ticketId, debounced],
+    queryFn: () => previewRequest(ticketId, debounced),
+    enabled: !!chosen && !!debounced.title,
+    staleTime: 30_000,
+  });
   const raise = useMutation({
-    mutationFn: () =>
-      raiseRequest(ticketId, {
-        template_id: Number(templateId),
-        detail: detail.trim() || null,
-        due_at: due ? `${due}T00:00:00` : null,
-        slack_channel_id: channel.trim() || null,
-      }),
+    mutationFn: () => raiseRequest(ticketId, body),
     onSuccess: () => {
-      setTemplateId("");
+      setSubject("");
       setDetail("");
       setDue("");
-      setChannel("");
       onClose();
       onChanged();
+      toast.success("Request raised");
     },
   });
   return (
     <Card>
       <CardHeader title="Raise a special request" divided />
       <form
-        className="space-y-3 p-[18px]"
+        className="grid gap-5 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,380px)]"
         onSubmit={(e) => {
           e.preventDefault();
           raise.mutate();
         }}
       >
-        <div className="grid gap-2.5 sm:grid-cols-[1fr_150px]">
-          <Field label="Request type">
-            <Select value={templateId} onChange={(e) => setTemplateId(e.target.value)} required>
-              <option value="">Choose…</option>
-              {templates
-                .filter((t) => t.active)
-                .map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-            </Select>
+        <div className="space-y-3">
+          <div>
+            <p className="mb-1.5 text-[13px] font-medium">Who is it for?</p>
+            <Segmented
+              value={chosen}
+              onChange={setTemplateId}
+              options={choices.map((t) => ({ id: String(t.id), label: t.route ?? t.name }))}
+            />
+          </div>
+          <div className="grid gap-2.5 sm:grid-cols-[1fr_190px]">
+            <Field label="What do you need?">
+              <Input
+                value={subject}
+                maxLength={140}
+                onChange={(e) => setSubject(e.target.value)}
+                placeholder="e.g. Reminder email variant for shortlisted candidates"
+                required
+              />
+            </Field>
+            <Field label="Needed by">
+              <DatePicker
+                label="Needed by"
+                value={due}
+                min={today()}
+                onChange={setDue}
+                placeholder="No date"
+              />
+            </Field>
+          </div>
+          <Field label="Detail">
+            <Textarea
+              value={detail}
+              onChange={(e) => setDetail(e.target.value)}
+              rows={3}
+              placeholder="Context, links, who the audience is…"
+            />
           </Field>
-          <Field label="Due">
-            <Input type="date" value={due} min={today()} onChange={(e) => setDue(e.target.value)} />
-          </Field>
+          <div className="flex items-center gap-2">
+            <Button
+              type="submit"
+              size="sm"
+              disabled={!chosen || !subject.trim() || raise.isPending}
+            >
+              Raise request
+            </Button>
+            <Button type="button" size="sm" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <MutationError m={raise} />
+          </div>
         </div>
-        <Field label="Detail">
-          <Textarea
-            value={detail}
-            onChange={(e) => setDetail(e.target.value)}
-            rows={2}
-            placeholder="What does the client need?"
-          />
-        </Field>
-        {canLink && (
-          <SlackChannelField
-            ticketId={ticketId}
-            value={channel}
-            onChange={setChannel}
-            onCheck={setChannelCheck}
-          />
-        )}
-        <div className="flex items-center gap-2">
-          <Button
-            type="submit"
-            size="sm"
-            disabled={
-              !templateId ||
-              raise.isPending ||
-              (channel.trim() !== "" && channelCheck.state !== "ok")
-            }
-          >
-            Raise request
-          </Button>
-          <Button type="button" size="sm" variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <MutationError m={raise} />
-        </div>
+        <SlackPreview
+          preview={subject.trim() ? preview.data : undefined}
+          loading={preview.isFetching}
+        />
       </form>
     </Card>
   );
@@ -1772,6 +1801,13 @@ function Feed({ ticketId, onChanged }: { ticketId: string; onChanged: () => void
   const [comment, setComment] = useDraft(`${ticketId}:comment`);
   const q = useInfiniteQuery(updatesFeedQuery(ticketId));
   const items = q.data?.pages.flatMap((p) => p.items) ?? [];
+  const days: { day: string; entries: typeof items }[] = [];
+  for (const u of items) {
+    const day = istDay(u.created_at);
+    const last = days[days.length - 1];
+    if (last && last.day === day) last.entries.push(u);
+    else days.push({ day, entries: [u] });
+  }
   const talk = useMutation({
     mutationFn: () => postComment(ticketId, comment.trim()),
     onSuccess: () => {
@@ -1781,48 +1817,82 @@ function Feed({ ticketId, onChanged }: { ticketId: string; onChanged: () => void
     },
   });
   return (
-    <Card className="flex flex-col">
-      <CardHeader title="Updates and comments" meta="Newest first" />
-      <div className="flex-1 px-4 pb-4">
+    // a fixed-height card: the list scrolls inside it, the comment box stays put
+    <Card className="flex max-h-[560px] min-h-[320px] flex-col">
+      <CardHeader
+        title="Updates and comments"
+        meta={
+          items.length
+            ? `${items.length}${q.hasNextPage ? "+" : ""} · newest first`
+            : "Newest first"
+        }
+        divided
+      />
+      <div
+        className="min-h-0 flex-1 overflow-y-auto"
+        tabIndex={0}
+        role="region"
+        aria-label="Updates and comments, scrollable"
+      >
         {q.isLoading ? (
-          <ListSkeleton rows={2} />
+          <div className="p-4">
+            <ListSkeleton rows={2} />
+          </div>
         ) : q.isError ? (
-          <ErrorBox error={q.error} onRetry={() => void q.refetch()} />
+          <div className="p-4">
+            <ErrorBox error={q.error} onRetry={() => void q.refetch()} />
+          </div>
         ) : items.length === 0 ? (
-          <EmptyState
-            title="Nothing posted yet"
-            hint="Daily updates and comments will appear here."
-          />
+          <div className="p-4">
+            <EmptyState
+              title="Nothing posted yet"
+              hint="Daily updates and comments will appear here."
+            />
+          </div>
         ) : (
-          <ul className="divide-y divide-border">
-            {items.map((u) => (
-              <li key={u.note_id} className="py-3 first:pt-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Avatar name={u.author_name} />
-                  <span className="text-[14px] font-medium">{u.author_name ?? "Unknown"}</span>
-                  <Chip>{titleCase(u.kind)}</Chip>
-                  {u.health && <HealthPill health={u.health} />}
-                  <span
-                    className="ml-auto text-[13px] text-ink-2"
-                    title={formatDateTime(u.created_at)}
-                  >
-                    {u.source !== "programops" && `${u.source} · `}
-                    {timeAgo(u.created_at)}
-                  </span>
-                </div>
-                <p className="mt-1.5 whitespace-pre-wrap text-[14px]">{u.body}</p>
-                {u.blockers && (
-                  <p className="mt-1 text-[13px] text-danger">
-                    <span className="mr-1.5 font-medium">Blockers</span>
-                    {u.blockers}
-                  </p>
-                )}
-              </li>
-            ))}
-          </ul>
+          days.map((g) => (
+            <section key={g.day}>
+              <h3 className="sticky top-0 z-[1] border-b border-border bg-raised px-4 py-1.5 text-[12px] font-medium text-ink-2">
+                {dayHeading(g.day)}
+              </h3>
+              <ul>
+                {g.entries.map((u) => (
+                  <li key={u.note_id} className="border-b border-border px-4 py-3 last:border-b-0">
+                    <div className="flex items-start gap-2.5">
+                      <Avatar name={u.author_name} className="mt-0.5" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <span className="text-[14px] font-medium">
+                            {u.author_name ?? "Unknown"}
+                          </span>
+                          <Chip>{titleCase(u.kind)}</Chip>
+                          {u.health && <HealthPill health={u.health} />}
+                          <time
+                            dateTime={u.created_at}
+                            title={formatDateTime(u.created_at)}
+                            className="ml-auto text-[12px] text-ink-2"
+                          >
+                            {u.source !== "programops" && `${u.source} · `}
+                            {timeOf(u.created_at)}
+                          </time>
+                        </div>
+                        <p className="mt-1 whitespace-pre-wrap text-[14px]">{u.body}</p>
+                        {u.blockers && (
+                          <p className="mt-1.5 flex gap-1.5 text-[13px]">
+                            <span className="shrink-0 font-medium text-danger">Blockers</span>
+                            <span className="text-ink-2">{u.blockers}</span>
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))
         )}
         {q.hasNextPage && (
-          <div className="mt-3 text-center">
+          <div className="p-3 text-center">
             <Button
               size="sm"
               variant="outline"
@@ -1836,7 +1906,7 @@ function Feed({ ticketId, onChanged }: { ticketId: string; onChanged: () => void
       </div>
       {canComment && (
         <form
-          className="border-t border-border p-4"
+          className="border-t border-border p-3"
           onSubmit={(e) => {
             e.preventDefault();
             talk.mutate();
@@ -2117,12 +2187,7 @@ function Dependencies({ ticketId, onChanged }: { ticketId: string; onChanged: ()
                 placeholder="Client owner"
                 aria-label="Client owner"
               />
-              <Input
-                type="date"
-                value={due}
-                onChange={(e) => setDue(e.target.value)}
-                aria-label="Due"
-              />
+              <DatePicker label="Due" value={due} onChange={setDue} placeholder="Due date" />
             </div>
             <div className="flex items-center gap-2">
               <Button type="submit" size="sm" disabled={!title.trim() || add.isPending}>
@@ -2155,19 +2220,17 @@ function Communications({ ticketId, onChanged }: { ticketId: string; onChanged: 
   const [kind, setKind] = useState<CommKind>("reminder");
   const [audience, setAudience] = useState("");
   const [when, setWhen] = useState("");
-  const [recipients, setRecipients] = useState("");
   const add = useMutation({
     mutationFn: () =>
       planCommunication(ticketId, {
         kind,
         audience: audience.trim(),
         planned_for: new Date(when).toISOString(),
-        recipients: recipients === "" ? null : Number(recipients),
+        recipients: null,
       }),
     onSuccess: () => {
       setAudience("");
       setWhen("");
-      setRecipients("");
       onChanged();
     },
   });
@@ -2214,7 +2277,6 @@ function Communications({ ticketId, onChanged }: { ticketId: string; onChanged: 
               {c.status === "sent"
                 ? `sent ${formatDateTime(c.sent_at)}`
                 : `planned ${formatDateTime(c.planned_for)}`}
-              {c.recipients != null && ` · ${n(c.recipients)} recipients`}
             </p>
             {canManage && c.status === "planned" && (
               <div className="mt-1 flex gap-1.5">
@@ -2264,261 +2326,20 @@ function Communications({ ticketId, onChanged }: { ticketId: string; onChanged: 
               <Input
                 value={audience}
                 onChange={(e) => setAudience(e.target.value)}
-                placeholder="Audience"
+                placeholder="Who is it for? e.g. Shortlisted candidates"
                 aria-label="Audience"
               />
-              <Input
-                type="datetime-local"
+              <DateTimePicker
+                className="col-span-2"
+                label="Planned for"
                 value={when}
-                onChange={(e) => setWhen(e.target.value)}
-                aria-label="Planned for"
-              />
-              <Input
-                type="number"
-                min={0}
-                value={recipients}
-                onChange={(e) => setRecipients(e.target.value)}
-                placeholder="Recipients"
-                aria-label="Recipients"
-                className="font-mono"
+                min={today()}
+                onChange={setWhen}
               />
             </div>
             <div className="flex items-center gap-2">
               <Button type="submit" size="sm" disabled={!audience.trim() || !when || add.isPending}>
                 Plan
-              </Button>
-              <Button type="button" size="sm" variant="ghost" onClick={close}>
-                Cancel
-              </Button>
-              <MutationError m={add} />
-            </div>
-          </form>
-        )}
-      </AddRow>
-    </MiniCard>
-  );
-}
-
-const CHANGE_TONE = { proposed: "warning", approved: "good", rejected: "serious" } as const;
-const FIELDS_FOR: Record<SubjectType, string[]> = {
-  round: ["starts_on", "ends_on"],
-  activity: ["planned_date"],
-};
-
-function ChangeRow({
-  ch,
-  ticketId,
-  onChanged,
-}: {
-  ch: TimelineChange;
-  ticketId: string;
-  onChanged: () => void;
-}) {
-  const canManage = useCan("request.manage");
-  const [deciding, setDeciding] = useState<"approve" | "reject" | null>(null);
-  const decide = useMutation({
-    mutationFn: (d: "approve" | "reject") => decideChange(ticketId, ch.id, d),
-    onSuccess: () => {
-      setDeciding(null);
-      onChanged();
-    },
-  });
-  const task = useMutation({
-    mutationFn: ({ id, done }: { id: number; done: boolean }) =>
-      setChangeTask(ticketId, ch.id, id, done),
-    onSuccess: onChanged,
-  });
-  return (
-    <li className="px-[18px] py-2.5">
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-[14px] font-medium">
-          {ch.subject_type === "activity" ? (
-            <Link
-              to="/programs/$ticketId"
-              params={{ ticketId }}
-              search={{ tab: "marketing" }}
-              hash={`a=${ch.subject_id}`}
-              className="hover:underline"
-            >
-              {ch.label}
-            </Link>
-          ) : (
-            ch.label
-          )}
-        </p>
-        <Chip tone={CHANGE_TONE[ch.status]}>{titleCase(ch.status)}</Chip>
-      </div>
-      <p className="t-data-sm">
-        <span className="text-muted-foreground">{ch.field}</span>{" "}
-        {ch.original ? formatDate(ch.original) : "–"} → {formatDate(ch.revised)}
-      </p>
-      <p className="t-body-sm text-secondary-foreground">{ch.reason}</p>
-      <p className="t-data-sm text-muted-foreground" title={formatDateTime(ch.created_at)}>
-        {ch.proposed_by_name} · {timeAgo(ch.created_at)}
-        {ch.decided_by_name && ` · ${ch.status} by ${ch.decided_by_name}`}
-      </p>
-      {ch.status === "approved" && ch.tasks.length > 0 && (
-        <ul className="mt-1">
-          {ch.tasks.map((t) => (
-            <li key={t.id} className="flex items-center gap-2 py-0.5">
-              <Checkbox
-                checked={t.done}
-                disabled={!canManage || task.isPending}
-                aria-label={t.label}
-                onCheckedChange={(v) => task.mutate({ id: t.id, done: v === true })}
-              />
-              <span className={cn("t-body-sm", t.done && "text-muted-foreground line-through")}>
-                {t.label}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-      {canManage && ch.status === "proposed" && !deciding && (
-        <div className="mt-1 flex gap-1.5">
-          <Button size="sm" variant="success" onClick={() => setDeciding("approve")}>
-            Approve
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => setDeciding("reject")}>
-            Reject
-          </Button>
-        </div>
-      )}
-      {deciding && (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          <span className="t-body-sm text-secondary-foreground">
-            {deciding === "approve"
-              ? "Approve this change? Follow-up tasks are created and the date is updated."
-              : "Reject this change? It can't be reopened."}
-          </span>
-          <Button
-            size="sm"
-            variant={deciding === "approve" ? "success" : "danger"}
-            disabled={decide.isPending}
-            onClick={() => decide.mutate(deciding)}
-          >
-            Confirm {deciding}
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => setDeciding(null)}>
-            Cancel
-          </Button>
-        </div>
-      )}
-      <MutationError m={decide} />
-      <MutationError m={task} />
-    </li>
-  );
-}
-
-function TimelineChanges({ ticketId, onChanged }: { ticketId: string; onChanged: () => void }) {
-  const canPropose = useCan("request.create");
-  const q = useQuery(timelineChangesQuery(ticketId));
-  const rounds = useQuery(roundsQuery(ticketId));
-  const acts = useQuery(activitiesQuery(ticketId));
-  const [type, setType] = useState<SubjectType>("round");
-  const [subject, setSubject] = useState("");
-  const [field, setField] = useState("");
-  const [revised, setRevised] = useState("");
-  const [reason, setReason] = useState("");
-  const subjects: { id: string; name: string }[] =
-    type === "round"
-      ? (rounds.data ?? []).map((r) => ({ id: String(r.id), name: r.name }))
-      : (acts.data ?? []).map((a) => ({ id: String(a.id), name: `${a.code} · ${a.title}` }));
-  const add = useMutation({
-    mutationFn: () =>
-      proposeChange(ticketId, {
-        subject_type: type,
-        subject_id: subject,
-        field: field || (FIELDS_FOR[type][0] ?? ""),
-        revised,
-        reason: reason.trim(),
-      }),
-    onSuccess: () => {
-      setSubject("");
-      setRevised("");
-      setReason("");
-      onChanged();
-    },
-  });
-  const items = q.data ?? [];
-  return (
-    <MiniCard
-      title="Timeline changes"
-      meta={
-        items.some((c) => c.status === "proposed")
-          ? `${items.filter((c) => c.status === "proposed").length} awaiting approval`
-          : undefined
-      }
-    >
-      <ListState q={q} empty={!items.length && "No timeline changes proposed."} />
-      <ul className="divide-y divide-border/60">
-        {items.map((c) => (
-          <ChangeRow key={c.id} ch={c} ticketId={ticketId} onChanged={onChanged} />
-        ))}
-      </ul>
-      <AddRow label="Propose change" canAdd={canPropose}>
-        {(close) => (
-          <form
-            className="space-y-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              add.mutate(undefined, { onSuccess: close });
-            }}
-          >
-            <div className="grid grid-cols-2 gap-2">
-              <Select
-                value={type}
-                aria-label="Subject type"
-                onChange={(e) => {
-                  setType(e.target.value as SubjectType);
-                  setSubject("");
-                  setField("");
-                }}
-              >
-                <option value="round">Round</option>
-                <option value="activity">Activity</option>
-              </Select>
-              <Select
-                value={subject}
-                onChange={(e) => setSubject(e.target.value)}
-                aria-label="Subject"
-              >
-                <option value="">Choose…</option>
-                {subjects.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </Select>
-              <Select
-                value={field || FIELDS_FOR[type][0]}
-                onChange={(e) => setField(e.target.value)}
-                aria-label="Field"
-              >
-                {FIELDS_FOR[type].map((f) => (
-                  <option key={f}>{f}</option>
-                ))}
-              </Select>
-              <Input
-                type="date"
-                value={revised}
-                onChange={(e) => setRevised(e.target.value)}
-                aria-label="New date"
-              />
-            </div>
-            <Input
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              placeholder="Why is it moving?"
-              aria-label="Reason"
-            />
-            <div className="flex items-center gap-2">
-              <Button
-                type="submit"
-                size="sm"
-                disabled={!subject || !revised || !reason.trim() || add.isPending}
-              >
-                Propose
               </Button>
               <Button type="button" size="sm" variant="ghost" onClick={close}>
                 Cancel
@@ -2541,7 +2362,6 @@ export function ProgramRequests({ ticketId }: { ticketId: string }) {
   const [section, setSection] = useState<OpsSection>("requests");
   const [raising, setRaising] = useState(false);
   const deps = useQuery(dependenciesQuery(ticketId)).data;
-  const changes = useQuery(timelineChangesQuery(ticketId)).data;
   const comms = useQuery(communicationsQuery(ticketId)).data;
   const feed = useInfiniteQuery(updatesFeedQuery(ticketId));
   const lastUpdate = feed.data?.pages.flatMap((pg) => pg.items).find((u) => u.health);
@@ -2550,9 +2370,8 @@ export function ProgramRequests({ ticketId }: { ticketId: string }) {
     (a.due_at ?? "9999").localeCompare(b.due_at ?? "9999"),
   );
   const overdueRequests = open.filter((c) => isPast(c.due_at)).length;
-  const proposed = changes?.filter((c) => c.status === "proposed").length ?? 0;
   const lateComms = comms?.filter((c) => c.overdue && c.status === "planned").length ?? 0;
-  const attention = (deps?.impact.overdue ?? 0) + proposed + lateComms;
+  const attention = (deps?.impact.overdue ?? 0) + lateComms;
   const resolved = requests.data?.filter((c) => !isOpen(c)) ?? [];
   const card = (c: RequestFull) => (
     <RequestCard key={c.id} c={c} ticketId={ticketId} onChanged={refresh} />
@@ -2590,15 +2409,10 @@ export function ProgramRequests({ ticketId }: { ticketId: string }) {
           }
         />
         <KpiCell
-          label="Changes to decide"
-          value={proposed}
-          sub={
-            lateComms ? (
-              <span className="text-warn">{lateComms} overdue comms</span>
-            ) : (
-              "Timeline changes"
-            )
-          }
+          label="Communications"
+          value={comms ? comms.filter((c) => c.status === "planned").length : "–"}
+          unit="planned"
+          sub={lateComms ? <span className="text-warn">{lateComms} overdue</span> : "None overdue"}
         />
       </KpiStrip>
 
@@ -2617,7 +2431,11 @@ export function ProgramRequests({ ticketId }: { ticketId: string }) {
               onChange={setSection}
               options={[
                 { id: "requests" as const, label: "Special requests", count: open.length },
-                { id: "blockers" as const, label: "Dependencies and changes", count: attention },
+                {
+                  id: "blockers" as const,
+                  label: "Dependencies and communications",
+                  count: attention,
+                },
               ]}
             />
           </div>
@@ -2671,10 +2489,9 @@ export function ProgramRequests({ ticketId }: { ticketId: string }) {
               )}
             </>
           ) : (
-            <div className="grid items-start gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+            <div className="grid items-start gap-4 lg:grid-cols-2">
               <Dependencies ticketId={ticketId} onChanged={refresh} />
               <Communications ticketId={ticketId} onChanged={refresh} />
-              <TimelineChanges ticketId={ticketId} onChanged={refresh} />
             </div>
           )}
         </CardBody>
@@ -3024,6 +2841,7 @@ export function ProgramActivityLog({ ticketId }: { ticketId: string }) {
           </div>
         )}
       </Card>
+      <HubspotHistory ticketId={ticketId} />
     </div>
   );
 }

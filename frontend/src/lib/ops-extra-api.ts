@@ -83,6 +83,8 @@ export const requestsFullQuery = (ticketId: string) =>
   });
 export type RaiseRequestInput = {
   template_id: number;
+  /** A short subject: what is being asked for. */
+  title?: string | null;
   detail?: string | null;
   due_at?: string | null;
   owner_id?: string | null;
@@ -90,6 +92,17 @@ export type RaiseRequestInput = {
 };
 export const raiseRequest = (ticketId: string, body: RaiseRequestInput) =>
   sendJson<Checklist>("POST", `${p(ticketId)}/requests`, body);
+/** Exactly what Slack will receive for a request, in the program's channel. Nothing is sent or saved. */
+export type RequestPreview = {
+  route: string | null;
+  team: "marketing" | "content" | null;
+  text: string;
+  /** The program's linked Slack channel, where the message is posted. null when it has none. */
+  channel_id: string | null;
+  channel_name: string | null;
+};
+export const previewRequest = (ticketId: string, body: RaiseRequestInput) =>
+  sendJson<RequestPreview>("POST", `${p(ticketId)}/requests/preview`, body);
 export const patchRequest = (
   ticketId: string,
   id: number,
