@@ -3,16 +3,13 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
   AlertTriangle,
   Ban,
-  Download,
+  Check,
   History,
   Lock,
   Mail,
   MoreHorizontal,
   Search,
-  Settings as SettingsIcon,
-  Check,
   ShieldCheck,
-  UserPlus,
   Users as UsersIcon,
 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
@@ -23,13 +20,17 @@ import {
   CardHeader,
   Chip,
   EmptyState,
-  Kpi,
+  KpiCell,
+  KpiStrip,
   LogList,
   MonoLabel,
-  Num,
+  Notice,
+  PageHeader,
   Skeleton,
-  type Tone,
+  TabBar,
+  roleTone,
 } from "@/components/kit";
+import { TimeDial } from "@/components/time-dial";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -85,22 +86,15 @@ import {
 import { cn } from "@/lib/utils";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : "Something went wrong");
-const ROLE_TONE: Record<UserRole, Tone> = {
-  super_admin: "critical",
-  csm: "info",
-  marketing: "indigo",
-  account_manager: "neutral",
-  viewer: "neutral",
-};
 // Roles a person is given on purpose. Viewer is what everyone starts as, so it is never picked.
 const GRANTABLE: UserRole[] = ROLES.filter((r) => r !== "viewer");
 const SELF_REASON = "You can't change your own roles or access.";
 
-const NAV: { id: Section; label: string; icon: ReactNode; needs: string }[] = [
-  { id: "users", label: "Users & Personnel", icon: <UsersIcon />, needs: "users.manage" },
-  { id: "roles", label: "Roles & Policies", icon: <ShieldCheck />, needs: "users.manage" },
-  { id: "audit", label: "Audit Log", icon: <History />, needs: "audit.view" },
-  { id: "settings", label: "Portal Settings", icon: <SettingsIcon />, needs: "settings.edit" },
+const NAV: { id: Section; label: string; needs: string }[] = [
+  { id: "users", label: "Users and personnel", needs: "users.manage" },
+  { id: "roles", label: "Roles and policies", needs: "users.manage" },
+  { id: "audit", label: "Audit log", needs: "audit.view" },
+  { id: "settings", label: "Portal settings", needs: "settings.edit" },
 ];
 
 export function AdminPage() {
@@ -113,7 +107,7 @@ export function AdminPage() {
     return (
       <EmptyState
         icon={<Lock />}
-        title="Admin & Governance is restricted"
+        title="Admin is restricted"
         hint="Only super admins can manage access, settings and the audit log."
       />
     );
@@ -121,47 +115,27 @@ export function AdminPage() {
   const wanted = parseSection(search.section);
   const section = visible.find((n) => n.id === wanted)?.id ?? visible[0]!.id;
   const canUsers = me.permissions.includes("users.manage");
-  return (
-    <div className="page-in grid gap-6 lg:grid-cols-[208px_minmax(0,1fr)]">
-      <nav
-        aria-label="Admin sections"
-        className="flex gap-1 overflow-x-auto lg:flex-col lg:overflow-visible"
-      >
-        <MonoLabel className="mb-2 hidden px-3 lg:block">Governance &amp; IAM</MonoLabel>
-        {visible.map((n) => (
-          <button
-            key={n.id}
-            type="button"
-            aria-current={section === n.id ? "page" : undefined}
-            onClick={() => void navigate({ search: { section: n.id } })}
-            className={cn(
-              "flex h-9 shrink-0 items-center gap-2.5 rounded-[8px] px-3 text-[14px] font-medium [&_svg]:size-4",
-              section === n.id
-                ? "bg-primary/10 text-primary"
-                : "text-secondary-foreground hover:bg-secondary hover:text-foreground",
-            )}
-          >
-            {n.icon}
-            {n.label}
-          </button>
-        ))}
-      </nav>
-      <div className="min-w-0 space-y-5">
-        {section === "users" && <UsersSection meId={me.id} />}
-        {section === "roles" && <RolesSection />}
-        {section === "audit" && <AuditSection canUsers={canUsers} />}
-        {section === "settings" && <SettingsSection />}
-      </div>
-    </div>
+  const tabs = (
+    <TabBar
+      label="Admin sections"
+      active={section}
+      items={visible}
+      renderLink={(item, props) => (
+        <button
+          type="button"
+          {...props}
+          onClick={() => void navigate({ search: { section: item.id as Section } })}
+        />
+      )}
+    />
   );
-}
-
-function Crumbs({ here }: { here: string }) {
   return (
-    <p className="t-mono-label text-muted-foreground">
-      Admin &amp; Governance <span aria-hidden>/</span>{" "}
-      <span className="text-foreground">{here}</span>
-    </p>
+    <div className="page-in space-y-4">
+      {section === "users" && <UsersSection meId={me.id} tabs={tabs} />}
+      {section === "roles" && <RolesSection tabs={tabs} />}
+      {section === "audit" && <AuditSection canUsers={canUsers} tabs={tabs} />}
+      {section === "settings" && <SettingsSection tabs={tabs} />}
+    </div>
   );
 }
 
@@ -169,7 +143,7 @@ function ErrorBox({ error, retry }: { error: unknown; retry?: () => void }) {
   return (
     <div
       role="alert"
-      className="flex items-center justify-between gap-3 rounded-[8px] border border-status-critical/40 bg-status-critical/10 px-3 py-2 text-[13px] text-status-critical"
+      className="flex items-center justify-between gap-3 rounded-[8px] border border-border bg-danger-bg px-3 py-2 text-[13px] text-danger"
     >
       <span>{errorText(error)}</span>
       {retry && (
@@ -185,7 +159,7 @@ function RoleChips({ roles }: { roles: UserRole[] }) {
   return (
     <div className="flex flex-wrap gap-1">
       {roles.map((r) => (
-        <Chip key={r} tone={ROLE_TONE[r]}>
+        <Chip key={r} tone={roleTone(r)}>
           {ROLE_LABELS[r]}
         </Chip>
       ))}
@@ -198,7 +172,7 @@ function RoleChips({ roles }: { roles: UserRole[] }) {
 type Row = { kind: "user"; user: AdminUser } | { kind: "invite"; invite: Invite };
 type StatusFilter = "all" | "active" | "inactive" | "waiting" | "viewers";
 
-function UsersSection({ meId }: { meId: string }) {
+function UsersSection({ meId, tabs }: { meId: string; tabs: ReactNode }) {
   const qc = useQueryClient();
   const users = useQuery(adminUsersQuery);
   const invites = useQuery(invitesQuery);
@@ -263,171 +237,149 @@ function UsersSection({ meId }: { meId: string }) {
 
   return (
     <>
-      <div className="space-y-3">
-        <Crumbs here="Users & Permissions" />
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <h1 className="t-headline-lg flex flex-wrap items-center gap-2.5">
-            Users &amp; Access Governance
-            <Chip tone="neutral">{all.length} total accounts</Chip>
-            <Chip tone={waiting.length ? "info" : "neutral"}>{waiting.length} pre-granted</Chip>
-          </h1>
-          <div className="flex flex-wrap items-center gap-2">
+      <PageHeader
+        title="Users and access"
+        subtitle={
+          <>
+            <b className="font-medium text-foreground">
+              {all.length} {all.length === 1 ? "account" : "accounts"}
+            </b>
+            , {superAdmins.length} Super admin. Anyone signing in with a @hackerearth.com account
+            starts as a Viewer until a Super admin gives them a role.
+          </>
+        }
+        actions={
+          <>
             <Button
               variant="outline"
               onClick={() => exportAuditCsv().catch((e: unknown) => setExportError(errorText(e)))}
             >
-              <Download className="size-4" /> Export audit log (CSV)
+              Export audit log
             </Button>
-            <Button onClick={() => setInviteOpen(true)}>
-              <UserPlus className="size-4" /> Pre-grant access
-            </Button>
-          </div>
-        </div>
-      </div>
+            <Button onClick={() => setInviteOpen(true)}>Pre-grant access</Button>
+          </>
+        }
+      />
+      {tabs}
 
-      <div className="reveal grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Kpi
-          index={0}
+      <KpiStrip label="Account summary">
+        <KpiCell
           label="Total accounts"
-          icon={<UsersIcon />}
-          value={<Num value={all.length} />}
-          unit={`${active.length} active seats`}
-          sub={`${waiting.length} pre-granted, not signed in yet`}
+          value={all.length}
+          sub={`${active.length} active seats · ${waiting.length} pre-granted, not signed in yet`}
         />
-        <Kpi
-          index={1}
+        <KpiCell
           label="Super admins"
-          tone="critical"
-          icon={<ShieldCheck />}
-          value={<Num value={superAdmins.length} />}
-          unit={superAdmins
-            .map((u) => u.name ?? u.email)
-            .slice(0, 2)
-            .join(", ")}
+          value={superAdmins.length}
+          sub={`${
+            superAdmins
+              .map((u) => u.name ?? u.email)
+              .slice(0, 2)
+              .join(", ") || "None"
+          } · the last Super admin is protected`}
+        />
+        <KpiCell
+          label="Client success (CSM)"
+          value={csms.length}
+          sub={`${csms.length} active · ${waiting.filter((i) => i.roles.includes("csm")).length} pre-granted`}
+        />
+        <KpiCell
+          label="Viewers"
+          value={viewers.length}
           sub={
-            <span className="inline-flex items-center gap-1">
-              <Lock className="size-3" /> Last super admin is protected
-            </span>
+            viewers.length ? "Give a role to anyone who should act" : "See progress, change nothing"
           }
         />
-        <Kpi
-          index={2}
-          label="Client success (CSM)"
-          tone="info"
-          icon={<UsersIcon />}
-          value={<Num value={csms.length} />}
-          unit="active"
-          sub={`+${waiting.filter((i) => i.roles.includes("csm")).length} pre-granted`}
-        />
-        <Kpi
-          index={3}
-          label="Viewers"
-          tone={viewers.length ? "warning" : "neutral"}
-          icon={<Mail />}
-          value={<Num value={viewers.length} />}
-          unit="see progress, change nothing"
-          sub={viewers.length ? "Give a role to anyone who should act" : "Everyone has a role"}
-        />
+      </KpiStrip>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative w-full sm:w-72">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-ink-3" />
+          <Input
+            aria-label="Filter by name or email"
+            className="pl-8"
+            placeholder="Filter by email or name"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+          />
+        </div>
+        <Select value={roleFilter} onValueChange={(v) => setRoleFilter(v as UserRole | "all")}>
+          <SelectTrigger className="w-44" aria-label="Role">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Role: All</SelectItem>
+            {ROLES.map((r) => (
+              <SelectItem key={r} value={r}>
+                {ROLE_LABELS[r]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={status} onValueChange={(v) => setStatus(v as StatusFilter)}>
+          <SelectTrigger className="w-44" aria-label="Status">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Status: All</SelectItem>
+            <SelectItem value="active">Active</SelectItem>
+            <SelectItem value="inactive">Inactive</SelectItem>
+            <SelectItem value="viewers">Viewers only</SelectItem>
+            <SelectItem value="waiting">Pre-granted</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       <Card>
-        <div className="flex flex-wrap items-center gap-3 border-b border-border p-3">
-          <div className="relative w-full sm:w-64">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              aria-label="Filter by name or email"
-              className="pl-8"
-              placeholder="Filter by email or name..."
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-            />
-          </div>
-          <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Role filter">
-            <MonoLabel className="mr-1">Role:</MonoLabel>
-            {(["all", ...ROLES] as const).map((r) => (
-              <button
-                key={r}
-                type="button"
-                aria-pressed={roleFilter === r}
-                onClick={() => setRoleFilter(r)}
-                className={cn(
-                  "h-7 rounded-full px-3 text-[13px] font-medium",
-                  roleFilter === r
-                    ? "bg-accent-fill text-on-accent"
-                    : "text-secondary-foreground hover:bg-secondary",
-                )}
-              >
-                {r === "all" ? "All" : ROLE_LABELS[r]}
-              </button>
-            ))}
-          </div>
-          <div className="ml-auto flex items-center gap-2">
-            <MonoLabel>Status:</MonoLabel>
-            <Select value={status} onValueChange={(v) => setStatus(v as StatusFilter)}>
-              <SelectTrigger className="w-40" aria-label="Status">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All statuses</SelectItem>
-                <SelectItem value="active">Active</SelectItem>
-                <SelectItem value="inactive">Inactive</SelectItem>
-                <SelectItem value="viewers">Viewers only</SelectItem>
-                <SelectItem value="waiting">Pre-granted</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-
         {failure && (
           <div className="p-3 pb-0">
             <ErrorBox error={failure} />
           </div>
         )}
         {result && (
-          <div className="m-3 flex flex-wrap items-center gap-2 rounded-[8px] border border-border bg-secondary p-2.5 text-[13px]">
-            <span>
-              Pre-granted {result.created.length}.
-              {result.skipped.length > 0 &&
-                ` Skipped ${result.skipped.length}: ${result.skipped
-                  .map((x) => `${x.email} (${SKIP_REASONS[x.reason] ?? x.reason})`)
-                  .join(", ")}.`}
-            </span>
-            <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setResult(null)}>
-              Dismiss
-            </Button>
-          </div>
+          <Notice
+            className="m-3"
+            actions={
+              <Button size="sm" variant="ghost" onClick={() => setResult(null)}>
+                Dismiss
+              </Button>
+            }
+          >
+            Pre-granted {result.created.length}.
+            {result.skipped.length > 0 &&
+              ` Skipped ${result.skipped.length}: ${result.skipped
+                .map((x) => `${x.email} (${SKIP_REASONS[x.reason] ?? x.reason})`)
+                .join(", ")}.`}
+          </Notice>
         )}
         {viewers.length > 0 && status !== "viewers" && (
-          <div className="m-3 flex flex-wrap items-center gap-2 rounded-[8px] border border-border bg-accent-bg p-2.5 text-[13px]">
-            <span>
-              <strong>{viewers.length}</strong>{" "}
-              {viewers.length === 1 ? "person has" : "people have"} signed in and can only view.
-              Newest: {viewers[0]?.name ?? viewers[0]?.email}.
-            </span>
-            <Button
-              size="sm"
-              variant="outline"
-              className="ml-auto"
-              onClick={() => setStatus("viewers")}
-            >
-              Review who needs a role
-            </Button>
-          </div>
+          <Notice
+            tone="neutral"
+            className="m-3"
+            actions={
+              <Button size="sm" variant="outline" onClick={() => setStatus("viewers")}>
+                Review who needs a role
+              </Button>
+            }
+          >
+            <b>{viewers.length}</b> {viewers.length === 1 ? "person has" : "people have"} signed in
+            and can only view. Newest: {viewers[0]?.name ?? viewers[0]?.email}.
+          </Notice>
         )}
 
-        <div className="overflow-x-auto">
+        <div className="relative overflow-x-auto">
           <table className="w-full min-w-[960px] border-collapse text-left">
             <thead>
               <tr className="border-b border-border">
-                {[
-                  "User & identity",
-                  "Assigned role(s)",
-                  "State",
-                  "Permissions profile",
-                  "Access controls",
-                ].map((h, i) => (
-                  <th key={h} className={cn("t-th px-4 py-2.5", i === 4 && "text-right")}>
-                    {h}
+                {["User", "Role", "State", "Permissions", ""].map((h, i) => (
+                  <th
+                    key={i}
+                    className={cn(
+                      "px-4 py-2.5 text-[12px] font-medium text-ink-2",
+                      i === 4 && "w-[260px]",
+                    )}
+                  >
+                    {h || <span className="sr-only">Actions</span>}
                   </th>
                 ))}
               </tr>
@@ -486,27 +438,15 @@ function UsersSection({ meId }: { meId: string }) {
             />
           </div>
         )}
-        <div className="flex flex-wrap justify-between gap-2 border-t border-border px-4 py-2 t-data-sm text-muted-foreground">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-2.5 text-[13px] text-ink-2">
           <span>
             Showing {rows.length} of {all.length + waiting.length} entries
           </span>
-          <span>@hackerearth.com sign-in · new people start as Viewers</span>
-        </div>
-      </Card>
-
-      <Card>
-        <div className="flex flex-wrap items-center gap-3 p-4">
-          <ShieldCheck className="size-5 shrink-0 text-status-critical" aria-hidden />
-          <div className="min-w-0">
-            <h2 className="text-[16px] font-semibold tracking-[-0.01em]">
-              Access policy safeguard
-            </h2>
-            <p className="text-[13px] text-secondary-foreground">
-              Nobody can change their own roles or access, the last active super admin can't be
-              demoted or deactivated, and only HackerEarth accounts can sign in, as read-only
-              Viewers until a super admin gives them a role.
-            </p>
-          </div>
+          <span className="inline-flex items-center gap-1.5">
+            <Lock aria-hidden className="size-3.5 shrink-0" />
+            Nobody can change their own role, and the last Super admin can't be demoted or
+            deactivated.
+          </span>
         </div>
       </Card>
 
@@ -554,22 +494,21 @@ function UserRow({
       )}
       style={{ ["--i" as string]: index }}
     >
-      <td className="px-4 py-3">
+      <td className="h-[72px] px-4 py-2">
         <div className="flex items-center gap-3">
-          <Avatar name={u.name ?? u.email} className="size-9 text-[12px]" />
+          <Avatar name={u.name ?? u.email} className="size-8 text-[12px]" />
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 text-[14px] font-medium">
               {u.name ?? u.email}
               {isMe && <Chip tone="info">You</Chip>}
             </div>
-            <div className="t-data-sm truncate text-muted-foreground">{u.email}</div>
-            <div className="t-data-sm text-muted-foreground">
-              signed up {formatDate(u.created_at)}
+            <div className="text-[13px] text-ink-2">
+              <span className="break-all">{u.email}</span> · signed up {formatDate(u.created_at)}
             </div>
           </div>
         </div>
       </td>
-      <td className="px-4 py-3">
+      <td className="px-4 py-2">
         {u.roles.length ? <RoleChips roles={u.roles} /> : <Chip>No role yet</Chip>}
         {u.hubspot_csm_programs > 0 && !u.roles.includes("csm") && (
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[12px] text-secondary-foreground">
@@ -587,25 +526,39 @@ function UserRow({
           </div>
         )}
       </td>
-      <td className="px-4 py-3">
-        <Chip tone={u.is_active ? "good" : "neutral"}>{u.is_active ? "Active" : "Inactive"}</Chip>
+      <td className="px-4 py-2">
+        <span className="inline-flex items-center gap-1.5 text-[13px]">
+          <span
+            aria-hidden
+            className={cn("size-1.5 rounded-full", u.is_active ? "bg-ok" : "bg-ink-3")}
+          />
+          {u.is_active ? "Active" : "Inactive"}
+        </span>
       </td>
-      <td className="px-4 py-3">
-        <div className="flex max-w-[260px] flex-wrap items-center gap-1 text-[13px] text-secondary-foreground">
-          <span>{u.roles.length ? `Role defaults (${defaults.size})` : "No permissions"}</span>
-          {u.grants.map((p) => (
-            <Chip key={p} tone="good">
-              + {PERMISSION_LABELS[p] ?? p}
-            </Chip>
-          ))}
-          {u.revokes.map((p) => (
-            <Chip key={p} tone="critical">
-              − {PERMISSION_LABELS[p] ?? p}
-            </Chip>
-          ))}
-        </div>
+      <td className="px-4 py-2 text-[13px]">
+        {u.roles.length ? (
+          <>
+            <div>{defaults.size} role defaults</div>
+            <div className="text-ink-2">
+              {u.grants.length + u.revokes.length} customised ·{" "}
+              <button
+                type="button"
+                onClick={onPerms}
+                title={[
+                  ...u.grants.map((p) => `+ ${PERMISSION_LABELS[p] ?? p}`),
+                  ...u.revokes.map((p) => `− ${PERMISSION_LABELS[p] ?? p}`),
+                ].join("\n")}
+                className="text-primary hover:underline"
+              >
+                View all
+              </button>
+            </div>
+          </>
+        ) : (
+          <span className="text-ink-2">No permissions</span>
+        )}
       </td>
-      <td className="px-4 py-3">
+      <td className="px-4 py-2">
         <div className="flex items-center justify-end gap-1.5">
           <RolePopover user={u} disabled={isMe} onApply={(roles) => onPatch({ roles })} />
           <Button
@@ -615,10 +568,7 @@ function UserRow({
             title={isMe ? SELF_REASON : undefined}
             onClick={onPerms}
           >
-            Edit perms
-            {u.grants.length + u.revokes.length > 0
-              ? ` (${u.grants.length + u.revokes.length})`
-              : ""}
+            Edit permissions
           </Button>
           <Popover>
             <PopoverTrigger asChild>
@@ -719,9 +669,9 @@ function InviteRow({
       className="border-b border-border bg-secondary/40 align-middle last:border-0"
       style={{ ["--i" as string]: index }}
     >
-      <td className="px-4 py-3">
+      <td className="h-[72px] px-4 py-2">
         <div className="flex items-center gap-3">
-          <span className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground">
+          <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground">
             <Mail className="size-4" />
           </span>
           <div className="min-w-0">
@@ -743,7 +693,7 @@ function InviteRow({
       </td>
       <td className="px-4 py-3">
         <div className="flex items-center justify-end gap-1.5">
-          <Button size="sm" variant="ghost" className="text-status-critical" onClick={onRevoke}>
+          <Button size="sm" variant="ghost" className="text-danger" onClick={onRevoke}>
             Revoke
           </Button>
         </div>
@@ -961,20 +911,21 @@ function PermissionsSheet({
 
 // ---- Roles & Policies ------------------------------------------------------------------------------
 
-function RolesSection() {
+function RolesSection({ tabs }: { tabs: ReactNode }) {
   return (
     <>
-      <div className="space-y-3">
-        <Crumbs here="Roles & Policies" />
-        <h1 className="t-headline-lg">Roles &amp; Policies</h1>
-      </div>
+      <PageHeader
+        title="Roles and policies"
+        subtitle="What each role can do by default. Individual overrides are set per user."
+      />
+      {tabs}
       <Card>
         <CardHeader
           title="Role defaults"
           meta="read-only · individual overrides are set per user"
           divided
         />
-        <div className="overflow-x-auto">
+        <div className="relative overflow-x-auto">
           <table className="w-full min-w-[640px] border-collapse text-left">
             <thead>
               <tr className="border-b border-border">
@@ -1096,7 +1047,7 @@ async function exportAuditCsv() {
   downloadCsv((await apiFetch<AuditPage>("/audit?limit=200")).items);
 }
 
-function AuditSection({ canUsers }: { canUsers: boolean }) {
+function AuditSection({ canUsers, tabs }: { canUsers: boolean; tabs: ReactNode }) {
   const [f, setF] = useState<AuditFilters>({ entity: "", actor: "", ticket: "" });
   const users = useQuery({ ...adminUsersQuery, enabled: canUsers });
   const q = useInfiniteQuery(globalAuditQuery(f));
@@ -1105,15 +1056,16 @@ function AuditSection({ canUsers }: { canUsers: boolean }) {
   const sel = (v: string) => (v === "all" ? "" : v);
   return (
     <>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="space-y-3">
-          <Crumbs here="Audit Log" />
-          <h1 className="t-headline-lg">Audit Log</h1>
-        </div>
-        <Button variant="outline" disabled={rows.length === 0} onClick={() => downloadCsv(rows)}>
-          <Download className="size-4" /> Export loaded rows (CSV)
-        </Button>
-      </div>
+      <PageHeader
+        title="Audit log"
+        subtitle="Who changed what, newest first."
+        actions={
+          <Button variant="outline" disabled={rows.length === 0} onClick={() => downloadCsv(rows)}>
+            Export loaded rows
+          </Button>
+        }
+      />
+      {tabs}
       <Card>
         <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
           <Select value={f.entity || "all"} onValueChange={(v) => setF({ ...f, entity: sel(v) })}>
@@ -1190,14 +1142,15 @@ function AuditSection({ canUsers }: { canUsers: boolean }) {
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-function SettingsSection() {
+function SettingsSection({ tabs }: { tabs: ReactNode }) {
   const q = useQuery(settingsQuery);
   return (
     <>
-      <div className="space-y-3">
-        <Crumbs here="Portal Settings" />
-        <h1 className="t-headline-lg">Portal Settings</h1>
-      </div>
+      <PageHeader
+        title="Portal settings"
+        subtitle="Working days, hours and defaults for the whole portal."
+      />
+      {tabs}
       {q.isLoading && <Skeleton className="h-72 w-full" />}
       {q.isError && <ErrorBox error={q.error} retry={() => void q.refetch()} />}
       {q.data && <SettingsForm initial={q.data} />}
@@ -1227,7 +1180,6 @@ function SettingsForm({ initial }: { initial: PortalSettings }) {
       {node}
     </label>
   );
-  const hhmm = (v: string | null) => (v ?? "").slice(0, 5);
   return (
     <form
       onSubmit={(e) => {
@@ -1241,33 +1193,34 @@ function SettingsForm({ initial }: { initial: PortalSettings }) {
         <CardBody className="space-y-4 pt-4">
           <p className="flex items-start gap-2 rounded-[8px] bg-secondary p-2.5 text-[13px] text-secondary-foreground">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-status-warning" aria-hidden />
-            Reminders stay off until a reminder time is set. Clear the field to turn them off again.
+            Reminders stay off until a reminder time is set. Open the dial and choose Clear to turn
+            them off again.
           </p>
           <div className="grid gap-4 sm:grid-cols-3">
             {field(
               "Daily reminder time",
-              <Input
-                type="time"
-                value={hhmm(s.reminders.reminder_time)}
-                onChange={(e) => set({ reminder_time: e.target.value || null })}
+              <TimeDial
+                label="Daily reminder time"
+                value={s.reminders.reminder_time}
+                onChange={(v) => set({ reminder_time: v })}
               />,
             )}
             {field(
               "Work starts",
-              <Input
-                type="time"
+              <TimeDial
+                label="Work starts"
                 required
-                value={hhmm(s.reminders.work_start)}
-                onChange={(e) => set({ work_start: e.target.value })}
+                value={s.reminders.work_start}
+                onChange={(v) => set({ work_start: v ?? s.reminders.work_start })}
               />,
             )}
             {field(
               "Work ends",
-              <Input
-                type="time"
+              <TimeDial
+                label="Work ends"
                 required
-                value={hhmm(s.reminders.work_end)}
-                onChange={(e) => set({ work_end: e.target.value })}
+                value={s.reminders.work_end}
+                onChange={(v) => set({ work_end: v ?? s.reminders.work_end })}
               />,
             )}
           </div>
@@ -1316,13 +1269,12 @@ function SettingsForm({ initial }: { initial: PortalSettings }) {
         <CardBody className="space-y-2 pt-4">
           {field(
             "Daily Redash fetch time",
-            <Input
-              type="time"
-              className="max-w-[160px] font-mono"
-              value={hhmm(s.redash_sync_time)}
-              onChange={(e) => {
+            <TimeDial
+              label="Daily Redash fetch time"
+              value={s.redash_sync_time}
+              onChange={(v) => {
                 setSaved(false);
-                setS({ ...s, redash_sync_time: e.target.value || null });
+                setS({ ...s, redash_sync_time: v });
               }}
             />,
           )}
