@@ -12,10 +12,10 @@ with their status (queued, sent, failed, skipped when no channel is linked) and 
 | # | Message | Sent when | By | Path | Limits |
 |---|---|---|---|---|---|
 | 1 | Registrations update | Someone saves daily counts, or clicks Fetch from Redash with new or changed days | CSM, anyone with *manage registrations* | Direct | One message per save; needs Notify Slack on and a channel |
-| 2 | Auto-fetched from Redash | The scheduled daily Redash fetch (off until a super admin sets a time) | Scheduler | Outbox | Today's count only, once per program per day |
+| 2 | Auto-fetched from Redash | At each posting time a super admin set (up to 6 a day; the fetch starts 3 minutes early) | Scheduler | Outbox | Today's count; once per program per day and time, and a later time posts only if the count moved |
 | 3 | Relevant registrations update | The CSM adds or corrects a relevant count | CSM | Direct | Needs Notify Slack on and a channel |
 | 4 | Connection test | Someone clicks Send test on the channel box | CSM / integrations | Direct | On demand |
-| 5 | Reminders (8 kinds) | Daily, after the reminder time set by a super admin, in working hours | Scheduler | Outbox | Once per item per day; approvals wait 4 h; nothing while reminders are off |
+| 5 | Reminders (5 kinds) | Daily, after the reminder time set by a super admin, in working hours | Scheduler | Outbox | Once per item per day; approvals wait 4 h; nothing while reminders are off. The scolding ones (no counts entered, update overdue, communication not marked sent) are never sent to Slack; they stay in the in-app CSM queue |
 | 6 | Go-live due | An approved activity reaches its planned date and is not live | Scheduler | Outbox | Once per activity per day, same working-hours rules |
 | 7 | Daily update | A CSM posts a daily update | CSM | Outbox | Every update, no limit |
 | 8 | Nudge: one activity | Marketing clicks Remind on an activity | Marketing / CSM | Outbox | One per activity per hour |
@@ -51,6 +51,21 @@ Day total: *1,919*
 Total so far: *41,793*
 ```
 
+### 1. Registrations update (program with a "who counts as relevant" requirement)
+When the program has a requirement (experience and/or cities) and a candidates snapshot for it, the closing line
+becomes the two numbers the channel cares about. Each day still carries its own relevant count. A manual
+"Fetch from Redash" posts this about a minute later, once the relevant count is in; the scheduled run posts it
+through the outbox with the day's other numbers.
+```
+:calendar: *08 Oct 2026* | HackCellence: The Embark Edition
+Registrations update
+- 1,009 registrations | 22 relevant
+
+Total registrations: *44,148*
+Relevant registrations (0 to 2 yrs · Bengaluru, Hyderabad): *1,902*
+```
+Requirement wording: `0 yrs (freshers)`, `3 yrs`, `0 to 2 yrs`, `2+ yrs`, then the cities after a dot.
+
 ### 2. Auto-fetched from Redash
 ```
 :robot_face: _Auto-fetched from Redash_
@@ -75,6 +90,14 @@ Relevant so far: *1,240*
 :white_check_mark: ProgramOps is connected to *HackCellence: The Embark Edition*.
 ```
 
+### Admin switches (admin console > Portal settings)
+A master **Slack messages** switch pauses everything (data keeps syncing; the Registrations tab shows a note), and one
+switch each for: **Registration counts** (scheduled posts and the manual Fetch from Redash post), **CSM updates**
+(daily updates and counts a CSM posts), **Nudges and requests** (marketing nudges, special requests, approval
+withdrawn from a live activity) and **Reminders**. Something a person did while it is paused (a nudge, an update, a
+request) is recorded in the outbox as `skipped` with the reason; automatic posts are simply not queued. The test
+message from the channel box always goes out.
+
 ### 5. Reminders (one line each; the mark follows the severity)
 
 `control_breach (critical)`
@@ -92,24 +115,9 @@ Relevant so far: *1,240*
 :rotating_light: *HackCellence: The Embark Edition* · Content to marketing: Overdue
 ```
 
-`counts_missing`
-```
-:warning: *HackCellence: The Embark Edition* · Round 1: Coding assessment: Ended 07 Oct with no counts entered
-```
-
-`update_due`
-```
-:warning: *HackCellence: The Embark Edition* · Daily update: Last update 3 day(s) ago
-```
-
 `dependency_overdue`
 ```
 :rotating_light: *HackCellence: The Embark Edition* · Brand guidelines: 5 day(s) overdue, owed by Meera J. (client AM)
-```
-
-`comm_overdue`
-```
-:warning: *HackCellence: The Embark Edition* · Reminder for All registrants: Planned for 22 Oct 10:00 and not marked sent
 ```
 
 `change_awaiting_approval`
