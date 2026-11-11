@@ -17,6 +17,7 @@ _ERRORS = {
     "not_in_channel": "The bot isn't in that channel -- invite it with /invite.",
     "invalid_auth": "Slack token is invalid.",
     "token_revoked": "Slack token was revoked.",
+    "account_inactive": "Slack token belongs to a deactivated account or removed app. Reinstall the Slack app and update SLACK_BOT_TOKEN.",
     "missing_scope": "Slack token is missing a required scope (channels:read / groups:read / chat:write / channels:join).",
     "is_archived": "That channel is archived.",
     "method_not_supported_for_channel_type": "That is a private channel: Slack doesn't let a bot join one. In the channel, type /invite and pick the bot.",
