@@ -164,6 +164,7 @@ function FileCard({
   doc: ProgramDocument<unknown> | null;
 }) {
   const canUpload = useCan(docKind === "sow" ? "document.upload_sow" : "document.upload_poa");
+  const canSeeHistory = useCan("audit.view"); // the history is read from the audit trail
   const [uploading, setUploading] = useState(false);
   const dialog = canUpload && (
     <UploadDocumentDialog
@@ -235,7 +236,7 @@ function FileCard({
           view and download it.
         </p>
       )}
-      <VersionHistory ticketId={ticketId} kind={docKind} />
+      {canSeeHistory && <VersionHistory ticketId={ticketId} kind={docKind} />}
       {dialog}
     </Card>
   );

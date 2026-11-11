@@ -432,7 +432,10 @@ async def upload_program_document(
     return await document_upload.replace_document(session, access.user, program, kind, file.filename, content, comment)
 
 
-@router.get("/{ticket_id}/documents/{kind}/versions")
+@router.get(
+    "/{ticket_id}/documents/{kind}/versions",
+    dependencies=[Depends(require_permission(Permission.AUDIT_VIEW))],  # it is read from the audit trail
+)
 async def get_document_versions(ticket_id: str, kind: str, session: AsyncSession = Depends(get_session)):
     """Every file that has been the SOW / POA, and every rejected upload, newest first (read from the audit trail)."""
     _check_kind(kind)

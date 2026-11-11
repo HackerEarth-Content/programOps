@@ -309,6 +309,14 @@ async def test_version_history_lists_newest_first(client_for, make_user, make_pr
     assert (await client.get("/programs/t1/documents/sow/versions")).json() == []
 
 
+async def test_the_history_needs_audit_view_because_it_is_the_audit_trail(client_for, make_user, make_program):
+    await make_program("t1")
+    viewer = await client_for(await make_user("viewer@example.com", [Role.VIEWER]))
+    assert (await viewer.get("/programs/t1/documents/poa/versions")).status_code == 403
+    marketing = await client_for(await make_user("marketing@example.com", [Role.MARKETING]))
+    assert (await marketing.get("/programs/t1/documents/poa/versions")).status_code == 200
+
+
 # ---- the sync can't undo an upload -----------------------------------------------------------------
 
 
