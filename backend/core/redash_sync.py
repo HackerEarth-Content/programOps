@@ -2,8 +2,9 @@
 
 Query 6123 (REDASH_REGISTRATIONS_QUERY_ID, param `event_slug`) returns one row per
 event whose "Registration Daily JSON" is [{"date", "count"}, ...]: the date and that
-day's relevant registration count (no role split). Each day is stored with role ''
-and registrations = relevant = count. Query 6142 (REDASH_EVENTS_QUERY_ID) lists the
+day's registration count (no role split). Each day is stored with role '' and
+registrations = count; its relevant count comes from the candidates snapshot (query 6182, core/candidates.py) when
+there is one for the program's requirement, else equals the count. Query 6142 (REDASH_EVENTS_QUERY_ID) lists the
 active events, for the slug picker.
 """
 
@@ -12,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -95,33 +96,54 @@ async def active_events() -> list[dict]:
 
 
 async def apply_days(session: AsyncSession, ticket_id: str, days: dict[date, int]) -> list[dict]:
-    """Upsert days whose count is new or changed; returns those rows (for the Slack summary)."""
+    """Upsert days whose count is new or changed; returns those rows (for the Slack summary).
+
+    A day's relevant count: from the stored candidates snapshot (query 6182) when it matches the program's current
+    requirement (a day it doesn't list is unknown, NULL); with no requirement it equals the day's registrations; with
+    a requirement but no usable snapshot (never fetched, requirement just changed, fetch failed) it is left as it is.
+    """
+    from core import candidates  # late: candidates imports this module
+
+    cfg = await session.get(ProgramRegistrationSettings, ticket_id)
+    rel_map = candidates.usable_daily(cfg)
+    keep_relevant = rel_map is None and candidates.has_requirement(cfg)
+
+    def relevant_for(d: date, n: int) -> int | None:
+        if rel_map is not None:
+            r = rel_map.get(d)
+            return None if r is None else min(r, n)
+        return None if keep_relevant else n
+
     existing = {
-        d: n
-        for d, n in (
+        d: (n, r)
+        for d, n, r in (
             await session.execute(
-                select(ProgramRegistration.date, ProgramRegistration.registrations)
+                select(ProgramRegistration.date, ProgramRegistration.registrations, ProgramRegistration.relevant)
                 .where(ProgramRegistration.ticket_id == ticket_id, ProgramRegistration.role == "")
             )
         ).all()
     }
-    changed = {d: n for d, n in days.items() if existing.get(d) != n}
-    if changed:
+    # What is announced: days that are new or whose count changed. A change to only a day's relevant figure (people
+    # edit their profiles, the requirement changed) is written but never announced.
+    changed = {d: n for d, n in days.items() if existing.get(d, (None,))[0] != n}
+    to_write = dict(changed)
+    if not keep_relevant:  # relevant isn't ours to change when there is no usable snapshot, so only the count decides
+        to_write.update({d: n for d, n in days.items() if existing.get(d) != (n, relevant_for(d, n))})
+    if to_write:
         stmt = insert(ProgramRegistration).values(
             [
-                {"ticket_id": ticket_id, "date": d, "role": "", "registrations": n, "relevant": n, "extra": {}}
-                for d, n in changed.items()
+                {"ticket_id": ticket_id, "date": d, "role": "", "registrations": n,
+                 "relevant": relevant_for(d, n), "extra": {}}
+                for d, n in to_write.items()
             ]
         )
-        await session.execute(
-            stmt.on_conflict_do_update(
-                constraint="uq_program_registrations",
-                set_={"registrations": stmt.excluded.registrations, "relevant": stmt.excluded.relevant},
-            )
-        )
+        set_ = {"registrations": stmt.excluded.registrations}
+        if not keep_relevant:
+            set_["relevant"] = stmt.excluded.relevant
+        await session.execute(stmt.on_conflict_do_update(constraint="uq_program_registrations", set_=set_))
     await session.commit()  # also persists any event title/dates the caller set on the settings row
     return [
-        {"date": d, "role": "", "registrations": n, "relevant": n, "extra": {}}
+        {"date": d, "role": "", "registrations": n, "relevant": relevant_for(d, n), "extra": {}}
         for d, n in sorted(changed.items())
     ]
 
@@ -135,7 +157,8 @@ state: dict = {
 }
 _lock = asyncio.Lock()
 _task: asyncio.Task | None = None
-_last_scheduled: date | None = None  # local date of the last scheduled run; a restart may repeat it, Slack dedupes
+LEAD = timedelta(minutes=3)  # a scheduled run starts this long before its posting time, so the message lands on time
+_ran: set[tuple[date, time]] = set()  # (local date, posting time) already run; a restart may repeat one, Slack dedupes
 
 
 def _now() -> datetime:
@@ -165,7 +188,9 @@ def in_registration_period(estimate: dict, today: date) -> bool:
     )
 
 
-async def _post_today(session, program: Program, cfg: ProgramRegistrationSettings, changed: list[dict], today: date) -> bool:
+async def _post_today(
+    session, program: Program, cfg: ProgramRegistrationSettings, changed: list[dict], today: date, slot: time | None = None
+) -> bool:
     """Queue today's count for the program's channel: only today, one message per program per day."""
     row = next((r for r in changed if r["date"] == today), None)
     if row is None or not (cfg.notify_slack and cfg.slack_channel_id):
@@ -173,13 +198,14 @@ async def _post_today(session, program: Program, cfg: ProgramRegistrationSetting
     body = ":robot_face: _Auto-fetched from Redash_\n" + await registration_message.summary(session, program, [row])
     queued = await slack_outbox.enqueue(
         session, ticket_id=program.ticket_id, kind="registrations", body=body,
-        dedupe_key=f"redash-daily:{program.ticket_id}:{today}",
+        # one message per program per day and posting time: a later slot posts again only if today's count moved
+        dedupe_key=f"redash-daily:{program.ticket_id}:{today}" + (f":{slot:%H%M}" if slot else ""),
     )
     await session.commit()
     return queued is not None
 
 
-async def run_all(now: datetime | None = None) -> None:
+async def run_all(now: datetime | None = None, slot: time | None = None) -> None:
     """Fetch every auto program that is in an active stage and inside its registration period, one at a time (each
     Redash query can take ~30s), and post today's count to its Slack channel (once a day per program, through the
     outbox). One program failing is logged and counted, not fatal. Single-flight."""
@@ -210,6 +236,10 @@ async def run_all(now: datetime | None = None) -> None:
                         if not in_registration_period(await registration_window.load_estimate(session, program), today):
                             state["skipped"] += 1
                             continue
+                    from core import candidates  # late: candidates imports this module
+
+                    await candidates.wait_idle(ticket_id)  # a manual refresh in flight: use its numbers, don't race it
+                    await candidates.refresh(ticket_id)  # never raises; stores the split + relevant per day first
                     info, days = await fetch_event(slug)
                     async with factory() as session:
                         program = await session.get(Program, ticket_id)
@@ -217,7 +247,7 @@ async def run_all(now: datetime | None = None) -> None:
                         cfg.redash_event_title = info["name"]
                         cfg.redash_event_start, cfg.redash_event_end = event_dates(info)
                         changed = await apply_days(session, ticket_id, days)  # commits
-                        posted = await _post_today(session, program, cfg, changed, today)
+                        posted = await _post_today(session, program, cfg, changed, today, slot)
                     logger.info("redash_auto_sync", ticket_id=ticket_id, slug=slug, changed_days=len(changed), posted=posted)
                     state["programs"] += 1
                     state["posted"] += posted
@@ -230,19 +260,27 @@ async def run_all(now: datetime | None = None) -> None:
 
 
 async def run_daily(now: datetime | None = None) -> bool:
-    """Scheduler tick (every minute): run once a day, at or after the time the super admin set, in the portal time
-    zone. Off until a time is set. Returns whether it ran."""
-    global _last_scheduled
+    """Scheduler tick (every minute): run for each posting time the super admin set, once per day per time, starting
+    LEAD before it, in the portal time zone. Off while there are no times. If several are due at once (the API was down)
+    it runs once, for the latest. The data refreshes whatever the Slack switches say; they only govern the posting.
+    Returns whether it ran."""
     now = now or _now()
     async with db_manager.session_factory()() as session:
         cfg = await settings_store.load(session)
-    if cfg.redash_sync_time is None:
+    if not cfg.redash_sync_times:
         return False
-    local = now.astimezone(ZoneInfo(cfg.reminders.timezone))
-    if local.time() < cfg.redash_sync_time or _last_scheduled == local.date():
+    zone = ZoneInfo(cfg.reminders.timezone)
+    local = now.astimezone(zone)
+    today = local.date()
+    due = [
+        t for t in cfg.redash_sync_times
+        if (today, t) not in _ran and local >= datetime.combine(today, t, tzinfo=zone) - LEAD
+    ]
+    if not due:
         return False
-    _last_scheduled = local.date()
-    await run_all(now)
+    _ran.difference_update({k for k in _ran if k[0] < today})  # yesterday's marks are no longer needed
+    _ran.update((today, t) for t in due)
+    await run_all(now, slot=max(due))
     return True
 
 

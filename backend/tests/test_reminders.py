@@ -205,14 +205,58 @@ async def test_a_fresh_approval_request_is_not_chased_but_an_old_one_is(db, make
     assert len([r for r in await outbox(db) if r.kind == "approval_waiting"]) == 1
 
 
-async def test_the_update_reminder_waits_for_the_reminder_time(db, make_program, make_user):
+async def test_the_scolding_reminders_stay_in_the_app_and_never_go_to_slack(db, make_program, make_user):
+    from core import csm_queue
+    from core.csm_queue import CsmKind
+    from core.orm import Program
     await make_program("t1")
     await link_slack(db)
-    await set_reminders(db, make_user, reminder_time=time(11, 30))  # 11:30 IST
-    await reminders.run(db, MONDAY)  # 11:00 IST: too early
-    assert [r for r in await outbox(db) if r.kind == "update_due"] == []
-    await reminders.run(db, MONDAY + timedelta(hours=1))  # 12:00 IST
-    assert len([r for r in await outbox(db) if r.kind == "update_due"]) == 1
+    await set_reminders(db, make_user, reminder_time=time(11, 30))
+    later = MONDAY + timedelta(hours=1)  # 12:00 IST: after the reminder time, no update ever posted
+    async with db() as session:
+        program = await session.get(Program, "t1")
+        assert CsmKind.UPDATE_DUE in {i.kind for i in await csm_queue.items_for(session, program, later)}  # still in the queue
+    await reminders.run(db, later)
+    assert not {"update_due", "counts_missing", "comm_overdue"} & {r.kind for r in await outbox(db)}
+
+
+async def set_slack(db, admin, **flags):
+    async with db() as session:
+        await settings_store.save(session, admin, PortalSettings(slack=settings_store.SlackSettings(**flags)))
+        await session.commit()
+
+
+async def test_an_admin_can_pause_slack_as_a_whole_or_one_kind_of_message(db, make_program, make_user):
+    await make_program("t1")
+    await link_slack(db)
+    admin = await make_user("admin2@example.com", [Role.SUPER_ADMIN])
+
+    async def send(kind):
+        async with db() as session:
+            sent = await slack_outbox.enqueue(session, ticket_id="t1", kind=kind, body="x", dedupe_key=None)
+            await session.commit()
+            return sent
+
+    assert (await send("registrations")).status == "queued"  # everything on by default
+    await set_slack(db, admin, enabled=False)
+    assert await send("registrations") is None and await send("go_live_due") is None  # automatic: nothing recorded
+    paused = await send("nudge")  # something a person did: a visible skipped row that says why
+    assert paused.status == "skipped" and "paused in the admin settings" in paused.error
+    await set_slack(db, admin, registration_counts=False)
+    assert await send("registrations") is None and (await send("daily_update")).status == "queued"
+    await set_slack(db, admin, reminders=False)
+    assert await send("go_live_due") is None and (await send("nudge")).status == "queued"
+    await set_slack(db, admin, csm_updates=False, nudges_requests=False)
+    assert (await send("daily_update")).status == "skipped" and (await send("request")).status == "skipped"
+
+
+def test_the_posting_times_are_a_sorted_unique_list_and_an_old_single_time_is_kept():
+    import pytest
+    assert PortalSettings.model_validate({"redash_sync_time": "12:00:00"}).redash_sync_times == [time(12, 0)]
+    assert PortalSettings.model_validate({"redash_sync_time": None}).redash_sync_times == []
+    assert PortalSettings.model_validate({"redash_sync_times": ["18:00", "10:00", "10:00:30"]}).redash_sync_times == [time(10, 0), time(18, 0)]
+    with pytest.raises(ValueError):
+        PortalSettings.model_validate({"redash_sync_times": [f"0{h}:00" for h in range(7)]})
 
 
 async def test_a_missing_slack_channel_is_not_something_to_remind_about(db, make_program, make_user):

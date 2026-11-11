@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     REDASH_EVENTS_QUERY_ID: str = "6142"  # active events, for the slug picker
     # Registrations by source / medium / campaign (param `Event - Title or Slug`; slow, so snapshotted).
     REDASH_CHANNELS_QUERY_ID: str = "6170"
+    REDASH_CANDIDATES_QUERY_ID: str = "6182"  # YOE / location split + relevant (params: slug, Required YOE, Required location)
 
     # Off until the HubSpot token has the ticket-update scope: lets CSMs change stage and checklists from the portal.
     HUBSPOT_WRITEBACK_ENABLED: bool = False

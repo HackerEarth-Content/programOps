@@ -1,4 +1,5 @@
-"""Reminders: the CSM queue's items, posted to each program's Slack channel at the times the super admin set.
+"""Reminders: the informative items of the CSM queue (go-live due, approvals waiting, overdue requests and dependencies,
+changes awaiting approval, approval withdrawn), posted to each program's Slack channel at the time the super admin set.
 
 The rules are the queue's own (`core/csm_queue.py`), so a reminder and the queue can never disagree. This module only
 decides *when* to speak: never while reminders are off, never outside working hours, once a day per item (the
@@ -24,6 +25,10 @@ logger = structlog.get_logger(__name__)
 
 APPROVAL_GRACE = timedelta(hours=4)  # a fresh approval request isn't chased for this long
 
+# Never sent to Slack. "No counts entered", "update overdue" and "communication not marked sent" only scold about not
+# keeping things up to date: they stay in the in-app CSM queue. There is nowhere to post an unlinked channel.
+NOT_FOR_SLACK = {CsmKind.SLACK_UNLINKED, CsmKind.COUNTS_MISSING, CsmKind.UPDATE_DUE, CsmKind.COMM_OVERDUE}
+
 _MARK = {Severity.CRITICAL: ":rotating_light:", Severity.AMBER: ":warning:", Severity.INFO: ":information_source:"}
 
 
@@ -45,14 +50,9 @@ async def collect(
 ) -> list[tuple[str, str, str]]:
     """(kind, dedupe key, message) for everything worth a reminder on this program right now."""
     today = local_date(settings, now)
-    after_reminder_time = (
-        settings.reminder_time is not None and now.astimezone(ZoneInfo(settings.timezone)).time() >= settings.reminder_time
-    )
     out: list[tuple[str, str, str]] = []
     for item in await csm_queue.items_for(session, program, now):
-        if item.kind == CsmKind.SLACK_UNLINKED:
-            continue  # there is nowhere to post it
-        if item.kind == CsmKind.UPDATE_DUE and not after_reminder_time:
+        if item.kind in NOT_FOR_SLACK:
             continue
         if item.kind == CsmKind.APPROVAL_WAITING and item.since and now - item.since < APPROVAL_GRACE:
             continue

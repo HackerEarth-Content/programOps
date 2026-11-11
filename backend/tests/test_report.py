@@ -8,7 +8,7 @@ import pytest
 
 from core import activities
 from core.health import Health, HealthFacts, evaluate
-from core.orm import ChannelSnapshot, ProgramRegistration
+from core.orm import ChannelSnapshot, ProgramRegistration, ProgramRegistrationSettings
 from core.permissions import Role
 
 NOW = datetime.now(timezone.utc)
@@ -81,7 +81,7 @@ async def csm_client(client_for, make_user):
 async def test_an_empty_program_reports_zeros_and_unknowns(client_for, make_user, make_program):
     await make_program("t1")
     body = (await (await csm_client(client_for, make_user)).get("/programs/t1/report")).json()
-    assert body["registrations"] == {"raw_total": 0, "relevant_total": 0, "relevant_pct": None, "target": None, "pct_of_target": None}
+    assert body["registrations"] == {"raw_total": 0, "relevant_total": None, "relevant_possibly": None, "relevant_pct": None, "target": None, "pct_of_target": None}
     assert body["funnel"] == [] and body["funnel_summary"] == {"participants": None, "final_shortlisted": None, "registered_to_shortlist_pct": None}
     assert body["sources"] == {"fetched_at": None, "organic_pct": None, "matched_users": None, "unmatched_users": None}
     assert body["marketing"]["total"] == 0 and body["operations"]["health"] == "good"
@@ -109,7 +109,11 @@ async def test_the_report_joins_registration_participation_marketing_and_operati
     client = await csm_client(client_for, make_user)
 
     await client.put("/programs/t1/registrations/targets", json={"target": 3000})
-    await client.post("/programs/t1/relevant-registrations", json={"date": days(-1), "count": 300})
+    async with db() as session:  # a candidates snapshot for the program's requirement: 300 meet it, 50 possibly
+        cfg = await session.get(ProgramRegistrationSettings, "t1")
+        cfg.required_yoe = "0-2"
+        cfg.candidates = {"requirement": {"yoe": "0-2", "cities": []}, "relevant": 300, "possibly": 50}
+        await session.commit()
     first = (await client.post("/programs/t1/rounds", json={"name": "Assessment"})).json()
     second = (await client.post("/programs/t1/rounds", json={"name": "Project"})).json()
     await client.post(f"/programs/t1/rounds/{first['id']}/counts", json={"as_of": days(0), "invited": 1000, "attempted": 800, "cleared": 200, "shortlisted": 100})
@@ -125,7 +129,7 @@ async def test_the_report_joins_registration_participation_marketing_and_operati
     await client.post("/programs/t1/timeline-changes", json={"subject_type": "round", "subject_id": str(first["id"]), "field": "starts_on", "revised": days(3), "reason": "Client delay"})
 
     body = (await client.get("/programs/t1/report")).json()
-    assert body["registrations"] == {"raw_total": 1500, "relevant_total": 300, "relevant_pct": 20.0, "target": 3000, "pct_of_target": 50.0}
+    assert body["registrations"] == {"raw_total": 1500, "relevant_total": 300, "relevant_possibly": 50, "relevant_pct": 20.0, "target": 3000, "pct_of_target": 50.0}
     assert [(s["name"], s["participation_pct"]) for s in body["funnel"]] == [("Assessment", 80.0), ("Project", 90.0)]
     assert body["funnel_summary"] == {"participants": 800, "final_shortlisted": 20, "registered_to_shortlist_pct": 1.3}
     assert body["sources"]["organic_pct"] == 60.0 and body["sources"]["unmatched_users"] == 40

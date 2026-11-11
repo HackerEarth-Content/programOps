@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
 from datetime import date, timedelta
 
@@ -12,11 +13,11 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import audit, redash, redash_sync, relevant, slack
+from core import audit, candidates, redash, redash_sync, relevant, settings_store, slack, slack_outbox
 from core.registration_message import format_summary, label as _label, summary as _summary
 from core.access import Access, require_permission
 from core.config import settings
-from core.database import get_session
+from core.database import db_manager, get_session
 from core.registration_window import estimate_window, program_estimate  # noqa: F401  (estimate_window: self-check below)
 from core.orm import Program, ProgramDocument, ProgramRegistration, ProgramRegistrationSettings
 from core.permissions import Permission
@@ -64,6 +65,7 @@ class SlackIn(BaseModel):
 class RedashIn(BaseModel):
     auto: bool | None = None
     event_slug: str | None = None
+    requirement: candidates.RequirementIn | None = None  # who counts as relevant, asked for together with the event
 
 
 async def _program(session: AsyncSession, ticket_id: str) -> Program:
@@ -138,6 +140,7 @@ async def get_registrations(ticket_id: str, session: AsyncSession = Depends(get_
         "slack": _slack_view(cfg),
         "slack_configured": bool(settings.SLACK_BOT_TOKEN),
         "redash": _redash_view(cfg),
+        "slack_paused": not (await settings_store.load(session)).slack.enabled,  # the admin master switch is off
     }
 
 
@@ -190,7 +193,7 @@ async def add_entries(
     await session.commit()
 
     result = {"saved": len(rows), "slack": {"sent": False, "error": None}}
-    if cfg.notify_slack and cfg.slack_channel_id:
+    if cfg.notify_slack and cfg.slack_channel_id and await settings_store.slack_allowed(session, "csm_updates"):
         text = await _summary(session, program, [e.model_dump() | {"role": r} for (_, r), e in rows.items()])
         ok, err = await slack.post_message(cfg.slack_channel_id, text)
         result["slack"] = {"sent": ok, "error": None if ok else err}
@@ -235,6 +238,7 @@ async def put_redash(
     """Set the slug and/or switch mode. Switching to auto re-checks the slug against Redash."""
     await _program(session, ticket_id)
     cfg = await _settings(session, ticket_id)
+    old_slug, changed_requirement = cfg.redash_event_slug, False
     if payload.event_slug is not None:
         try:
             cfg.redash_event_slug = redash_sync.check_slug(payload.event_slug.strip()) if payload.event_slug.strip() else None
@@ -248,11 +252,28 @@ async def put_redash(
         cfg.redash_event_start, cfg.redash_event_end = redash_sync.event_dates(info)
     if payload.auto is not None:
         cfg.redash_auto = payload.auto
+    if payload.requirement is not None:
+        try:
+            yoe, cities = candidates.check_yoe(payload.requirement.yoe), candidates.check_cities(payload.requirement.cities)
+        except candidates.InvalidRequirement as e:
+            raise HTTPException(422, str(e)) from e
+        old = {"yoe": cfg.required_yoe, "cities": list(cfg.required_cities or [])}
+        if old != {"yoe": yoe, "cities": cities}:
+            changed_requirement = True
+            cfg.required_yoe, cfg.required_cities = yoe, cities
+            audit.record(
+                session, access.user, entity="candidates_requirement", entity_id=ticket_id, ticket_id=ticket_id,
+                action="candidates_requirement_changed", old=old, new={"yoe": yoe, "cities": cities},
+            )
     audit.record(
         session, access.user, entity="redash_link", entity_id=ticket_id, ticket_id=ticket_id,
         action="redash_changed", new={"event_slug": cfg.redash_event_slug, "auto": cfg.redash_auto},
     )
+    if changed_requirement or cfg.redash_event_slug != old_slug:
+        await candidates.reset_relevant(session, cfg)  # what each day's relevant meant no longer holds
     await session.commit()
+    if cfg.redash_auto and cfg.redash_event_slug and not candidates.is_current(cfg):
+        candidates.start_refresh(ticket_id, cfg)  # only when the snapshot doesn't fit this event and requirement
     return _redash_view(cfg)
 
 
@@ -268,11 +289,53 @@ async def run_redash(ticket_id: str, session: AsyncSession = Depends(get_session
     cfg.redash_event_title = info["name"]
     cfg.redash_event_start, cfg.redash_event_end = redash_sync.event_dates(info)
     changed = await redash_sync.apply_days(session, ticket_id, days)
-    result = {"saved": len(changed), "slack": {"sent": False, "error": None}}
-    if changed and cfg.notify_slack and cfg.slack_channel_id:
+    notify = bool(
+        changed and cfg.notify_slack and cfg.slack_channel_id and await settings_store.slack_allowed(session, "registration_counts")
+    )
+    result = {"saved": len(changed), "slack": {"sent": False, "error": None, "queued": False}}
+    if notify and candidates.has_requirement(cfg):
+        # The message carries the relevant count, which comes from the candidates query (about a minute): post once
+        # that is in, from the background, with each day's relevant count as stored by then.
+        async def announce() -> None:
+            await _announce(ticket_id, [r["date"] for r in changed])
+
+        result["refresh"] = candidates.start_refresh(ticket_id, cfg, after=announce)
+        result["slack"]["queued"] = True
+        return result
+    result["refresh"] = candidates.start_refresh(ticket_id, cfg)  # splits only; the message needs no relevant count
+    if notify:
         ok, err = await slack.post_message(cfg.slack_channel_id, await _summary(session, program, changed))
-        result["slack"] = {"sent": ok, "error": None if ok else err}
+        result["slack"] = {"sent": ok, "error": None if ok else err, "queued": False}
     return result
+
+
+async def _announce(ticket_id: str, days: list[date]) -> None:
+    """Queue those days for the program's channel with their stored counts (called once the candidates refresh is
+    over). Through the outbox, so a Slack outage is retried and an identical message is never queued twice."""
+    async with db_manager.session_factory()() as session:
+        program = await session.get(Program, ticket_id)
+        cfg = await session.get(ProgramRegistrationSettings, ticket_id)
+        if program is None or cfg is None or not (cfg.notify_slack and cfg.slack_channel_id):
+            return
+        rows = (
+            await session.execute(
+                select(ProgramRegistration)
+                .where(ProgramRegistration.ticket_id == ticket_id, ProgramRegistration.role == "",
+                       ProgramRegistration.date.in_(days))
+                .order_by(ProgramRegistration.date)
+            )
+        ).scalars().all()
+        if not rows:
+            return
+        body = await _summary(
+            session, program,
+            [{"date": r.date, "role": "", "registrations": r.registrations, "relevant": r.relevant, "extra": {}} for r in rows],
+        )
+        await slack_outbox.enqueue(
+            session, ticket_id=ticket_id, kind="registrations", body=body,
+            dedupe_key=f"registrations-manual:{ticket_id}:{hashlib.sha1(body.encode()).hexdigest()[:16]}",
+        )
+        await session.commit()
 
 
 @router.delete("/registrations/{entry_id}", status_code=204)
