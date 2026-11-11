@@ -316,9 +316,15 @@ export function ReportStrip({ ticketId }: { ticketId: string }) {
         />
         <Kpi
           index={1}
-          label="Relevant"
-          value={<Num value={reg.relevant_total} />}
-          sub={`${pct(reg.relevant_pct)} of registrations`}
+          label="Meets requirement"
+          value={reg.relevant_total == null ? "–" : <Num value={reg.relevant_total} />}
+          sub={
+            reg.relevant_total == null
+              ? "Set who counts as relevant in Registrations"
+              : `${pct(reg.relevant_pct)} of registrations${
+                  reg.relevant_possibly ? ` · +${n(reg.relevant_possibly)} possibly` : ""
+                }`
+          }
         />
         <Kpi
           index={2}

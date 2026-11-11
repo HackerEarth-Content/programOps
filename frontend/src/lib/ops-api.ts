@@ -206,7 +206,8 @@ export type FunnelStep = {
 export type Report = {
   registrations: {
     raw_total: number;
-    relevant_total: number;
+    relevant_total: number | null; // meets the requirement; null = no requirement / snapshot yet
+    relevant_possibly: number | null; // city matches, experience not on the profile
     relevant_pct: number | null;
     target: number | null;
     pct_of_target: number | null;

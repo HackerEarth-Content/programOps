@@ -1,6 +1,6 @@
 // The ProgramOps primitives. Every screen is composed from these so spacing, type and tone stay
 // consistent (Stitch DESIGN.md: flat, 1px lines, Inter for prose, JetBrains Mono for data).
-import { Check } from "lucide-react";
+import { Check, CircleAlert } from "lucide-react";
 import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { formatDay, formatWhen } from "@/lib/format";
 import { groupLog, splitList, type LogEvent } from "@/lib/history";
@@ -293,6 +293,7 @@ export function Segmented<T extends string>({
       {options.map((o) => (
         <button
           key={o.id}
+          type="button"
           role="tab"
           aria-selected={value === o.id}
           onClick={() => onChange(o.id)}
@@ -357,6 +358,39 @@ export function EmptyState({
       {icon && <span className="text-muted-foreground [&_svg]:size-5">{icon}</span>}
       <p className="text-[14px] font-medium">{title}</p>
       {hint && <p className="max-w-sm text-[13px] text-muted-foreground">{hint}</p>}
+      {action}
+    </div>
+  );
+}
+
+/**
+ * "Something is missing and here is what to do": a 1px danger outline, a faint danger tint, an icon and a title, so
+ * it is never colour alone. For required data that hasn't been set up, not for errors or empty results.
+ */
+export function Callout({
+  title,
+  children,
+  action,
+  className,
+}: {
+  title: ReactNode;
+  children?: ReactNode;
+  action?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      role="status"
+      className={cn(
+        "flex flex-wrap items-center gap-x-4 gap-y-2.5 rounded-lg border border-danger/60 bg-danger-bg/40 px-4 py-3",
+        className,
+      )}
+    >
+      <CircleAlert aria-hidden className="size-5 shrink-0 text-danger" />
+      <div className="min-w-0 flex-1 basis-56">
+        <p className="text-[14px] font-semibold text-foreground">{title}</p>
+        {children && <p className="mt-0.5 text-[13px] text-ink-2">{children}</p>}
+      </div>
       {action}
     </div>
   );
@@ -903,6 +937,8 @@ export function KpiCell({
   bar = "accent",
   sub,
   className,
+  onClick,
+  ariaLabel,
 }: {
   label: ReactNode;
   value: ReactNode;
@@ -911,19 +947,20 @@ export function KpiCell({
   bar?: StatusTone | "accent";
   sub?: ReactNode;
   className?: string;
+  /** Makes the whole cell a real button (keyboard and 44px touch target on phones). */
+  onClick?: () => void;
+  ariaLabel?: string;
 }) {
-  return (
-    <div
-      className={cn(
-        "min-w-0 border-border px-4 py-3.5 max-md:border-t max-md:[&:nth-child(-n+2)]:border-t-0 max-md:[&:nth-child(even)]:border-l md:border-l md:first:border-l-0",
-        className,
-      )}
-    >
-      <p className="text-[13px] text-ink-2">{label}</p>
-      <p className="mt-0.5 flex items-baseline gap-1.5 t-data-lg">
+  // inside a <button> only phrasing content is valid, so the lines are spans there and paragraphs otherwise
+  const Line = onClick ? "span" : "p";
+  const block = onClick ? "block " : "";
+  const body = (
+    <>
+      <Line className={`${block}text-[13px] text-ink-2`}>{label}</Line>
+      <Line className={`${block}mt-0.5 flex items-baseline gap-1.5 t-data-lg`}>
         {value}
         {unit && <span className="text-[13px] font-normal text-ink-2">{unit}</span>}
-      </p>
+      </Line>
       {pct !== undefined && pct !== null && (
         <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-border" aria-hidden>
           <div
@@ -932,8 +969,27 @@ export function KpiCell({
           />
         </div>
       )}
-      {sub && <p className="mt-1.5 text-[13px] text-ink-2">{sub}</p>}
-    </div>
+      {sub && <Line className={`${block}mt-1.5 text-[13px] text-ink-2`}>{sub}</Line>}
+    </>
+  );
+  const cls = cn(
+    "min-w-0 border-border px-4 py-3.5 max-md:border-t max-md:[&:nth-child(-n+2)]:border-t-0 max-md:[&:nth-child(even)]:border-l md:border-l md:first:border-l-0",
+    className,
+  );
+  return onClick ? (
+    <button
+      type="button"
+      onClick={onClick}
+      {...(ariaLabel ? { "aria-label": ariaLabel } : {})}
+      className={cn(
+        cls,
+        "block w-full text-left transition-colors hover:bg-raised/60 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary max-sm:min-h-11",
+      )}
+    >
+      {body}
+    </button>
+  ) : (
+    <div className={cls}>{body}</div>
   );
 }
 
@@ -999,14 +1055,21 @@ export function SegBar({
 }
 
 /** Legend row: small squares + labels. `muted` swatches are the neutral series. */
-export function Legend({ items }: { items: { label: ReactNode; muted?: boolean }[] }) {
+export function Legend({
+  items,
+}: {
+  items: { label: ReactNode; muted?: boolean; swatch?: string }[];
+}) {
   return (
     <ul className="flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-ink-2">
       {items.map((it, i) => (
         <li key={i} className="inline-flex items-center gap-1.5">
           <span
             aria-hidden
-            className={cn("size-2 rounded-[2px]", it.muted ? "bg-border" : "bg-primary")}
+            className={cn(
+              "size-2 rounded-[2px]",
+              it.swatch ?? (it.muted ? "bg-border" : "bg-primary"),
+            )}
           />
           {it.label}
         </li>

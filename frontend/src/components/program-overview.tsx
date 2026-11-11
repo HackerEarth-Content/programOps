@@ -250,10 +250,16 @@ function Kpis({ ticketId }: { ticketId: string }) {
         sub={target ? `${formatPct(reg.pct_of_target)} of ${nf(target)} target` : "No target set"}
       />
       <KpiCell
-        label="Relevant"
-        value={nf(reg.relevant_total)}
-        pct={reg.relevant_pct}
-        sub={`${formatPct(reg.relevant_pct)} of registrations · CSM-entered`}
+        label="Meets requirement"
+        value={reg.relevant_total == null ? <Dash /> : nf(reg.relevant_total)}
+        pct={reg.relevant_total == null ? undefined : reg.relevant_pct}
+        sub={
+          reg.relevant_total == null
+            ? "Set who counts as relevant in Registrations"
+            : `${formatPct(reg.relevant_pct)} of registrations${
+                reg.relevant_possibly ? ` · +${nf(reg.relevant_possibly)} possibly` : ""
+              }`
+        }
       />
       <KpiCell
         label="Screening"
