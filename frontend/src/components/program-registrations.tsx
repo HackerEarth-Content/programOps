@@ -749,6 +749,7 @@ type DayRow = {
   daily: number;
   cum: number | null;
   pace: number | null;
+  relevant: number | null; // that day's relevant registrations; null = no figure for the day
   acts: PoaActivity[];
   live: Activity[];
 };
@@ -796,6 +797,12 @@ function PacePanel({
     if (!entries.length) return [];
     const byDate = new Map<string, number>();
     entries.forEach((e) => byDate.set(e.date, (byDate.get(e.date) ?? 0) + e.registrations));
+    // A day's relevant count is the sum over its roles; unknown (null) if any of them is unknown.
+    const byRelevant = new Map<string, number | null>();
+    entries.forEach((e) => {
+      const prev = byRelevant.get(e.date);
+      byRelevant.set(e.date, e.relevant == null || prev === null ? null : (prev ?? 0) + e.relevant);
+    });
     const dates = [...byDate.keys()].sort();
     const firstEntry = dates[0]!;
     const lastEntry = dates[dates.length - 1]!;
@@ -815,6 +822,7 @@ function PacePanel({
         date,
         daily,
         cum: date <= lastEntry ? cum : null,
+        relevant: byRelevant.get(date) ?? null,
         pace:
           role === "all" && est.target && length && idx >= 1 && idx <= length
             ? Math.round((est.target * idx) / length)
@@ -828,6 +836,7 @@ function PacePanel({
 
   const goLives = rows.filter((r) => r.live.length);
   const hasPace = rows.some((r) => r.pace != null);
+  const hasRelevant = rows.some((r) => r.relevant != null);
   const lastCum = [...rows].reverse().find((r) => r.cum != null);
   const lastPace = [...rows].reverse().find((r) => r.pace != null);
   const maxY = Math.max(0, ...rows.map((r) => Math.max(r.cum ?? 0, r.pace ?? 0, r.daily)));
@@ -905,6 +914,7 @@ function PacePanel({
                   <tr className="border-b border-border">
                     <th className="t-th p-2.5 text-left">Date</th>
                     <th className="t-th p-2.5 text-right">Daily</th>
+                    {hasRelevant && <th className="t-th p-2.5 text-right">Relevant</th>}
                     <th className="t-th p-2.5 text-right">Cumulative</th>
                     {hasPace && <th className="t-th p-2.5 text-right">Target pace</th>}
                   </tr>
@@ -914,6 +924,11 @@ function PacePanel({
                     <tr key={r.date} className="border-b border-border last:border-0">
                       <td className="p-2.5 text-[13px]">{fmtLong(r.date)}</td>
                       <td className="p-2.5 text-right text-[13px]">{r.daily.toLocaleString()}</td>
+                      {hasRelevant && (
+                        <td className="p-2.5 text-right text-[13px]">
+                          {r.relevant?.toLocaleString() ?? <span className="text-ink-3">—</span>}
+                        </td>
+                      )}
                       <td className="p-2.5 text-right text-[13px]">
                         {r.cum?.toLocaleString() ?? <span className="text-ink-3">—</span>}
                       </td>
@@ -1199,6 +1214,7 @@ function PaceTip({ active, payload }: { active?: boolean; payload?: Array<{ payl
     <div className="max-w-64 rounded-lg border border-border bg-popover p-3 text-popover-foreground">
       <MonoLabel className="block">{fmtLong(d.date)}</MonoLabel>
       <p className="mt-1 t-data-sm">+{d.daily.toLocaleString()} registrations</p>
+      {d.relevant != null && <p className="t-data-sm">{d.relevant.toLocaleString()} relevant</p>}
       {d.cum != null && <p className="t-data-sm">Cumulative: {d.cum.toLocaleString()}</p>}
       {ahead != null && (
         <p className={cn("t-data-sm", ahead >= 0 ? "text-ok" : "text-warn")}>
