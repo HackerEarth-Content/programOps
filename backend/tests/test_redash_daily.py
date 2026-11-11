@@ -3,7 +3,7 @@ few days after it, while the last counts settle), today's count only, one Slack 
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -103,14 +103,36 @@ async def test_the_daily_tick_waits_for_the_set_time_and_runs_once(db, make_user
     await make_program("t1")
     await link(db)
     fake_fetch(monkeypatch, {TODAY: 25})
-    monkeypatch.setattr(redash_sync, "_last_scheduled", None)
+    monkeypatch.setattr(redash_sync, "_ran", set())
     assert await redash_sync.run_daily(NOW) is False  # no time set: off
     admin = await make_user("admin@example.com", [Role.SUPER_ADMIN])
     async with db() as session:
-        await settings_store.save(session, admin, PortalSettings(redash_sync_time=time(12, 0)))
+        await settings_store.save(session, admin, PortalSettings(redash_sync_times=[time(12, 0)]))
         await session.commit()
     assert await redash_sync.run_daily(NOW) is False  # 11:00 Kolkata, before 12:00
     later = datetime(2026, 10, 19, 6, 31, tzinfo=timezone.utc)  # 12:01 Kolkata
     assert await redash_sync.run_daily(later) is True
     assert await redash_sync.run_daily(later) is False  # once a day
     assert len(await outbox(db)) == 1
+
+
+async def test_several_posting_times_each_run_once_start_early_and_only_post_when_the_count_moved(db, make_user, make_program, monkeypatch):
+    await make_program("t1")
+    await link(db)
+    monkeypatch.setattr(redash_sync, "_ran", set())
+    admin = await make_user("admin@example.com", [Role.SUPER_ADMIN])
+    async with db() as session:
+        await settings_store.save(session, admin, PortalSettings(redash_sync_times=[time(18, 0), time(10, 0)]))
+        await session.commit()
+    fake_fetch(monkeypatch, {TODAY: 25})
+    ten = datetime(2026, 10, 19, 4, 28, tzinfo=timezone.utc)  # 09:58 Kolkata: the 10:00 run starts 3 minutes early
+    assert await redash_sync.run_daily(ten - timedelta(minutes=2)) is False  # 09:56: not yet
+    assert await redash_sync.run_daily(ten) is True and await redash_sync.run_daily(ten) is False
+    assert len(await outbox(db)) == 1
+    evening = datetime(2026, 10, 19, 12, 31, tzinfo=timezone.utc)  # 18:01 Kolkata
+    assert await redash_sync.run_daily(evening) is True  # the 18:00 slot is its own run...
+    assert len(await outbox(db)) == 1  # ...but today's count didn't move, so nothing new is posted
+    fake_fetch(monkeypatch, {TODAY: 40})
+    redash_sync._ran.clear()
+    assert await redash_sync.run_daily(evening) is True
+    assert len(await outbox(db)) == 2  # the count moved: posted again, under the later slot's own key

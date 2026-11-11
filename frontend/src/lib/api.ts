@@ -317,7 +317,12 @@ export async function sendJson<T>(method: string, path: string, body?: unknown):
 }
 
 const regPath = (ticketId: string) => `/programs/${ticketId}`;
-export type SaveResult = { saved: number; slack: { sent: boolean; error: string | null } };
+// `queued`: the Slack post waits for the relevant count and is sent by the server about a minute later.
+export type SaveResult = {
+  saved: number;
+  refresh?: string;
+  slack: { sent: boolean; error: string | null; queued?: boolean };
+};
 export const saveRegistrations = (ticketId: string, entries: Omit<RegistrationEntry, "id">[]) =>
   sendJson<SaveResult>("POST", `${regPath(ticketId)}/registrations`, { entries });
 export const deleteRegistration = (ticketId: string, id: number) =>
@@ -342,8 +347,15 @@ export const saveSlack = (
   ticketId: string,
   body: { channel_id?: string | null; notify?: boolean },
 ) => sendJson<SlackSettings>("PUT", `${regPath(ticketId)}/slack`, body);
-export const saveRedash = (ticketId: string, body: { auto?: boolean; event_slug?: string }) =>
-  sendJson<RedashSettings>("PUT", `${regPath(ticketId)}/registrations/redash`, body);
+// `requirement` (who counts as relevant) travels with the slug in one request, so the candidates run has what it needs.
+export const saveRedash = (
+  ticketId: string,
+  body: {
+    auto?: boolean;
+    event_slug?: string;
+    requirement?: { yoe: string | null; cities: string[] };
+  },
+) => sendJson<RedashSettings>("PUT", `${regPath(ticketId)}/registrations/redash`, body);
 export const checkRedash = (ticketId: string, event_slug: string) =>
   sendJson<RedashCheck>("POST", `${regPath(ticketId)}/registrations/redash/check`, { event_slug });
 export const runRedash = (ticketId: string) =>

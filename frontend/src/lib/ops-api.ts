@@ -61,6 +61,8 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "request.manage": "Manage requests",
   "request_types.edit": "Edit request types",
   "hubspot.write": "Write to HubSpot",
+  "document.upload_sow": "Replace the SOW",
+  "document.upload_poa": "Replace the marketing POA",
   "integrations.link": "Link integrations",
   "users.manage": "Manage users",
   "settings.edit": "Edit settings",
@@ -204,7 +206,8 @@ export type FunnelStep = {
 export type Report = {
   registrations: {
     raw_total: number;
-    relevant_total: number;
+    relevant_total: number | null; // meets the requirement; null = no requirement / snapshot yet
+    relevant_possibly: number | null; // city matches, experience not on the profile
     relevant_pct: number | null;
     target: number | null;
     pct_of_target: number | null;

@@ -364,6 +364,8 @@ class ProgramActivity(Base):
     creative_proof_url: Mapped[str | None]
     tracker_ref: Mapped[str | None]
     updated_by: Mapped[str | None]  # None = nobody has edited this row since it was seeded
+    # An edited row whose POA line was dropped by a newer POA: kept (never deleted under someone's work), flagged for review.
+    not_in_poa: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     updated_at: Mapped[datetime] = mapped_column(default=_utcnow)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
@@ -413,6 +415,13 @@ class ProgramRegistrationSettings(Base):
     redash_event_title: Mapped[str | None]  # confirmed event name, shown in auto mode
     redash_event_start: Mapped[date | None] = mapped_column(Date)  # event window, from Redash;
     redash_event_end: Mapped[date | None] = mapped_column(Date)  # anchors the estimated timeline
+    # Who counts as relevant for the candidates split (Redash query 6182): years of experience as "2+" or "0-2",
+    # and preferred cities. Empty = no requirement.
+    required_yoe: Mapped[str | None]
+    required_cities: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, server_default=text("'{}'"))
+    # Latest good snapshot of that query (core/candidates.py) and why the newest refresh failed, if it did.
+    candidates: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    candidates_error: Mapped[str | None]
     # CSM overrides: the registration target (else the SOW's) and the campaign window (else Redash/HubSpot).
     target: Mapped[int | None]
     campaign_start: Mapped[date | None] = mapped_column(Date)

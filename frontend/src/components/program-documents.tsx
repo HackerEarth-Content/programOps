@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, RefreshCw } from "lucide-react";
+import { AlertTriangle, RefreshCw, Upload } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Card,
@@ -16,10 +16,12 @@ import {
 } from "@/components/kit";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { registrationsQueryOptions, type RegistrationEstimate } from "@/lib/api";
+import { UploadDocumentDialog, VersionHistory } from "@/components/document-upload";
+import { registrationsQueryOptions, useCan, type RegistrationEstimate } from "@/lib/api";
 import { formatDate, known } from "@/lib/format";
 import {
   programDocumentsQueryOptions,
+  type DocKind,
   type PoaActivity,
   type PoaChannel,
   type PoaDetails,
@@ -107,8 +109,8 @@ export function ProgramDocuments({
   return (
     <section className="space-y-4 page-in" aria-label="Program documents">
       <div className="grid gap-4 md:grid-cols-2">
-        <FileCard kind="Statement of Work" doc={sow} />
-        <FileCard kind="Plan of Action" doc={poa} />
+        <FileCard ticketId={ticketId} docKind="sow" kind="Statement of Work" doc={sow} />
+        <FileCard ticketId={ticketId} docKind="poa" kind="Plan of Action" doc={poa} />
       </div>
 
       {options.length > 0 && (
@@ -150,17 +152,47 @@ export function ProgramDocuments({
   );
 }
 
-function FileCard({ kind, doc }: { kind: string; doc: ProgramDocument<unknown> | null }) {
+function FileCard({
+  ticketId,
+  docKind,
+  kind,
+  doc,
+}: {
+  ticketId: string;
+  docKind: DocKind;
+  kind: string;
+  doc: ProgramDocument<unknown> | null;
+}) {
+  const canUpload = useCan(docKind === "sow" ? "document.upload_sow" : "document.upload_poa");
+  const canSeeHistory = useCan("audit.view"); // the history is read from the audit trail
+  const [uploading, setUploading] = useState(false);
+  const dialog = canUpload && (
+    <UploadDocumentDialog
+      ticketId={ticketId}
+      kind={docKind}
+      replacing={!!doc}
+      open={uploading}
+      onOpenChange={setUploading}
+    />
+  );
   if (!doc)
     return (
-      <Card className="flex min-h-[68px] items-center px-4 py-3">
+      <Card className="flex min-h-[68px] items-center justify-between gap-3 px-4 py-3">
         <div className="min-w-0">
           <p className="text-[13px] text-ink-2">{kind}</p>
           <p className="text-[14px] font-medium">Not uploaded</p>
           <p className="text-[13px] text-ink-2">
-            Attach it to the HubSpot ticket and it will appear here.
+            {canUpload
+              ? "Upload it here, or attach it to the HubSpot ticket."
+              : "Attach it to the HubSpot ticket and it will appear here."}
           </p>
         </div>
+        {canUpload && (
+          <Button size="sm" variant="outline" onClick={() => setUploading(true)}>
+            <Upload className="size-3.5" /> Upload
+          </Button>
+        )}
+        {dialog}
       </Card>
     );
   const file = doc.file;
@@ -182,7 +214,7 @@ function FileCard({ kind, doc }: { kind: string; doc: ProgramDocument<unknown> |
             {file.uploaded_at && ` · uploaded ${formatDate(file.uploaded_at)}`}
           </p>
         </div>
-        <div className="flex shrink-0 gap-1.5">
+        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
           <Button asChild size="sm" variant="outline">
             <a href={file.url} target="_blank" rel="noreferrer">
               View
@@ -191,6 +223,11 @@ function FileCard({ kind, doc }: { kind: string; doc: ProgramDocument<unknown> |
           <Button asChild size="sm" variant="outline">
             <a href={`${file.url}?download=true`}>Download</a>
           </Button>
+          {canUpload && (
+            <Button size="sm" variant="outline" onClick={() => setUploading(true)}>
+              <Upload className="size-3.5" /> Replace
+            </Button>
+          )}
         </div>
       </div>
       {doc.status === "failed" && (
@@ -199,6 +236,8 @@ function FileCard({ kind, doc }: { kind: string; doc: ProgramDocument<unknown> |
           view and download it.
         </p>
       )}
+      {canSeeHistory && <VersionHistory ticketId={ticketId} kind={docKind} />}
+      {dialog}
     </Card>
   );
 }

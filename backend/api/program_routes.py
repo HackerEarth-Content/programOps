@@ -10,26 +10,29 @@ from urllib.parse import quote
 from collections import Counter
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer, load_only
 
-from core.access import Access, require_permission
+from core.access import Access, current_access, require_permission
+from core.deps import program_or_404
+from core.errors import DomainError
 from core.database import get_session
 from core.config import settings
 from core.orm import (
     Program,
     ProgramDocument,
+    ProgramEvent,
     ProgramRegistration,
     ProgramNote,
     ProgramStageHistory,
 )
 from core.permissions import Permission
 from core import audit, internal_programs, redash_sync
-from hubspot_client import pipeline
+from hubspot_client import document_upload, pipeline
 from hubspot_client.client import get_user_names
 from hubspot_client.stage_checklist import (
     PROGRAM_STAGES,
@@ -404,6 +407,52 @@ async def get_program_documents(ticket_id: str, session: AsyncSession = Depends(
     ).scalars().all()
     by_kind = {d.kind: _serialize_document(d) for d in docs}
     return {"sow": by_kind.get("sow"), "poa": by_kind.get("poa")}
+
+
+_UPLOAD_PERMISSION = {"sow": Permission.DOCUMENT_UPLOAD_SOW, "poa": Permission.DOCUMENT_UPLOAD_POA}
+
+
+@router.post("/{ticket_id}/documents/{kind}", status_code=201)
+async def upload_program_document(
+    ticket_id: str,
+    kind: str,
+    file: UploadFile = File(...),
+    comment: str = Form(...),
+    program: Program = Depends(program_or_404),
+    session: AsyncSession = Depends(get_session),
+    access: Access = Depends(current_access),
+):
+    """Replace the SOW or POA: read it, put it on the HubSpot ticket, re-arrange the program's data, and log it
+    (comment required). 422 `extraction_failed` leaves everything as it was."""
+    _check_kind(kind)
+    permission = _UPLOAD_PERMISSION[kind]
+    if permission not in access.permissions:
+        raise DomainError("permission_denied", f"Missing permission: {permission.value}", 403)
+    content = await file.read(document_upload.MAX_BYTES + 1)  # one byte over the limit is enough to refuse it
+    return await document_upload.replace_document(session, access.user, program, kind, file.filename, content, comment)
+
+
+@router.get(
+    "/{ticket_id}/documents/{kind}/versions",
+    dependencies=[Depends(require_permission(Permission.AUDIT_VIEW))],  # it is read from the audit trail
+)
+async def get_document_versions(ticket_id: str, kind: str, session: AsyncSession = Depends(get_session)):
+    """Every file that has been the SOW / POA, and every rejected upload, newest first (read from the audit trail)."""
+    _check_kind(kind)
+    rows = (
+        await session.scalars(
+            select(ProgramEvent)
+            .where(
+                ProgramEvent.ticket_id == ticket_id,
+                ProgramEvent.entity == "document",
+                ProgramEvent.entity_id == kind,
+                ProgramEvent.action.in_(("document_reuploaded", "document_reupload_refused", "document_synced")),
+            )
+            .order_by(ProgramEvent.id.desc())
+            .limit(50)
+        )
+    ).all()
+    return [document_upload.version_out(v) for v in rows]
 
 
 @router.get("/{ticket_id}/documents/{kind}/file")

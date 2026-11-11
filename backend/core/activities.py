@@ -55,6 +55,8 @@ class SeedResult:
     added: int
     removed: int
     edits_kept: int  # rows people have edited, left exactly as they are
+    updated: int = 0  # unedited rows refreshed from the new POA (date, action, outcome)
+    flagged: int = 0  # edited rows the POA no longer lists: kept, marked `not_in_poa` for a person to resolve
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,9 @@ def summarize(activities: list[ProgramActivity]) -> ActivitySummary:
     )
 
 
+_POA_FOLLOWED = ("planned_date", "action", "outcome")  # what a new POA may change on a row nobody edited
+
+
 async def seed_from_poa(session: AsyncSession, ticket_id: str, details: Mapping[str, Any] | None) -> SeedResult:
     """Make the program's plan match the extracted POA without touching anyone's work: unseen rows are
     added; rows that vanished from the POA are removed only if nobody ever edited them."""
@@ -167,31 +172,48 @@ async def seed_from_poa(session: AsyncSession, ticket_id: str, details: Mapping[
             "planned_date": date.fromisoformat(row["date"]) if row.get("date") else None,
         }
 
-    added = removed = 0
+    added = removed = updated = flagged = 0
     for key, fields in wanted.items():
-        if key in existing:
-            continue
-        session.add(
-            ProgramActivity(
-                ticket_id=ticket_id,
-                code=_next_code(f"W{fields['week'] or 0}-ACT", taken),
-                poa_key=key,
-                source=ActivitySource.POA,
-                **fields,
+        row = existing.get(key)
+        if row is None:
+            session.add(
+                ProgramActivity(
+                    ticket_id=ticket_id,
+                    code=_next_code(f"W{fields['week'] or 0}-ACT", taken),
+                    poa_key=key,
+                    source=ActivitySource.POA,
+                    **fields,
+                )
             )
-        )
-        added += 1
+            added += 1
+            continue
+        row.not_in_poa = False  # listed again
+        if row.updated_by is None:  # untouched by anyone: follow the POA
+            changed = {f: v for f, v in fields.items() if f in _POA_FOLLOWED and getattr(row, f) != v}
+            for f, v in changed.items():
+                setattr(row, f, v)
+            if changed:
+                row.updated_at = _now()  # so a concurrent editor's If-Match sees the change
+                updated += 1
     for key, activity in existing.items():
-        if key not in wanted and activity.updated_by is None:
+        if key in wanted:
+            continue
+        if activity.updated_by is None:
             await session.delete(activity)
             removed += 1
+        elif not activity.not_in_poa:
+            activity.not_in_poa = True
+            flagged += 1
 
-    if added or removed:
+    if added or removed or updated or flagged:
         audit.record(
             session, None, entity="plan", entity_id=ticket_id, ticket_id=ticket_id,
-            action="plan_seeded", new={"added": added, "removed": removed},
+            action="plan_seeded", new={"added": added, "removed": removed, "updated": updated, "flagged": flagged},
         )
-    return SeedResult(added=added, removed=removed, edits_kept=sum(a.updated_by is not None for a in existing.values()))
+    return SeedResult(
+        added=added, removed=removed, updated=updated, flagged=flagged,
+        edits_kept=sum(a.updated_by is not None for a in existing.values()),
+    )
 
 
 MAX_LEAD_DAYS = 60  # a go-live date may be at most ~2 months out

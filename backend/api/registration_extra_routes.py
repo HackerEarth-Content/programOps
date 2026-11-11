@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import activities, audit, channel_sync, relevant, slack
+from core import activities, audit, candidates, channel_sync, relevant, settings_store, slack
 from core.access import Access, require_permission
 from core.channel_sync import ActivityRef, SourceBucket
 from core.database import get_session
@@ -72,6 +72,8 @@ async def _notify_relevant(session: AsyncSession, ticket_id: str, entry: Relevan
     cfg = await session.get(ProgramRegistrationSettings, ticket_id)
     program = await session.get(Program, ticket_id)
     if not (cfg and cfg.notify_slack and cfg.slack_channel_id and program):
+        return
+    if not await settings_store.slack_allowed(session, "csm_updates"):
         return
     total = relevant.total(await relevant.current(session, ticket_id))
     text = (
@@ -216,6 +218,58 @@ async def refresh_sources(ticket_id: str, session: AsyncSession = Depends(get_se
     if cfg is None or not cfg.redash_event_slug:
         raise DomainError("no_event_linked", "Link this program to its HackerEarth event first.", 409)
     return {"status": channel_sync.start_refresh(ticket_id)}
+
+
+# ---- candidates: who registered (experience and city) and who meets the requirement ----------------
+
+
+@router.get("/candidates")
+async def get_candidates(ticket_id: str, session: AsyncSession = Depends(get_session)) -> dict:
+    """The latest candidates snapshot with its requirement. `running` is true while a refresh is in flight."""
+    return candidates.view(await session.get(ProgramRegistrationSettings, ticket_id), ticket_id)
+
+
+@router.put("/candidates/requirement")
+async def put_requirement(
+    ticket_id: str,
+    body: candidates.RequirementIn,
+    session: AsyncSession = Depends(get_session),
+    access: Access = Depends(require_permission(Permission.REGISTRATIONS_MANAGE)),
+) -> dict:
+    """Set who counts as relevant. Validated here because the values end up inside the Redash query's source."""
+    try:
+        yoe, cities = candidates.check_yoe(body.yoe), candidates.check_cities(body.cities)
+    except candidates.InvalidRequirement as e:
+        raise DomainError("invalid_requirement", str(e), 422) from e
+    cfg = await session.get(ProgramRegistrationSettings, ticket_id)
+    if cfg is None:
+        cfg = ProgramRegistrationSettings(ticket_id=ticket_id, roles=[], fields=[], notify_slack=True)
+        session.add(cfg)
+    old = {"yoe": cfg.required_yoe, "cities": list(cfg.required_cities or [])}
+    changed = old != {"yoe": yoe, "cities": cities}
+    cfg.required_yoe, cfg.required_cities = yoe, cities
+    if changed:
+        await candidates.reset_relevant(session, cfg)  # what each day's relevant meant no longer holds
+        audit.record(
+            session, access.user, entity="candidates_requirement", entity_id=ticket_id, ticket_id=ticket_id,
+            action="candidates_requirement_changed", old=old, new={"yoe": yoe, "cities": cities},
+        )
+    await session.commit()
+    if changed and cfg.redash_event_slug:
+        candidates.start_refresh(ticket_id, cfg)  # about a minute; the page polls `running` / `progress`
+    return candidates.view(cfg, ticket_id)
+
+
+@router.post(
+    "/candidates/refresh", status_code=202, dependencies=[Depends(require_permission(Permission.INTEGRATIONS_LINK))]
+)
+async def refresh_candidates(ticket_id: str, session: AsyncSession = Depends(get_session)) -> dict[str, str]:
+    """Run query 6182 in the background. Poll GET /candidates: `running` turns false when it is done. Status:
+    started, already_running, or fresh (a snapshot for the current requirement is only minutes old: nothing to do)."""
+    cfg = await session.get(ProgramRegistrationSettings, ticket_id)
+    if cfg is None or not cfg.redash_event_slug:
+        raise DomainError("no_event_linked", "Link this program to its HackerEarth event first.", 409)
+    return {"status": candidates.start_refresh(ticket_id, cfg)}
 
 
 # ---- lift ----------------------------------------------------------------------

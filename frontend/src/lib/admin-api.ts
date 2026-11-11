@@ -27,9 +27,18 @@ export const ROLE_DEFAULTS: Record<UserRole, readonly string[]> = {
     "hubspot.write",
     "integrations.link",
     "program.create",
+    "document.upload_sow",
+    "document.upload_poa",
   ],
-  marketing: [...BASE, "update.post", "activity.edit", "activity.add_channel", "metrics.enter"],
-  account_manager: BASE,
+  marketing: [
+    ...BASE,
+    "update.post",
+    "activity.edit",
+    "activity.add_channel",
+    "metrics.enter",
+    "document.upload_poa",
+  ],
+  account_manager: [...BASE, "document.upload_sow", "document.upload_poa"],
   viewer: ["program.view"],
 };
 export const ROLES = Object.keys(ROLE_LABELS) as UserRole[];
@@ -66,12 +75,22 @@ export const PERMISSION_GROUPS: { title: string; keys: string[] }[] = [
       "program.create",
     ],
   },
+  { title: "Documents", keys: ["document.upload_sow", "document.upload_poa"] },
   { title: "Administration", keys: ["users.manage", "settings.edit"] },
 ];
 
 // ---- portal settings -------------------------------------------------------------------------
 
+// Which kinds of message ProgramOps may send to Slack. `enabled` is the master switch: off pauses all of them.
+export type SlackSettings = {
+  enabled: boolean;
+  registration_counts: boolean;
+  csm_updates: boolean;
+  nudges_requests: boolean;
+  reminders: boolean;
+};
 export type PortalSettings = {
+  slack: SlackSettings;
   reminders: {
     reminder_time: string | null;
     work_start: string;
@@ -79,7 +98,8 @@ export type PortalSettings = {
     work_days: number[];
     timezone: string;
   };
-  redash_sync_time: string | null;
+  // "HH:MM:SS" times (unique, sorted, at most 6) when Redash is fetched and the counts posted; empty = off.
+  redash_sync_times: string[];
   retention_days: number | null;
 };
 export const settingsQuery = queryOptions({

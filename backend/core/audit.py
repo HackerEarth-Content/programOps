@@ -21,18 +21,18 @@ def record(
     field: str | None = None,
     old: Any = None,
     new: Any = None,
-) -> None:
+) -> ProgramEvent:
     """Queue one event on `session`. The caller commits. `actor=None` means the system."""
-    session.add(
-        ProgramEvent(
-            ticket_id=ticket_id,
-            entity=entity,
-            entity_id=entity_id,
-            action=action,
-            field=field,
-            old=old,
-            new=new,
-            actor_id=actor.id if actor else None,
-            actor_name=(actor.name or actor.email) if actor else "system",
-        )
+    event = ProgramEvent(
+        ticket_id=ticket_id,
+        entity=entity,
+        entity_id=entity_id,
+        action=action,
+        field=field,
+        old=old,
+        new=new,
+        actor_id=actor.id if actor else None,
+        actor_name=(actor.name or actor.email) if actor else "system",
     )
+    session.add(event)
+    return event

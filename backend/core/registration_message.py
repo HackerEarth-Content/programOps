@@ -8,14 +8,16 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.orm import Program, ProgramDocument, ProgramRegistration
+from core.orm import Program, ProgramDocument, ProgramRegistration, ProgramRegistrationSettings
 
 
 def label(p: Program) -> str:
     return p.event_name or p.other_event_name or p.subject or p.ticket_id
 
 
-def format_summary(label: str, rows: list[dict], total: int, activities: dict[date, list[str]]) -> str:
+def format_summary(
+    label: str, rows: list[dict], total: int, activities: dict[date, list[str]], split: dict | None = None
+) -> str:
     """rows: [{date, role, registrations, relevant, extra}]. Date(s) lead the message,
     then the counts (role, registrations, relevant), then that day's marketing activities and the running total."""
     by_day: dict[date, list[dict]] = defaultdict(list)
@@ -37,7 +39,10 @@ def format_summary(label: str, rows: list[dict], total: int, activities: dict[da
             lines.append(f"Day total: *{sum(r['registrations'] for r in day):,}*")
         if activities.get(d):
             lines.append(":mega: *Marketing activity:* " + "; ".join(activities[d]))
-    lines += ["", f"Total so far: *{total:,}*"]
+    if split:  # {requirement, relevant} from the candidates snapshot: the two numbers the channel cares about
+        lines += ["", f"Total registrations: *{total:,}*", f"Relevant registrations ({split['requirement']}): *{split['relevant']:,}*"]
+    else:
+        lines += ["", f"Total so far: *{total:,}*"]
     return "\n".join(lines)
 
 
@@ -65,4 +70,11 @@ async def summary(session: AsyncSession, program: Program, rows: list[dict]) -> 
     for a in (poa or {}).get("activities", []):
         if a.get("date"):  # undated rows can't be tied to a day
             activities[date.fromisoformat(a["date"])].append(f"{a['activity']} ({a['channel']})")
-    return format_summary(label(program), rows, total, activities)
+    from core import candidates  # late: candidates imports redash_sync, which imports this module
+
+    cfg = await session.get(ProgramRegistrationSettings, program.ticket_id)
+    # Only for a program with a requirement, and only a snapshot for that requirement: one for another says nothing.
+    # A failed latest refresh leaves an old snapshot whose relevant figure would sit next to today's total: omit it.
+    snap = cfg.candidates if candidates.has_requirement(cfg) and candidates.is_current(cfg) and not cfg.candidates_error else None
+    split = {"requirement": candidates.describe(snap["requirement"]), "relevant": snap["relevant"]} if snap else None
+    return format_summary(label(program), rows, total, activities, split)

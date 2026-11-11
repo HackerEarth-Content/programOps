@@ -16,6 +16,7 @@ import {
   BellOff,
   Check,
   ChevronDown,
+  CircleAlert,
   Download,
   Hash,
   Loader2,
@@ -40,6 +41,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  Callout,
   Card,
   CardBody,
   CardHeader,
@@ -77,20 +79,30 @@ import {
 import { activitiesQuery, type Activity } from "@/lib/ops-api";
 import { programDocumentsQueryOptions, type PoaActivity } from "@/lib/program-documents";
 import {
-  addRelevant,
   liftQuery,
   refreshSources,
   registrationsViewQuery,
-  relevantQuery,
   saveTargets,
   sourcesQuery,
-  supersedeRelevant,
+  EMPTY_DRAFT,
+  draftYoe,
+  requirementLabel,
+  useCandidates,
+  useLiveElapsed,
+  yrs,
+  type CandidateRequirement,
+  type Candidates,
   type Lift,
+  type ReqDraft,
   type RegistrationsView,
-  type RelevantEntry,
   type SourceLine,
   type Sources,
 } from "@/lib/registrations-api";
+import {
+  CandidatesPanel,
+  RequirementDialog,
+  RequirementFields,
+} from "@/components/program-candidates";
 import { systemStatusQuery } from "@/lib/system-api";
 import { timeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -115,8 +127,10 @@ const compact = (n: number) => (n >= 1000 ? `${Math.round(n / 100) / 10}k` : Str
 
 function downloadCsv(name: string, rows: (string | number | null)[][]) {
   const esc = (v: string | number | null) => {
-    const s = String(v ?? "");
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    // A text cell starting with = + - @ (or a tab / carriage return) would run as a formula in a spreadsheet: a
+    // leading ' makes it plain text. Numbers are untouched.
+    const s = typeof v === "string" && /^[=+\-@\t\r]/.test(v) ? `'${v}` : String(v ?? "");
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const blob = new Blob([rows.map((r) => r.map(esc).join(",")).join("\n")], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
@@ -142,7 +156,44 @@ const MonoLabel = ({ className, ...rest }: ComponentProps<"span">) => (
 
 const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
 
-type SubView = "pace" | "sources" | "relevant";
+/** What a manual Redash fetch did: the days saved and where the Slack update is (it waits for the relevant count). */
+const fetchedText = (r: SaveResult) =>
+  `Fetched ${r.saved} ${r.saved === 1 ? "day" : "days"}.${r.slack.sent ? " Posted to Slack." : ""}${
+    r.slack.queued
+      ? " The Slack update will be posted when the relevant count is ready (about a minute)."
+      : ""
+  }${r.slack.error ? ` Slack failed: ${r.slack.error}` : ""}`;
+
+type SubView = "pace" | "sources" | "candidates";
+
+/**
+ * Bring the first of these elements into view (the setup block must already be open), focus its first control and
+ * ring it in red for about 3 seconds, or until the first click or key, so the person can see where to act.
+ * Scrolling is instant and the ring static when motion is reduced (see [data-flash] in styles.css).
+ */
+function scrollToSetup(ids: string[]) {
+  // two frames: the block has to be open and laid out before it can be scrolled to
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      const el = ids.map((id) => document.getElementById(id)).find((e) => e != null);
+      if (!el) return;
+      el.scrollIntoView({ behavior: motionOk() ? "smooth" : "auto", block: "center" });
+      el.querySelector<HTMLElement>("input, select, textarea, button")?.focus({
+        preventScroll: true,
+      });
+      el.setAttribute("data-flash", "");
+      const off = () => {
+        el.removeAttribute("data-flash");
+        window.clearTimeout(timer);
+        document.removeEventListener("pointerdown", off, true);
+        document.removeEventListener("keydown", off, true);
+      };
+      const timer = window.setTimeout(off, 3000);
+      document.addEventListener("pointerdown", off, true);
+      document.addEventListener("keydown", off, true);
+    }),
+  );
+}
 
 // ---- the tab ------------------------------------------------------------------------------
 
@@ -162,9 +213,17 @@ export function ProgramRegistrationsTab({
     refetchInterval: (q) => (q.state.data?.running ? 3000 : false),
   });
   const status = useQuery(systemStatusQuery);
+  const cand = useCandidates(ticketId, redashEnabled && !!reg.data?.redash.event_slug);
   const canManage = useCan("registrations.manage");
   const canLink = useCan("integrations.link");
   const [view, setView] = useState<SubView>("pace");
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [editReq, setEditReq] = useState(false);
+  const elapsed = useLiveElapsed(cand);
+  const [behindEarlier, setBehindEarlier] = useState(false);
+  useEffect(() => {
+    if (!cand.data?.running) setBehindEarlier(false);
+  }, [cand.data?.running]);
   const [editTargets, setEditTargets] = useState(false);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -173,7 +232,7 @@ export function ProgramRegistrationsTab({
     onSuccess: (r) => {
       setNotice({
         ok: !r.slack.error,
-        text: `Fetched ${r.saved} ${r.saved === 1 ? "entry" : "entries"} from Redash.${r.slack.error ? ` Slack failed: ${r.slack.error}` : ""}`,
+        text: fetchedText(r),
       });
       void qc.invalidateQueries({ queryKey: ["programs", ticketId] });
       void qc.invalidateQueries({ queryKey: ["system", "status"] });
@@ -204,6 +263,53 @@ export function ProgramRegistrationsTab({
 
   const data = reg.data;
   const slug = data.redash.event_slug;
+  // Open the (collapsed) setup block, then scroll to and ring the part that needs filling in.
+  const goSetup = (target: "link" | "entry") => {
+    setSetupOpen(true);
+    scrollToSetup(target === "link" ? ["reg-redash", "reg-setup"] : ["reg-entry", "reg-setup"]);
+  };
+  // No daily counts yet: say what to do, and give the button only to people who can do it.
+  const noDaily = data.entries.length === 0;
+  const dailyMissing = (title: string) => {
+    const linkable = redashEnabled && !slug;
+    const fetchable = redashEnabled && !!slug && data.redash.auto;
+    const can = linkable ? canLink || canManage : fetchable ? canLink : canManage;
+    const text = linkable
+      ? "Link the HackerEarth event (Auto) or add the first day's count to see daily registrations."
+      : fetchable
+        ? "Daily counts come from Redash. Fetch them to see daily registrations."
+        : "Add the first day's count to see daily registrations.";
+    return (
+      <Callout
+        title={title}
+        action={
+          can ? (
+            fetchable ? (
+              <Button
+                size="sm"
+                disabled={sync.isPending}
+                onClick={() => sync.mutate()}
+                className="max-sm:min-h-11"
+              >
+                <RefreshCw className={cn(sync.isPending && "animate-spin")} />
+                {sync.isPending ? "Fetching…" : "Fetch from Redash"}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                onClick={() => goSetup(linkable ? "link" : "entry")}
+                className="max-sm:min-h-11"
+              >
+                {linkable ? "Link the event or add a day" : "Add the first day"}
+              </Button>
+            )
+          ) : undefined
+        }
+      >
+        {can ? text : "Ask the CSM to link the event or add the first day."}
+      </Callout>
+    );
+  };
   const exportEntries = () =>
     downloadCsv("registrations.csv", [
       ["date", ...(isHiring ? ["role"] : []), "registrations", "relevant", ...data.fields],
@@ -225,7 +331,7 @@ export function ProgramRegistrationsTab({
           options={[
             { id: "pace", label: "Daily pace & velocity" },
             { id: "sources", label: "Sources & attribution" },
-            { id: "relevant", label: "Relevant registrations (CSM)" },
+            ...(redashEnabled ? [{ id: "candidates" as const, label: "Candidates" }] : []),
           ]}
           className="max-w-full relative overflow-x-auto"
         />
@@ -274,22 +380,62 @@ export function ProgramRegistrationsTab({
         </p>
       )}
 
-      <RegKpis data={data} sources={sources.data} />
+      {noDaily && dailyMissing("Daily registrations aren't set up yet")}
 
+      <RegKpis
+        data={data}
+        sources={sources.data}
+        candidates={cand.data}
+        enabled={redashEnabled}
+        linked={!!slug}
+        canManage={canManage}
+        onEdit={() => setEditReq(true)}
+        refreshSeconds={elapsed}
+      />
+
+      {view === "candidates" && redashEnabled && (
+        <CandidatesPanel
+          ticketId={ticketId}
+          q={cand}
+          linked={!!slug}
+          elapsed={elapsed}
+          behindEarlier={behindEarlier}
+          onSetup={() => goSetup("link")}
+          onEditRequirement={() => setEditReq(true)}
+        />
+      )}
       {view === "pace" && (
-        <PacePanel ticketId={ticketId} data={data} isHiring={isHiring} sources={sources.data} />
+        <PacePanel
+          ticketId={ticketId}
+          data={data}
+          isHiring={isHiring}
+          sources={sources.data}
+          empty={dailyMissing("No daily registrations yet")}
+        />
       )}
       {view === "sources" && <SourcesPanel ticketId={ticketId} />}
-      {view === "relevant" && <RelevantPanel ticketId={ticketId} data={data} />}
 
       {(canManage || canLink) && (
         <Integrations
+          requirement={cand.data?.requirement ?? null}
+          onEditRequirement={() => setEditReq(true)}
+          open={setupOpen}
+          setOpen={setSetupOpen}
           ticketId={ticketId}
           data={data}
           isHiring={isHiring}
           redashEnabled={redashEnabled}
           canManage={canManage}
           canLink={canLink}
+        />
+      )}
+
+      {editReq && (
+        <RequirementDialog
+          ticketId={ticketId}
+          req={cand.data?.requirement ?? { yoe: null, cities: [] }}
+          onClose={() => setEditReq(false)}
+          onSaved={setBehindEarlier}
         />
       )}
 
@@ -306,7 +452,113 @@ export function ProgramRegistrationsTab({
 
 // ---- KPI strip (the four numbers) -----------------------------------------------------------------------------
 
-function RegKpis({ data, sources }: { data: RegistrationsView; sources: Sources | undefined }) {
+/**
+ * The second KPI: who meets the CSM's requirement (Redash candidates snapshot), or what is needed to show it.
+ * People with registrations.manage get the whole cell as a button that opens the requirement dialog in place.
+ */
+function MeetsCell({
+  candidates,
+  enabled,
+  linked,
+  canManage,
+  onEdit,
+  elapsed,
+}: {
+  elapsed: number | null;
+  candidates: Candidates | undefined;
+  enabled: boolean;
+  linked: boolean;
+  canManage: boolean;
+  onEdit: () => void;
+}) {
+  // Cells that ask for something to be set up wear the same red outline and icon as the other missing-data prompts.
+  const ALERT = "bg-danger-bg/30 ring-1 ring-inset ring-danger/50";
+  const alertIcon = <CircleAlert aria-hidden className="size-4 shrink-0 text-danger" />;
+  const editable = canManage && enabled && linked;
+  const label = (
+    <span className="flex items-center justify-between gap-2">
+      Meets requirement
+      {editable && <Pencil aria-hidden className="size-3.5 shrink-0 text-ink-3" />}
+    </span>
+  );
+  const props = (alert?: boolean) => ({
+    label,
+    ...(alert ? { className: ALERT } : {}),
+    ...(editable
+      ? { onClick: onEdit, ariaLabel: "Meets requirement: edit who counts as relevant" }
+      : {}),
+  });
+  const quiet = (text: string, sub?: string, alert?: boolean) => (
+    <KpiCell
+      {...props(alert)}
+      value={
+        <span
+          className={cn(
+            "inline-flex items-center gap-1.5 text-[15px] font-medium",
+            alert ? "text-foreground" : "text-ink-3",
+          )}
+        >
+          {alert && alertIcon}
+          {text}
+        </span>
+      }
+      sub={sub}
+    />
+  );
+  if (!enabled) return quiet("Not tracked", "Only for programs on the HackerEarth platform.");
+  if (!linked) return quiet("Event not linked", "Link the HackerEarth event to see this.", true);
+  const req = candidates?.requirement;
+  if (!req) return quiet("Not fetched yet");
+  if (!req.yoe && req.cities.length === 0)
+    return (
+      <KpiCell
+        {...props(true)}
+        value={
+          <span className="inline-flex items-center gap-1.5 text-[15px] font-medium text-foreground">
+            {alertIcon}
+            {canManage ? "Set who counts as relevant" : "No requirement set"}
+          </span>
+        }
+        sub="Experience and cities that count as relevant."
+      />
+    );
+  const snap = candidates.snapshot;
+  if (candidates.running || candidates.outdated)
+    return quiet(elapsed != null ? `Refreshing… ${elapsed}s` : "Refreshing…");
+  if (!snap) return quiet("Not fetched yet");
+  return (
+    <KpiCell
+      {...props()}
+      value={<Num value={snap.relevant} />}
+      unit={
+        snap.total ? `${Math.round((snap.relevant / snap.total) * 1000) / 10}% of total` : undefined
+      }
+      sub={`${snap.requirement.yoe ? yrs(snap.requirement.yoe) : "Any experience"}${
+        snap.requirement.cities.length ? ` · ${snap.requirement.cities.join(", ")}` : ""
+      } · +${snap.possibly.toLocaleString()} possibly`}
+    />
+  );
+}
+
+function RegKpis({
+  data,
+  sources,
+  candidates,
+  enabled,
+  linked,
+  canManage,
+  onEdit,
+  refreshSeconds,
+}: {
+  refreshSeconds: number | null;
+  data: RegistrationsView;
+  sources: Sources | undefined;
+  candidates: Candidates | undefined;
+  enabled: boolean;
+  linked: boolean;
+  canManage: boolean;
+  onEdit: () => void;
+}) {
   const est = data.estimate;
   const raw = data.raw_total;
   const target = est.target;
@@ -358,11 +610,13 @@ function RegKpis({ data, sources }: { data: RegistrationsView; sources: Sources 
         bar={target && raw >= target ? "ok" : "accent"}
         sub={target ? `${latestLine} · ${pctTarget}% of target` : latestLine}
       />
-      <KpiCell
-        label="Relevant registrations"
-        value={<Num value={data.relevant_total} />}
-        unit={raw ? `${Math.round((data.relevant_total / raw) * 1000) / 10}% of raw` : undefined}
-        sub="CSM-entered, kept apart and never summed into the raw count."
+      <MeetsCell
+        candidates={candidates}
+        enabled={enabled}
+        linked={linked}
+        canManage={canManage}
+        onEdit={onEdit}
+        elapsed={refreshSeconds}
       />
       <KpiCell
         label="Runway and pacing"
@@ -518,11 +772,13 @@ function PacePanel({
   data,
   isHiring,
   sources,
+  empty,
 }: {
   ticketId: string;
   data: RegistrationsView;
   isHiring: boolean;
   sources: Sources | undefined;
+  empty: ReactNode; // shown when there are no daily counts at all: what to do about it
 }) {
   const activities = useQuery(activitiesQuery(ticketId));
   const docs = useQuery(programDocumentsQueryOptions(ticketId));
@@ -634,10 +890,14 @@ function PacePanel({
           </div>
 
           {!rows.length ? (
-            <EmptyState
-              title="No registrations yet"
-              hint="Daily counts appear here once Redash syncs or someone adds the first day."
-            />
+            data.entries.length === 0 ? (
+              empty
+            ) : (
+              <EmptyState
+                title="No registrations yet"
+                hint="Daily counts appear here once Redash syncs or someone adds the first day."
+              />
+            )
           ) : asTable ? (
             <div className="max-h-[420px] overflow-auto rounded-lg border border-border">
               <table className="w-full min-w-[420px]">
@@ -1125,267 +1385,6 @@ function SourceRow({ line, i, lift }: { line: SourceLine; i: number; lift: Lift 
   );
 }
 
-// ---- Relevant registrations (CSM) -----------------------------------------------------------
-
-function RelevantPanel({ ticketId, data }: { ticketId: string; data: RegistrationsView }) {
-  const qc = useQueryClient();
-  const canEnter = useCan("relevant.enter");
-  const q = useQuery(relevantQuery(ticketId));
-  const [form, setForm] = useState({ date: todayKey(), count: "", criteria: "", note: "" });
-  const [fixing, setFixing] = useState<{ id: number; count: string; note: string } | null>(null);
-  const done = () => {
-    void qc.invalidateQueries({ queryKey: ["programs", ticketId, "relevant"] });
-    void qc.invalidateQueries({ queryKey: ["programs", ticketId, "registrations"] });
-  };
-  const add = useMutation({
-    mutationFn: () =>
-      addRelevant(ticketId, {
-        date: form.date,
-        count: Number(form.count),
-        criteria: form.criteria.trim() || null,
-        note: form.note.trim() || null,
-      }),
-    onSuccess: () => {
-      setForm({ ...form, count: "", note: "" });
-      done();
-    },
-  });
-  const fix = useMutation({
-    mutationFn: (e: RelevantEntry) =>
-      supersedeRelevant(ticketId, e.id, {
-        count: Number(fixing?.count),
-        criteria: e.criteria,
-        note: fixing?.note.trim() || null,
-      }),
-    onSuccess: () => {
-      setFixing(null);
-      done();
-    },
-  });
-  const entries = useMemo(
-    () => [...(q.data?.entries ?? [])].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id),
-    [q.data],
-  );
-  const validCount =
-    form.count !== "" && Number(form.count) >= 0 && Number.isInteger(Number(form.count));
-
-  return (
-    <Card>
-      <CardHeader title="Relevant registrations" meta={<Chip>CSM managed</Chip>} />
-      <CardBody className="space-y-4">
-        <p className="text-[13px] text-ink-2">
-          Relevant counts are the CSM's own pre-screened numbers. They are stored apart from the
-          Redash raw total ({data.raw_total.toLocaleString()}) and never added to it. Entries are
-          append-only; a correction supersedes the old entry.
-        </p>
-
-        {canEnter && (
-          <form
-            className="grid gap-3 rounded-lg border border-border p-3 sm:grid-cols-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (validCount) add.mutate();
-            }}
-          >
-            <Field label="Date of evaluation">
-              <Input
-                type="date"
-                required
-                value={form.date}
-                onChange={(e) => setForm({ ...form, date: e.target.value })}
-              />
-            </Field>
-            <Field label="New relevant count">
-              <Input
-                type="number"
-                min={0}
-                required
-                value={form.count}
-                onChange={(e) => setForm({ ...form, count: e.target.value })}
-              />
-            </Field>
-            <Field label="Criteria (optional)">
-              <Input
-                value={form.criteria}
-                onChange={(e) => setForm({ ...form, criteria: e.target.value })}
-              />
-            </Field>
-            <Field label="Audit note (optional)">
-              <Input
-                value={form.note}
-                onChange={(e) => setForm({ ...form, note: e.target.value })}
-              />
-            </Field>
-            <div className="flex flex-wrap items-center gap-3 sm:col-span-2">
-              <Button type="submit" disabled={!validCount || add.isPending}>
-                <Check />
-                {add.isPending ? "Recording…" : "Record relevant entry"}
-              </Button>
-              {add.isError && <span className="text-[13px] text-danger">{errMsg(add.error)}</span>}
-            </div>
-          </form>
-        )}
-
-        <div>
-          <MonoLabel className="mb-1.5 block">Recent validations</MonoLabel>
-          {q.isLoading ? (
-            <Skeleton className="h-32" />
-          ) : q.isError ? (
-            <EmptyState
-              title="Couldn't load the log"
-              hint={errMsg(q.error)}
-              action={
-                <Button size="sm" variant="outline" onClick={() => void q.refetch()}>
-                  Retry
-                </Button>
-              }
-            />
-          ) : !entries.length ? (
-            <EmptyState
-              title="No relevant entries yet"
-              hint="The CSM records validated counts here."
-            />
-          ) : (
-            <div className="relative overflow-x-auto">
-              <table className="w-full min-w-[560px]">
-                <thead>
-                  <tr className="border-b border-border">
-                    <th className="t-th p-2.5 text-left">Date</th>
-                    <th className="t-th p-2.5 text-right">Relevant</th>
-                    <th className="t-th p-2.5 text-left">Criteria and note</th>
-                    <th className="t-th p-2.5 text-left">Verified by</th>
-                    {canEnter && <th className="w-20" />}
-                  </tr>
-                </thead>
-                <tbody>
-                  {entries.map((e) => (
-                    <Fragment key={e.id}>
-                      <tr className="border-b border-border last:border-0">
-                        <td className="p-2.5 text-[13px] text-ink-2">{fmtLong(e.date)}</td>
-                        <td className="p-2.5 text-right text-[14px] font-medium">
-                          +{e.count.toLocaleString()}
-                        </td>
-                        <td className="p-2.5 text-[13px]">
-                          {[e.criteria, e.note].filter(Boolean).join(" · ") || (
-                            <span className="text-ink-3">—</span>
-                          )}
-                          {e.supersedes_id != null && (
-                            <span className="text-ink-3"> (corrects #{e.supersedes_id})</span>
-                          )}
-                        </td>
-                        <td className="p-2.5 text-[13px] text-ink-2">{e.entered_by_name}</td>
-                        {canEnter && (
-                          <td className="p-2.5 text-right">
-                            {fixing?.id !== e.id && (
-                              <button
-                                type="button"
-                                className="text-[13px] text-primary hover:underline"
-                                onClick={() =>
-                                  setFixing({ id: e.id, count: String(e.count), note: "" })
-                                }
-                              >
-                                Correct
-                              </button>
-                            )}
-                          </td>
-                        )}
-                      </tr>
-                      {canEnter && fixing?.id === e.id && (
-                        <tr className="border-b border-border last:border-0">
-                          <td colSpan={5} className="p-2.5">
-                            <form
-                              className="flex flex-wrap items-center gap-2"
-                              onSubmit={(ev) => {
-                                ev.preventDefault();
-                                if (fixing.count !== "") fix.mutate(e);
-                              }}
-                            >
-                              <Input
-                                type="number"
-                                min={0}
-                                aria-label="Corrected count"
-                                value={fixing.count}
-                                onChange={(ev) => setFixing({ ...fixing, count: ev.target.value })}
-                                className="w-28"
-                              />
-                              <Input
-                                aria-label="Correction note"
-                                placeholder="Why the correction"
-                                value={fixing.note}
-                                onChange={(ev) => setFixing({ ...fixing, note: ev.target.value })}
-                                className="min-w-40 flex-1"
-                              />
-                              <Button size="sm" type="submit" disabled={fix.isPending}>
-                                Save
-                              </Button>
-                              <Button
-                                size="sm"
-                                type="button"
-                                variant="ghost"
-                                onClick={() => setFixing(null)}
-                              >
-                                Cancel
-                              </Button>
-                              {fix.isError && (
-                                <span className="text-[13px] text-danger">{errMsg(fix.error)}</span>
-                              )}
-                            </form>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
-          <span className="text-[14px]">
-            Total relevant:{" "}
-            <span className="font-semibold">
-              {(q.data?.total ?? data.relevant_total).toLocaleString()}
-            </span>
-          </span>
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={!entries.length}
-            onClick={() =>
-              downloadCsv("relevant-registrations-audit.csv", [
-                [
-                  "id",
-                  "date",
-                  "count",
-                  "criteria",
-                  "note",
-                  "entered_by",
-                  "entered_at",
-                  "supersedes_id",
-                ],
-                ...entries.map((e) => [
-                  e.id,
-                  e.date,
-                  e.count,
-                  e.criteria,
-                  e.note,
-                  e.entered_by_name,
-                  e.entered_at,
-                  e.supersedes_id,
-                ]),
-              ])
-            }
-          >
-            <Download />
-            Download audit CSV
-          </Button>
-        </div>
-      </CardBody>
-    </Card>
-  );
-}
-
 function Field({
   label,
   children,
@@ -1480,6 +1479,10 @@ function TargetsDialog({
 // ---- Data entry & integrations (collapsed by default) -------------------------------------------
 
 function Integrations({
+  requirement,
+  onEditRequirement,
+  open,
+  setOpen,
   ticketId,
   data,
   isHiring,
@@ -1487,6 +1490,10 @@ function Integrations({
   canManage,
   canLink,
 }: {
+  requirement: CandidateRequirement | null;
+  onEditRequirement: () => void;
+  open: boolean;
+  setOpen: (v: boolean | ((o: boolean) => boolean)) => void;
   ticketId: string;
   data: RegistrationsView;
   isHiring: boolean;
@@ -1494,10 +1501,9 @@ function Integrations({
   canManage: boolean;
   canLink: boolean;
 }) {
-  const [open, setOpen] = useState(false);
   const manualOk = canManage && (!redashEnabled || !data.redash.auto);
   return (
-    <section className="surface">
+    <section id="reg-setup" className="surface scroll-mt-4">
       <button
         type="button"
         aria-expanded={open}
@@ -1522,9 +1528,18 @@ function Integrations({
       {open && (
         <div className="space-y-4 border-t border-border p-4">
           {canLink && <SlackChannelBox ticketId={ticketId} data={data} />}
-          {canLink && redashEnabled && <RedashBox ticketId={ticketId} data={data} />}
+          {canLink && redashEnabled && (
+            <RedashBox
+              ticketId={ticketId}
+              data={data}
+              requirement={requirement}
+              onEditRequirement={onEditRequirement}
+            />
+          )}
           {manualOk ? (
-            <EntryEditor ticketId={ticketId} data={data} isHiring={isHiring} />
+            <div id="reg-entry" className="scroll-mt-4">
+              <EntryEditor ticketId={ticketId} data={data} isHiring={isHiring} />
+            </div>
           ) : (
             canManage && (
               <p className="text-[13px] text-ink-3">
@@ -1627,6 +1642,7 @@ function SlackChannelBox({ ticketId, data }: { ticketId: string; data: Registrat
         <Hash className="size-4 text-ink-3" />
         Slack channel
       </span>
+      {data.slack_paused && <Chip>Slack messages are paused in the admin settings</Chip>}
       {!data.slack_configured && (
         <span className="text-[13px] text-danger">
           Slack isn't connected yet. Ask an admin to connect it.
@@ -1740,8 +1756,22 @@ function SlackChannelBox({ ticketId, data }: { ticketId: string; data: Registrat
   );
 }
 
-function RedashBox({ ticketId, data }: { ticketId: string; data: RegistrationsView }) {
+function RedashBox({
+  ticketId,
+  data,
+  requirement,
+  onEditRequirement,
+}: {
+  ticketId: string;
+  data: RegistrationsView;
+  requirement: CandidateRequirement | null;
+  onEditRequirement: () => void;
+}) {
   const qc = useQueryClient();
+  const canManage = useCan("registrations.manage");
+  // The requirement travels with the slug, so it is an explicit choice: nothing is preselected.
+  const [draft, setDraft] = useState<ReqDraft>(EMPTY_DRAFT);
+  const yoe = draftYoe(draft);
   const refresh = () => invalidateReg(qc, ticketId);
   const { auto, event_slug, configured } = data.redash;
   const [slug, setSlug] = useState(event_slug ?? "");
@@ -1763,7 +1793,8 @@ function RedashBox({ ticketId, data }: { ticketId: string; data: RegistrationsVi
     onError: fail,
   });
   const save = useMutation({
-    mutationFn: (v: { auto: boolean; event_slug?: string }) => saveRedash(ticketId, v),
+    mutationFn: (v: { auto: boolean; event_slug?: string; requirement?: CandidateRequirement }) =>
+      saveRedash(ticketId, v),
     onSuccess: (_, v) => {
       setNotice(null);
       void refresh();
@@ -1776,7 +1807,7 @@ function RedashBox({ ticketId, data }: { ticketId: string; data: RegistrationsVi
     onSuccess: (r) => {
       setNotice({
         ok: !r.slack.error,
-        text: `Fetched ${r.saved} ${r.saved === 1 ? "entry" : "entries"} from Redash.${r.slack.sent ? " Posted to Slack." : ""}${r.slack.error ? ` Slack failed: ${r.slack.error}` : ""}`,
+        text: fetchedText(r),
       });
       void refresh();
     },
@@ -1784,7 +1815,7 @@ function RedashBox({ ticketId, data }: { ticketId: string; data: RegistrationsVi
   });
 
   return (
-    <div className="space-y-3 rounded-lg border border-border p-3">
+    <div id="reg-redash" className="scroll-mt-4 space-y-3 rounded-lg border border-border p-3">
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-[14px] font-semibold">Registrations source</span>
         <Segmented
@@ -1806,6 +1837,23 @@ function RedashBox({ ticketId, data }: { ticketId: string; data: RegistrationsVi
           <Chip tone="good">
             {data.redash.event_name ? `${data.redash.event_name} · ${event_slug}` : event_slug}
           </Chip>
+          {requirement && (
+            <>
+              <Chip title="Who counts as relevant">{requirementLabel(requirement)}</Chip>
+              {canManage && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Edit who counts as relevant"
+                  onClick={onEditRequirement}
+                  className="max-sm:min-h-11"
+                >
+                  <Pencil />
+                </Button>
+              )}
+            </>
+          )}
           <Button size="sm" disabled={run.isPending} onClick={() => run.mutate()}>
             {run.isPending ? "Fetching…" : "Fetch from Redash"}
           </Button>
@@ -1851,7 +1899,7 @@ function RedashBox({ ticketId, data }: { ticketId: string; data: RegistrationsVi
             {check.isPending ? "Checking…" : "Check"}
           </Button>
           {check.isSuccess && (
-            <div className="flex basis-full flex-wrap items-center gap-3 rounded-lg bg-raised p-3">
+            <div className="flex basis-full flex-col gap-3 rounded-lg bg-raised p-3">
               <div>
                 <MonoLabel>Is this the right event?</MonoLabel>
                 <p className="text-[14px] font-semibold">{check.data.event.name}</p>
@@ -1868,14 +1916,33 @@ function RedashBox({ ticketId, data }: { ticketId: string; data: RegistrationsVi
                     .join(" · ")}
                 </p>
               </div>
-              <Button
-                size="sm"
-                type="button"
-                disabled={save.isPending}
-                onClick={() => save.mutate({ auto: true, event_slug: s })}
-              >
-                {save.isPending ? "Saving…" : "Yes, use this event"}
-              </Button>
+              <div className="grid gap-4 border-t border-border pt-3">
+                <p className="text-[13px] font-medium">Who counts as relevant?</p>
+                <RequirementFields value={draft} onChange={setDraft} idPrefix="redash-req" />
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  size="sm"
+                  type="button"
+                  disabled={save.isPending || yoe === undefined}
+                  onClick={() =>
+                    yoe !== undefined &&
+                    save.mutate({
+                      auto: true,
+                      event_slug: s,
+                      requirement: { yoe, cities: draft.cities },
+                    })
+                  }
+                  className="max-sm:min-h-11"
+                >
+                  {save.isPending ? "Saving…" : "Yes, use this event"}
+                </Button>
+                {yoe === undefined && (
+                  <span className="text-[12px] text-ink-3">
+                    Choose an experience option to continue.
+                  </span>
+                )}
+              </div>
             </div>
           )}
           {picked && (

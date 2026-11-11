@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import activities, channel_sync, checklists, communications, dependencies, relevant, rounds
+from core import activities, candidates, channel_sync, checklists, communications, dependencies, rounds
 from core.channel_sync import ActivityRef
 from core.checklists import ChecklistKind, ChecklistStatus
 from core.health import Health, health_of
@@ -47,7 +47,8 @@ class FunnelStepOut(BaseModel):
 
 class RegistrationsPart(BaseModel):
     raw_total: int  # Redash and manual daily counts
-    relevant_total: int  # the CSM's own number, never part of raw_total
+    relevant_total: int | None  # meets the requirement (Redash candidates snapshot); None = no requirement / snapshot
+    relevant_possibly: int | None  # city matches but experience isn't on the profile
     relevant_pct: float | None  # relevant as a share of raw
     target: int | None
     pct_of_target: float | None
@@ -107,8 +108,9 @@ async def build_report(session: AsyncSession, ticket_id: str) -> ReportOut:
     raw_total = int(
         await session.scalar(select(func.coalesce(func.sum(ProgramRegistration.registrations), 0)).where(ProgramRegistration.ticket_id == ticket_id)) or 0
     )
-    relevant_total = relevant.total(await relevant.current(session, ticket_id))
     cfg = await session.get(ProgramRegistrationSettings, ticket_id)
+    snap = cfg.candidates if candidates.has_requirement(cfg) and candidates.is_current(cfg) else None
+    relevant_total, relevant_possibly = (snap["relevant"], snap["possibly"]) if snap else (None, None)
     sow = await session.scalar(
         select(ProgramDocument.details).where(
             ProgramDocument.ticket_id == ticket_id, ProgramDocument.kind == "sow", ProgramDocument.status == "ok"
@@ -140,7 +142,8 @@ async def build_report(session: AsyncSession, ticket_id: str) -> ReportOut:
 
     return ReportOut(
         registrations=RegistrationsPart(
-            raw_total=raw_total, relevant_total=relevant_total, relevant_pct=_pct(relevant_total, raw_total),
+            raw_total=raw_total, relevant_total=relevant_total, relevant_possibly=relevant_possibly,
+            relevant_pct=_pct(relevant_total, raw_total),
             target=target, pct_of_target=_pct(raw_total, target),
         ),
         funnel=[FunnelStepOut.model_validate(s) for s in steps],

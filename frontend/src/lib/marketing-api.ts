@@ -8,6 +8,7 @@ export type PlanActivity = Activity & {
   target_note: string | null;
   comes_off_at: string | null;
   tracker_ref: string | null;
+  not_in_poa: boolean; // an edited row a newer POA no longer lists: kept, needs a person's decision
 };
 
 // Same key as ops-api's activitiesQuery, so every invalidation of the plan reaches this one too.

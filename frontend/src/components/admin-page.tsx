@@ -8,9 +8,11 @@ import {
   Lock,
   Mail,
   MoreHorizontal,
+  Plus,
   Search,
   ShieldCheck,
   Users as UsersIcon,
+  X,
 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import {
@@ -67,6 +69,7 @@ import {
   type AuditPage,
   type AuditRow,
   type PortalSettings,
+  type SlackSettings,
   type Section,
 } from "@/lib/admin-api";
 import { ROLE_LABELS, apiFetch, currentUserQueryOptions, type UserRole } from "@/lib/api";
@@ -1142,6 +1145,83 @@ function AuditSection({ canUsers, tabs }: { canUsers: boolean; tabs: ReactNode }
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+const MAX_TIMES = 6;
+/** "HH:MM" (what the dial gives) or "HH:MM:SS" -> "HH:MM:SS", unique and sorted: the form the server stores. */
+const normalizeTimes = (ts: string[]) =>
+  [...new Set(ts.map((t) => (t.length === 5 ? `${t}:00` : t)))].sort();
+// A sensible next time: 18:00 once 10:00 exists, and so on; the first one not already in the list.
+const SUGGESTED = ["10:00", "18:00", "14:00", "12:00", "16:00", "20:00", "08:00", "22:00"];
+const nextTime = (ts: string[]) =>
+  SUGGESTED.find((c) => !ts.some((t) => t.slice(0, 5) === c)) ?? "09:30";
+
+const SLACK_TYPES: {
+  key: Exclude<keyof SlackSettings, "enabled">;
+  title: string;
+  hint: string;
+}[] = [
+  {
+    key: "registration_counts",
+    title: "Registration counts",
+    hint: "Scheduled posts of total and relevant registrations, and the manual Fetch from Redash post.",
+  },
+  {
+    key: "csm_updates",
+    title: "CSM updates",
+    hint: "Daily updates and counts a CSM posts.",
+  },
+  {
+    key: "nudges_requests",
+    title: "Nudges and requests",
+    hint: "Marketing nudges, special-request updates, and the alert when approval is withdrawn from a live activity.",
+  },
+  {
+    key: "reminders",
+    title: "Reminders",
+    hint: "Go-live due, approval waiting, overdue requests and dependencies, timeline changes awaiting approval.",
+  },
+];
+
+/** A labelled on/off row: the whole row is the click target (44px tall on phones), the switch is a real switch. */
+function ToggleRow({
+  id,
+  title,
+  hint,
+  checked,
+  disabled,
+  strong,
+  onChange,
+}: {
+  id: string;
+  title: string;
+  hint: string;
+  checked: boolean;
+  disabled?: boolean;
+  strong?: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex min-h-11 items-center justify-between gap-4 py-3",
+        disabled && "opacity-60",
+      )}
+    >
+      <label
+        htmlFor={id}
+        className={cn("min-w-0 flex-1", disabled ? "cursor-not-allowed" : "cursor-pointer")}
+      >
+        <span
+          className={cn("block", strong ? "text-[15px] font-semibold" : "text-[14px] font-medium")}
+        >
+          {title}
+        </span>
+        <span className="block text-[13px] text-muted-foreground">{hint}</span>
+      </label>
+      <Switch id={id} checked={checked} disabled={disabled} onCheckedChange={onChange} />
+    </div>
+  );
+}
+
 function SettingsSection({ tabs }: { tabs: ReactNode }) {
   const q = useQuery(settingsQuery);
   return (
@@ -1158,12 +1238,13 @@ function SettingsSection({ tabs }: { tabs: ReactNode }) {
   );
 }
 
-function SettingsForm({ initial }: { initial: PortalSettings }) {
+export function SettingsForm({ initial }: { initial: PortalSettings }) {
   const qc = useQueryClient();
   const [s, setS] = useState<PortalSettings>(initial);
   const [saved, setSaved] = useState(false);
   const save = useMutation({
-    mutationFn: () => saveSettings(s),
+    mutationFn: () =>
+      saveSettings({ ...s, redash_sync_times: normalizeTimes(s.redash_sync_times) }),
     onSuccess: (r) => {
       qc.setQueryData(settingsQuery.queryKey, r);
       setS(r);
@@ -1174,6 +1255,15 @@ function SettingsForm({ initial }: { initial: PortalSettings }) {
     setSaved(false);
     setS({ ...s, reminders: { ...s.reminders, ...patch } });
   };
+  const setSlack = (patch: Partial<SlackSettings>) => {
+    setSaved(false);
+    setS({ ...s, slack: { ...s.slack, ...patch } });
+  };
+  const setTimes = (ts: string[]) => {
+    setSaved(false);
+    setS({ ...s, redash_sync_times: ts });
+  };
+  const times = s.redash_sync_times;
   const field = (label: string, node: ReactNode) => (
     <label className="block space-y-1.5">
       <MonoLabel>{label}</MonoLabel>
@@ -1193,8 +1283,10 @@ function SettingsForm({ initial }: { initial: PortalSettings }) {
         <CardBody className="space-y-4 pt-4">
           <p className="flex items-start gap-2 rounded-[8px] bg-secondary p-2.5 text-[13px] text-secondary-foreground">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-status-warning" aria-hidden />
-            Reminders stay off until a reminder time is set. Open the dial and choose Clear to turn
-            them off again.
+            The reminder time sets when the remaining reminders go out: go-live due, approvals
+            waiting, overdue requests and dependencies, and timeline changes awaiting approval. It
+            does not send a “no update yet” nudge. Reminders stay off until a time is set; open the
+            dial and choose Clear to turn them off again.
           </p>
           <div className="grid gap-4 sm:grid-cols-3">
             {field(
@@ -1265,24 +1357,101 @@ function SettingsForm({ initial }: { initial: PortalSettings }) {
         </CardBody>
       </Card>
       <Card>
-        <CardHeader title="Registration counts" divided />
-        <CardBody className="space-y-2 pt-4">
-          {field(
-            "Daily Redash fetch time",
-            <TimeDial
-              label="Daily Redash fetch time"
-              value={s.redash_sync_time}
-              onChange={(v) => {
-                setSaved(false);
-                setS({ ...s, redash_sync_time: v });
-              }}
-            />,
+        <CardHeader title="Slack messages" divided />
+        <CardBody className="pt-1">
+          <ToggleRow
+            id="slack-enabled"
+            title="Slack messages"
+            hint="Off pauses every message ProgramOps sends to Slack; data keeps syncing."
+            checked={s.slack.enabled}
+            strong
+            onChange={(v) => setSlack({ enabled: v })}
+          />
+          <div className="divide-y divide-border border-t border-border">
+            {SLACK_TYPES.map((t) => (
+              <ToggleRow
+                key={t.key}
+                id={`slack-${t.key}`}
+                title={t.title}
+                hint={t.hint}
+                checked={s.slack[t.key]}
+                disabled={!s.slack.enabled}
+                onChange={(v) => setSlack({ [t.key]: v })}
+              />
+            ))}
+          </div>
+          {!s.slack.enabled && (
+            <p className="border-t border-border pt-3 text-[13px] text-muted-foreground">
+              Slack messages are off, so nothing is sent. Turn them on to choose which kinds.
+            </p>
           )}
+        </CardBody>
+      </Card>
+      <Card>
+        <CardHeader title="Registration counts" divided />
+        <CardBody className="space-y-3 pt-4">
+          <div className="space-y-2" role="group" aria-label="Fetch and post times">
+            <MonoLabel>Fetch and post times</MonoLabel>
+            {times.length === 0 ? (
+              <p className="text-[13px] text-muted-foreground">
+                No times set: the scheduled fetch is off.
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {times.map((t, i) => (
+                  <li key={i} className="flex items-center gap-2">
+                    <TimeDial
+                      label={`Fetch time ${i + 1}`}
+                      required
+                      className="max-sm:min-h-11"
+                      value={t}
+                      onChange={(v) => v && setTimes(times.map((x, j) => (j === i ? v : x)))}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Remove time ${i + 1}`}
+                      onClick={() => setTimes(times.filter((_, j) => j !== i))}
+                      className="max-sm:min-h-11 max-sm:min-w-11"
+                    >
+                      <X />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="flex items-center gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={times.length >= MAX_TIMES}
+                onClick={() => setTimes([...times, nextTime(times)])}
+                className="max-sm:min-h-11"
+              >
+                <Plus />
+                Add a time
+              </Button>
+              <span className="t-data-sm text-muted-foreground">
+                {times.length} of {MAX_TIMES}
+              </span>
+            </div>
+          </div>
           <p className="text-[13px] text-muted-foreground">
-            In the time zone above. Each day at this time, programs in an active stage that are
-            inside their registration period are refreshed from Redash and today's count is posted
-            to their Slack channel. Empty keeps the scheduled fetch off.
+            In the time zone above. At each time the Redash data is fetched (starting about 3
+            minutes earlier so the message lands on time) and the total and relevant registration
+            counts are posted for programs inside their registration period. Empty keeps the
+            scheduled fetch off. If Slack messages or Registration counts are off, the data still
+            refreshes but nothing is posted.
           </p>
+          {(!s.slack.enabled || !s.slack.registration_counts) && (
+            <p className="flex items-start gap-2 rounded-[8px] bg-secondary p-2.5 text-[13px] text-secondary-foreground">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-status-warning" aria-hidden />
+              {s.slack.enabled ? "Registration counts are" : "Slack messages are"} off, so the data
+              will refresh at these times but nothing will be posted.
+            </p>
+          )}
         </CardBody>
       </Card>
       <Card>

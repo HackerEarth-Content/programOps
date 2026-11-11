@@ -32,6 +32,8 @@ class Permission(StrEnum):
     REQUEST_MANAGE = "request.manage"
     REQUEST_TYPES_EDIT = "request_types.edit"
     HUBSPOT_WRITE = "hubspot.write"
+    DOCUMENT_UPLOAD_SOW = "document.upload_sow"  # replace a program's SOW (also written to HubSpot)
+    DOCUMENT_UPLOAD_POA = "document.upload_poa"  # replace a program's marketing POA (also written to HubSpot)
     INTEGRATIONS_LINK = "integrations.link"
     USERS_MANAGE = "users.manage"
     SETTINGS_EDIT = "settings.edit"
@@ -40,6 +42,7 @@ class Permission(StrEnum):
 P = Permission
 
 _INTERNAL_BASE = frozenset({P.PROGRAM_VIEW, P.AUDIT_VIEW, P.COMMENT_ADD, P.REQUEST_CREATE})
+_DOCUMENTS = {P.DOCUMENT_UPLOAD_SOW, P.DOCUMENT_UPLOAD_POA}
 
 ROLE_DEFAULTS: dict[Role, frozenset[Permission]] = {
     Role.SUPER_ADMIN: frozenset(Permission),  # everything, including any permission added later
@@ -48,10 +51,11 @@ ROLE_DEFAULTS: dict[Role, frozenset[Permission]] = {
         P.UPDATE_POST, P.ACTIVITY_EDIT, P.ACTIVITY_ADD_CHANNEL, P.ACTIVITY_APPROVE, P.METRICS_ENTER,
         P.RELEVANT_ENTER, P.REGISTRATIONS_MANAGE, P.ROUNDS_EDIT, P.COUNTS_ENTER, P.REQUEST_MANAGE,
         P.REQUEST_TYPES_EDIT, P.HUBSPOT_WRITE, P.INTEGRATIONS_LINK, P.PROGRAM_CREATE,
-    },
+    }
+    | _DOCUMENTS,
     Role.MARKETING: _INTERNAL_BASE
-    | {P.UPDATE_POST, P.ACTIVITY_EDIT, P.ACTIVITY_ADD_CHANNEL, P.METRICS_ENTER},
-    Role.ACCOUNT_MANAGER: _INTERNAL_BASE,
+    | {P.UPDATE_POST, P.ACTIVITY_EDIT, P.ACTIVITY_ADD_CHANNEL, P.METRICS_ENTER, P.DOCUMENT_UPLOAD_POA},
+    Role.ACCOUNT_MANAGER: _INTERNAL_BASE | _DOCUMENTS,
     Role.VIEWER: frozenset({P.PROGRAM_VIEW}),
 }
 

@@ -5,6 +5,7 @@ REDASH_API_KEY. Raises RedashError (message is user-safe) so callers can report 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -17,8 +18,10 @@ class RedashError(Exception):
 
 
 async def run_query(query_id: str, parameters: dict[str, Any] | None = None,
-                    poll_interval: float = 2, max_wait: float = 300, max_age: int = 0) -> dict[str, Any]:
-    """Params use the query's parameter names, without the `p_` browser-URL prefix."""
+                    poll_interval: float = 2, max_wait: float = 300, max_age: int = 0,
+                    on_status: Callable[[str], None] | None = None) -> dict[str, Any]:
+    """Params use the query's parameter names, without the `p_` browser-URL prefix. `on_status` gets "queued" or
+    "running" as the Redash job moves, so a caller can tell the user why a slow query hasn't answered yet."""
     if not settings.REDASH_API_KEY:
         raise RedashError("Redash isn't connected yet. Ask an admin to connect it.")
     try:
@@ -38,6 +41,8 @@ async def run_query(query_id: str, parameters: dict[str, Any] | None = None,
                 job_id, waited = data["job"]["id"], 0.0
                 while True:
                     job = (await c.get(f"/api/jobs/{job_id}")).json()["job"]
+                    if on_status and job["status"] in (1, 2):
+                        on_status("queued" if job["status"] == 1 else "running")
                     if job["status"] == 3:  # success
                         result_id = job["query_result_id"]
                         break

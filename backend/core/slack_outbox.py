@@ -11,7 +11,7 @@ from enum import StrEnum
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from core import slack
+from core import settings_store, slack
 from core.orm import ProgramRegistrationSettings, SlackOutbox
 
 MAX_ATTEMPTS = 3
@@ -39,12 +39,21 @@ async def enqueue(
     program with no channel gets a `skipped` row, so the gap is visible instead of silent. The caller commits."""
     if dedupe_key and await session.scalar(select(SlackOutbox.id).where(SlackOutbox.dedupe_key == dedupe_key)):
         return None
+    category = settings_store.SLACK_CATEGORY.get(kind, "reminders")
+    paused = not await settings_store.slack_allowed(session, category)
+    if paused and category in ("registration_counts", "reminders"):
+        return None  # automatic and switched off by an admin: nothing to show, nothing to record
     cfg = await session.get(ProgramRegistrationSettings, ticket_id) if ticket_id else None
     channel = channel_id or (cfg.slack_channel_id if cfg else None)
+    # Something a person did (a nudge, a daily update, a request) while the admin settings pause it: a visible
+    # `skipped` row, so the gap is explained instead of silent.
+    queued = bool(channel) and not paused
     message = SlackOutbox(
         ticket_id=ticket_id, channel_id=channel, kind=kind, body=body, dedupe_key=dedupe_key,
-        status=OutboxStatus.QUEUED if channel else OutboxStatus.SKIPPED,
-        error=None if channel else "No Slack channel is linked to this program.",
+        status=OutboxStatus.QUEUED if queued else OutboxStatus.SKIPPED,
+        error=None if queued else (
+            "Slack messages are paused in the admin settings." if paused else "No Slack channel is linked to this program."
+        ),
     )
     session.add(message)
     await session.flush()

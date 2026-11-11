@@ -29,6 +29,7 @@ assert TEST_DB.endswith("_test")  # never run the suite against a real database
 
 os.environ["DATABASE_URL"] = _test_url.render_as_string(hide_password=False)
 os.environ["SUPER_ADMIN_EMAILS"] = ""  # tests create their own users
+os.environ["REDASH_API_KEY"] = ""  # tests never reach the real Redash, whatever .env says
 os.environ["HUBSPOT_WRITEBACK_ENABLED"] = "false"  # whatever .env says; the tests that need it on switch it on themselves
 
 
