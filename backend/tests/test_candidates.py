@@ -422,3 +422,26 @@ async def test_manual_count_posts_respect_the_admin_slack_switch_and_the_page_is
     second = (await csm.post("/programs/t1/registrations", json={"entries": [{"date": "2026-10-02", "registrations": 12, "relevant": 5}]})).json()
     assert second["saved"] == 1 and second["slack"]["sent"] is False and len(posted) == 1  # saved, not announced
     assert (await csm.get("/programs/t1/registrations")).json()["slack_paused"] is True
+
+
+async def test_linking_an_event_cannot_set_the_requirement_without_the_registrations_permission(client_for, make_user, make_program, db, monkeypatch):
+    from core.orm import UserPermissionOverride
+    from core.permissions import Permission, Role
+
+    await make_program("t1")
+    user = await make_user("link-only@example.com", [Role.CSM])  # a CSM whose registrations.manage was revoked
+    async with db() as session:
+        session.add(UserPermissionOverride(user_id=user.id, permission=Permission.REGISTRATIONS_MANAGE.value, granted=False))
+        await session.commit()
+
+    async def fetch_event(slug):
+        return {"name": "Ev", "start": None, "end": None}, {}
+    monkeypatch.setattr(redash_sync, "fetch_event", fetch_event)
+    monkeypatch.setattr(redash_sync, "event_dates", lambda info: (D1, D2))
+    client = await client_for(user)
+    body = {"event_slug": "ev", "auto": True, "requirement": {"yoe": "2+", "cities": []}}
+    assert (await client.put("/programs/t1/registrations/redash", json=body)).status_code == 403  # the same gate as the dedicated route
+    assert (await client.put("/programs/t1/candidates/requirement", json={"yoe": "2+", "cities": []})).status_code == 403
+    async with db() as session:
+        assert (await session.get(ProgramRegistrationSettings, "t1")) is None  # nothing was saved by the refused call
+    assert (await client.put("/programs/t1/registrations/redash", json={"event_slug": "ev", "auto": True})).status_code == 200  # linking alone is fine

@@ -127,8 +127,10 @@ const compact = (n: number) => (n >= 1000 ? `${Math.round(n / 100) / 10}k` : Str
 
 function downloadCsv(name: string, rows: (string | number | null)[][]) {
   const esc = (v: string | number | null) => {
-    const s = String(v ?? "");
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    // A text cell starting with = + - @ (or a tab / carriage return) would run as a formula in a spreadsheet: a
+    // leading ' makes it plain text. Numbers are untouched.
+    const s = typeof v === "string" && /^[=+\-@\t\r]/.test(v) ? `'${v}` : String(v ?? "");
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const blob = new Blob([rows.map((r) => r.map(esc).join(",")).join("\n")], { type: "text/csv" });
   const url = URL.createObjectURL(blob);

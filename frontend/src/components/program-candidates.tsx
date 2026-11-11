@@ -55,8 +55,12 @@ function share(n: number, of: number) {
 }
 
 function downloadCsv(name: string, rows: (string | number)[][]) {
-  const esc = (v: string | number) =>
-    /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+  // A text cell that starts with = + - @ (or a tab / carriage return) would run as a formula when the file is opened
+  // in a spreadsheet, and city names come from free text on user profiles: a leading ' makes it plain text.
+  const esc = (v: string | number) => {
+    const raw = typeof v === "string" && /^[=+\-@\t\r]/.test(v) ? `'${v}` : String(v);
+    return /[",\n\r]/.test(raw) ? `"${raw.replace(/"/g, '""')}"` : raw;
+  };
   const url = URL.createObjectURL(
     new Blob([rows.map((r) => r.map(esc).join(",")).join("\n")], { type: "text/csv" }),
   );

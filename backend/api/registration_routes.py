@@ -253,6 +253,9 @@ async def put_redash(
     if payload.auto is not None:
         cfg.redash_auto = payload.auto
     if payload.requirement is not None:
+        # Same gate as PUT /candidates/requirement: linking an event must not be a way around it.
+        if Permission.REGISTRATIONS_MANAGE not in access.permissions:
+            raise HTTPException(403, "Setting who counts as relevant needs the registrations permission.")
         try:
             yoe, cities = candidates.check_yoe(payload.requirement.yoe), candidates.check_cities(payload.requirement.cities)
         except candidates.InvalidRequirement as e:
