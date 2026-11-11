@@ -121,8 +121,8 @@ async def test_reread_endpoint_reseeds_from_the_stored_poa_without_touching_edit
     client = await client_for(await csm(make_user))
     first = (await client.post("/programs/t1/plan/reread")).json()
     again = (await client.post("/programs/t1/plan/reread")).json()
-    assert first == {"added": 3, "removed": 0, "edits_kept": 0}
-    assert again == {"added": 0, "removed": 0, "edits_kept": 0}
+    assert first == {"added": 3, "removed": 0, "edits_kept": 0, "updated": 0, "flagged": 0}
+    assert again == {"added": 0, "removed": 0, "edits_kept": 0, "updated": 0, "flagged": 0}
 
 
 async def test_the_sync_pass_seeds_only_programs_that_have_a_poa_and_no_plan(db, make_program):

@@ -9,9 +9,10 @@ result search cap by restarting the search from the last modified-time seen.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
 import aiohttp
@@ -160,6 +161,36 @@ class HubSpotClient:
         url = f"{_BASE}/crm/v3/objects/tickets/{ticket_id}"
         async with _session() as session:
             await _request(session, "PATCH", url, json={"properties": properties})
+
+    async def upload_file(self, name: str, content: bytes, folder_path: str = "/programops-documents") -> dict:
+        """Upload a PDF to the HubSpot Files API as a private file and return its record (`id`, `name`, ...).
+        Needs the `files` write scope. One attempt only: the multipart body can't be replayed, and a blind retry could
+        leave a duplicate; the caller reports the failure instead."""
+        form = aiohttp.FormData()
+        form.add_field("file", content, filename=name, content_type="application/pdf")
+        form.add_field("options", json.dumps({"access": "PRIVATE", "overwrite": False, "duplicateValidationStrategy": "NONE"}))
+        form.add_field("folderPath", folder_path)
+        headers = {"Authorization": f"Bearer {settings.HUBSPOT_SERVICE_KEY}"}  # no Content-Type: aiohttp sets the boundary
+        async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=120)) as session:
+            async with session.post(f"{_BASE}/files/v3/files", data=form) as resp:
+                resp.raise_for_status()
+                return await resp.json()
+
+    async def create_note(self, ticket_id: str, body: str) -> str:
+        """Add a note to a ticket's timeline and return its id. Needs the notes-write scope on the token."""
+        payload = {
+            "properties": {"hs_note_body": body, "hs_timestamp": datetime.now(timezone.utc).isoformat()},
+            "associations": [
+                {
+                    "to": {"id": ticket_id},
+                    # HUBSPOT_DEFINED 228 = note -> ticket
+                    "types": [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 228}],
+                }
+            ],
+        }
+        async with _session() as session:
+            data = await _request(session, "POST", f"{_BASE}/crm/v3/objects/notes", json=payload)
+        return str(data["id"])
 
     async def create_ticket(self, properties: dict[str, str]) -> str:
         """Create a ticket and return its id. Needs the ticket-write scope on the token."""

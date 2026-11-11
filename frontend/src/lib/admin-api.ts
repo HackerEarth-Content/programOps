@@ -27,9 +27,18 @@ export const ROLE_DEFAULTS: Record<UserRole, readonly string[]> = {
     "hubspot.write",
     "integrations.link",
     "program.create",
+    "document.upload_sow",
+    "document.upload_poa",
   ],
-  marketing: [...BASE, "update.post", "activity.edit", "activity.add_channel", "metrics.enter"],
-  account_manager: BASE,
+  marketing: [
+    ...BASE,
+    "update.post",
+    "activity.edit",
+    "activity.add_channel",
+    "metrics.enter",
+    "document.upload_poa",
+  ],
+  account_manager: [...BASE, "document.upload_sow", "document.upload_poa"],
   viewer: ["program.view"],
 };
 export const ROLES = Object.keys(ROLE_LABELS) as UserRole[];
@@ -66,6 +75,7 @@ export const PERMISSION_GROUPS: { title: string; keys: string[] }[] = [
       "program.create",
     ],
   },
+  { title: "Documents", keys: ["document.upload_sow", "document.upload_poa"] },
   { title: "Administration", keys: ["users.manage", "settings.edit"] },
 ];
 

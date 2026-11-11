@@ -150,6 +150,15 @@ const STAGE_NAME: Record<string, string> = {
 export function logSentence(e: LogEvent): string {
   if (e.action === "stage_moved" && typeof e.old === "string" && typeof e.new === "string")
     return `moved the ticket stage ${STAGE_NAME[e.old] ?? e.old} → ${STAGE_NAME[e.new] ?? e.new}`;
+  if (e.entity === "document") {
+    const doc = e.entity_id === "sow" ? "SOW" : "marketing POA";
+    const n = e.new as { comment?: string; code?: string } | null;
+    if (e.action === "document_reuploaded")
+      return `replaced the ${doc}${n?.comment ? `: "${n.comment}"` : ""}`;
+    if (e.action === "document_reupload_refused")
+      return `tried to replace the ${doc}, but it was refused (${words(n?.code ?? "refused")})`;
+    if (e.action === "document_synced") return `picked up a new ${doc} from HubSpot`;
+  }
   if (e.action.endsWith("_refused"))
     return `tried to change HubSpot, but it was refused (${words(String((e.new as { code?: string } | null)?.code ?? "refused"))})`;
   const verb = VERB[e.action] ?? words(e.action);

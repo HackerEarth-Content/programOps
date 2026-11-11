@@ -52,6 +52,7 @@ class ActivityOut(BaseModel):
     utm: str | None
     creative_proof_url: str | None
     tracker_ref: str | None
+    not_in_poa: bool  # an edited row a newer POA no longer lists: kept, needs a person's decision
     updated_at: datetime  # send back as If-Match to detect a concurrent edit
 
     @computed_field  # type: ignore[prop-decorator]
@@ -73,6 +74,8 @@ class SeedOut(BaseModel):
     added: int
     removed: int
     edits_kept: int
+    updated: int = 0
+    flagged: int = 0
 
 
 class ChannelIn(BaseModel):

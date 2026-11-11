@@ -715,6 +715,7 @@ function ActivityRow({
           <span className="min-[1360px]:hidden">· {date}</span>
           <span className="min-w-0 truncate min-[1360px]:hidden">· {utm}</span>
           {duplicate && <span className="text-primary">· Possible duplicate</span>}
+          {a.not_in_poa && <span className="text-warn">· Not in the latest POA</span>}
         </span>
       </span>
       <span className="hidden tabular-nums min-[1360px]:block">{date}</span>

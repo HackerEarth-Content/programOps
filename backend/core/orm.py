@@ -364,6 +364,8 @@ class ProgramActivity(Base):
     creative_proof_url: Mapped[str | None]
     tracker_ref: Mapped[str | None]
     updated_by: Mapped[str | None]  # None = nobody has edited this row since it was seeded
+    # An edited row whose POA line was dropped by a newer POA: kept (never deleted under someone's work), flagged for review.
+    not_in_poa: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     updated_at: Mapped[datetime] = mapped_column(default=_utcnow)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 

@@ -27,11 +27,19 @@ def test_only_the_super_admin_manages_users_and_settings():
 def test_marketing_edits_activities_but_cannot_approve_or_run_rounds():
     marketing = ROLE_DEFAULTS[Role.MARKETING]
     assert {P.ACTIVITY_EDIT, P.ACTIVITY_ADD_CHANNEL, P.METRICS_ENTER, P.UPDATE_POST} <= marketing
-    assert not marketing & {P.ACTIVITY_APPROVE, P.ROUNDS_EDIT, P.COUNTS_ENTER, P.REGISTRATIONS_MANAGE, P.HUBSPOT_WRITE}
+    assert not marketing & {P.ACTIVITY_APPROVE, P.ROUNDS_EDIT, P.COUNTS_ENTER, P.REGISTRATIONS_MANAGE, P.HUBSPOT_WRITE, P.DOCUMENT_UPLOAD_SOW}
 
 
-def test_account_manager_can_view_and_comment_only():
-    assert ROLE_DEFAULTS[Role.ACCOUNT_MANAGER] == {P.PROGRAM_VIEW, P.AUDIT_VIEW, P.COMMENT_ADD, P.REQUEST_CREATE}
+def test_account_manager_can_view_comment_and_replace_documents_only():
+    assert ROLE_DEFAULTS[Role.ACCOUNT_MANAGER] == {
+        P.PROGRAM_VIEW, P.AUDIT_VIEW, P.COMMENT_ADD, P.REQUEST_CREATE, P.DOCUMENT_UPLOAD_SOW, P.DOCUMENT_UPLOAD_POA,
+    }
+
+
+def test_marketing_replaces_the_poa_but_not_the_sow():
+    assert P.DOCUMENT_UPLOAD_POA in ROLE_DEFAULTS[Role.MARKETING] and P.DOCUMENT_UPLOAD_SOW not in ROLE_DEFAULTS[Role.MARKETING]
+    assert roles_with(P.DOCUMENT_UPLOAD_SOW) == {Role.CSM, Role.ACCOUNT_MANAGER, Role.SUPER_ADMIN}
+    assert P.DOCUMENT_UPLOAD_POA not in ROLE_DEFAULTS[Role.VIEWER]
 
 
 def test_request_templates_are_editable_by_csm_and_super_admin():

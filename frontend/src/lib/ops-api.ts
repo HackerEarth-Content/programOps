@@ -61,6 +61,8 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "request.manage": "Manage requests",
   "request_types.edit": "Edit request types",
   "hubspot.write": "Write to HubSpot",
+  "document.upload_sow": "Replace the SOW",
+  "document.upload_poa": "Replace the marketing POA",
   "integrations.link": "Link integrations",
   "users.manage": "Manage users",
   "settings.edit": "Edit settings",

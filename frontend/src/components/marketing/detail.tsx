@@ -138,6 +138,12 @@ export function ActivityDetail({
             <span className="font-mono">{a.code}</span> · {a.channel} · {weekLabel(weekKey(a))}
           </p>
           <h2 className="mt-0.5 text-[16px] font-semibold leading-6">{a.title}</h2>
+          {a.not_in_poa && (
+            <p className="mt-0.5 text-[13px] text-warn">
+              The latest POA no longer lists this activity. It is kept because someone edited it;
+              keep it, or take it off if it was dropped on purpose.
+            </p>
+          )}
           {(a.audience ?? a.outcome ?? a.hook) && (
             <p className="mt-0.5 text-[13px] text-ink-2">{a.audience ?? a.outcome ?? a.hook}</p>
           )}

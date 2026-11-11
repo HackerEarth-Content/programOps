@@ -16,10 +16,10 @@ from typing import Literal
 import structlog
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
-from core import activities
+from core import activities, audit
 from core.config import settings
 from core.database import db_manager
 from core.orm import Program, ProgramActivity, ProgramDocument
@@ -254,6 +254,19 @@ def needs_processing(file_id: str, current: tuple | None) -> bool:
     return status != "ok" and attempts < MAX_ATTEMPTS
 
 
+async def parse_document(kind: str, pdf: bytes) -> dict:
+    """The validated, sanitised details of a SOW / POA PDF, stamped with the extraction version. Raises on failure."""
+    extracted = await extract_details(kind, pdf)
+    extracted = sanitize_poa(extracted) if kind == "poa" else sanitize_sow(extracted)
+    return extracted.model_dump(mode="json") | {"_v": EXTRACTION_VERSION}
+
+
+async def lock_document(session, ticket_id: str, kind: str) -> None:
+    """Serialise everything that writes one ticket's SOW or POA (the sync and an in-app upload) until the
+    transaction ends, so a stale sync can't overwrite or delete a document that was just replaced."""
+    await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(f"program_document:{ticket_id}:{kind}"))))
+
+
 async def sync_documents() -> int:
     """Bring every program's stored SOW/POA in line with its HubSpot file
     properties. Scans all programs (cheap) rather than only the tickets that
@@ -318,12 +331,7 @@ async def _process(
     error: str | None = None
     if extension == "pdf":
         try:
-            extracted = await extract_details(kind, content)
-            if kind == "poa":
-                extracted = sanitize_poa(extracted)
-            else:
-                extracted = sanitize_sow(extracted)
-            details = extracted.model_dump(mode="json") | {"_v": EXTRACTION_VERSION}
+            details = await parse_document(kind, content)
             attempts = 0
         except Exception as e:
             attempts += 1
@@ -351,6 +359,19 @@ async def _process(
     }
     session_factory = db_manager.session_factory()
     async with session_factory() as session:
+        await lock_document(session, ticket_id, kind)
+        # The ticket may have changed while we were downloading (e.g. an in-app upload): never write an outdated file.
+        raw = await session.scalar(select(Program.raw_properties).where(Program.ticket_id == ticket_id))
+        if raw is None or _first_file_id((raw or {}).get(prop)) != file_id:
+            logger.info("document_sync_skipped_stale", ticket_id=ticket_id, kind=kind)
+            return
+        previous = await session.get(ProgramDocument, (ticket_id, kind), populate_existing=True)
+        if previous is None or previous.hubspot_file_id != file_id:  # a retry of the same file isn't a new version
+            audit.record(
+                session, None, entity="document", entity_id=kind, ticket_id=ticket_id, action="document_synced",
+                old={"file": previous.file_name, "file_id": previous.hubspot_file_id} if previous else None,
+                new={"file": row["file_name"], "file_id": file_id, "size_bytes": row["size_bytes"], "status": row["status"], "error": error},
+            )
         stmt = insert(ProgramDocument).values(row)
         stmt = stmt.on_conflict_do_update(
             index_elements=["ticket_id", "kind"],
@@ -365,6 +386,10 @@ async def _process(
 async def _delete_document(ticket_id: str, kind: str) -> None:
     session_factory = db_manager.session_factory()
     async with session_factory() as session:
+        await lock_document(session, ticket_id, kind)
+        raw = await session.scalar(select(Program.raw_properties).where(Program.ticket_id == ticket_id))
+        if _first_file_id((raw or {}).get(DOCUMENT_PROPERTIES[kind])) is not None:
+            return  # a file was attached since the sync looked (an in-app upload): keep it
         doc = await session.get(ProgramDocument, (ticket_id, kind))
         if doc is not None:
             await session.delete(doc)
@@ -387,7 +412,7 @@ def sow_matches_program(details: dict, company: str | None) -> bool:
     return company.strip().lower().split()[0] in haystack
 
 
-async def apply_sow_deal_value() -> None:
+async def apply_sow_deal_value(ticket_id: str | None = None) -> None:
     """Expected deal value priority: SOW fee > ticket description > HubSpot
     field. The latter two are decided at sync time (models.ProgramTicket);
     this overrides with the SOW fee wherever an extracted SOW matches the
@@ -398,7 +423,9 @@ async def apply_sow_deal_value() -> None:
         docs = (
             await session.execute(
                 select(ProgramDocument.ticket_id, ProgramDocument.details).where(
-                    ProgramDocument.kind == "sow", ProgramDocument.status == "ok"
+                    ProgramDocument.kind == "sow",
+                    ProgramDocument.status == "ok",
+                    *([ProgramDocument.ticket_id == ticket_id] if ticket_id else []),
                 )
             )
         ).all()
