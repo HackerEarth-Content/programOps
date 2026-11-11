@@ -59,3 +59,9 @@ async def test_the_bootstrapped_admin_can_sign_in_with_google_and_no_invite(db):
         )
     assert user.email == "sai.revanth@hackerearth.com"
     assert await roles_of(db, "sai.revanth@hackerearth.com") == ["super_admin"]
+
+
+async def test_the_api_docs_are_not_served(client_for):
+    client = await client_for()
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert (await client.get(path)).status_code == 404, path

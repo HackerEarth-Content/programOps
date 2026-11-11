@@ -47,7 +47,8 @@ async def lifespan(app: FastAPI):
     await db_manager.close()
 
 
-app = FastAPI(title="Program Ops API", lifespan=lifespan)
+# No public API docs: Swagger UI (/docs), ReDoc (/redoc) and the schema behind them (/openapi.json) are all off.
+app = FastAPI(title="Program Ops API", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 # Cookie auth needs credentialed CORS, which browsers only allow with an
 # explicit origin -- "*" is rejected once allow_credentials=True.
