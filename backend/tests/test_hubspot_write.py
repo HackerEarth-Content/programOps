@@ -101,30 +101,78 @@ async def test_an_item_already_in_the_wanted_state_writes_nothing(client_for, ma
     assert response.status_code == 200 and hubspot.writes == []
 
 
-async def test_hubspot_wins_when_the_checklist_changed_since_the_caller_looked(client_for, make_user, make_program, hubspot, db):
+async def test_a_tick_starts_from_hubspots_live_selection_so_a_lagging_page_never_conflicts(client_for, make_user, make_program, hubspot, db):
     await make_program("t1")
-    hubspot.props["onboarding_status"] = "Kickoff Done;Page Build;Go-Live Approved "  # edited in HubSpot meanwhile
-    response = await (await csm_client(client_for, make_user)).post("/programs/t1/hubspot/checklist", json=tick())
-    assert response.status_code == 409
-    assert response.json()["code"] == "hubspot_conflict" and response.json()["current"] == ["Kickoff Done", "Page Build", "Go-Live Approved "]
-    assert hubspot.writes == []
-    async with db() as session:
-        assert (await session.get(Program, "t1")).onboarding_status == []  # the portal's copy wasn't touched
-
-
-async def test_a_refused_change_is_kept_in_the_audit_trail(client_for, make_user, make_program, hubspot, db):
-    await make_program("t1")
-    hubspot.props["onboarding_status"] = "Kickoff Done;Page Build;Go-Live Approved "
-    await (await csm_client(client_for, make_user)).post("/programs/t1/hubspot/checklist", json=tick())
-    async with db() as session:
-        event = (await session.scalars(select(ProgramEvent).where(ProgramEvent.action == "checklist_item_set_refused"))).one()
-    assert event.ticket_id == "t1" and event.new["code"] == "hubspot_conflict"
-
-
-async def test_a_conflict_is_judged_on_the_set_not_the_order(client_for, make_user, make_program, hubspot):
-    await make_program("t1")
-    response = await (await csm_client(client_for, make_user)).post("/programs/t1/hubspot/checklist", json=tick(expected=("Page Build", "Kickoff Done")))
+    hubspot.props["onboarding_status"] = "Kickoff Done; Page Build;Go-Live Approved "  # edited in HubSpot meanwhile
+    response = await (await csm_client(client_for, make_user)).post("/programs/t1/hubspot/checklist", json=tick(expected=()))
     assert response.status_code == 200
+    kept = ["Kickoff Done", "Pre-requisites Received", "Page Build", "Go-Live Approved"]  # what HubSpot had, plus the tick
+    assert response.json()["selected"] == kept and hubspot.writes == [{"onboarding_status": ";".join(kept)}]
+    async with db() as session:
+        assert (await session.get(Program, "t1")).onboarding_status == kept  # the portal's copy is HubSpot's
+
+
+async def test_an_option_the_portal_doesnt_list_is_never_unticked(client_for, make_user, make_program, hubspot):
+    await make_program("t1")
+    hubspot.props["onboarding_status"] = "Kickoff Done;Brand New Option"
+    response = await (await csm_client(client_for, make_user)).post("/programs/t1/hubspot/checklist", json=tick("Page Build"))
+    assert response.json()["selected"] == ["Kickoff Done", "Page Build", "Brand New Option"]
+
+
+async def test_an_item_already_right_in_hubspot_just_refreshes_the_portals_copy(client_for, make_user, make_program, hubspot, db):
+    await make_program("t1")  # the portal's copy is empty: it lags HubSpot, which has two items ticked
+    response = await (await csm_client(client_for, make_user)).post("/programs/t1/hubspot/checklist", json=tick("Kickoff Done"))
+    assert response.status_code == 200 and hubspot.writes == []
+    async with db() as session:
+        assert (await session.get(Program, "t1")).onboarding_status == ["Kickoff Done", "Page Build"]
+
+
+async def test_a_change_hubspot_accepted_but_doesnt_show_is_reported_not_assumed(client_for, make_user, make_program, hubspot, db):
+    await make_program("t1")
+
+    async def swallow(ticket_id, properties):  # HubSpot says yes, the ticket stays as it was
+        hubspot.writes.append(properties)
+
+    hubspot.update_ticket_properties = swallow
+    client = await csm_client(client_for, make_user)
+    response = await client.post("/programs/t1/hubspot/checklist", json=tick())
+    assert (response.status_code, response.json()["code"]) == (502, "hubspot_not_applied")
+    moved = await client.post("/programs/t1/hubspot/stage", json={"stage_key": "ongoing", "expected_stage_key": "onboarding"})
+    assert (moved.status_code, moved.json()["code"]) == (502, "hubspot_not_applied")
+    async with db() as session:
+        program = await session.get(Program, "t1")
+        assert program.onboarding_status == [] and program.stage_label == "Onboarding"  # nothing shown that HubSpot doesn't have
+        refused = (await session.scalars(select(ProgramEvent).where(ProgramEvent.action == "checklist_item_set_refused"))).one()
+    assert refused.ticket_id == "t1" and refused.new["code"] == "hubspot_not_applied"
+
+
+async def test_a_sync_carrying_an_older_snapshot_never_undoes_a_newer_portal_row(make_program, db, monkeypatch):
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update
+
+    from hubspot_client import db_writer
+
+    await make_program("t1")
+    async with db() as session:  # the row as a confirmed write-back leaves it: stamped with HubSpot's modification time
+        await session.execute(update(Program).values(
+            onboarding_status=["SOW Shared"], raw_properties={"synced": "yes"}, last_modified_at=datetime(2026, 11, 12, 12, 17, 32, tzinfo=timezone.utc),
+        ))
+        await session.commit()
+
+    def row(modified: str, ticked: list[str]):
+        monkeypatch.setattr(db_writer, "_to_row", lambda p, synced_at: {
+            "ticket_id": "t1", "pipeline_id": "p", "pipeline_label": "Pipeline", "stage_id": "s", "stage_label": "Onboarding",
+            "onboarding_status": ticked, "raw_properties": {"synced": "yes"}, "last_modified_at": datetime.fromisoformat(modified),
+        })
+        return db_writer.upsert_programs([object()])
+
+    await row("2026-11-12T12:17:23+00:00", [])  # the search index hadn't caught up with the tick yet
+    async with db() as session:
+        assert (await session.get(Program, "t1")).onboarding_status == ["SOW Shared"]
+    await row("2026-11-12T12:20:00+00:00", ["SOW Shared", "Kickoff Done"])  # a real later edit in HubSpot
+    async with db() as session:
+        assert (await session.get(Program, "t1")).onboarding_status == ["SOW Shared", "Kickoff Done"]
 
 
 async def test_unknown_items_and_stages_without_a_checklist_are_refused(client_for, make_user, make_program, hubspot):

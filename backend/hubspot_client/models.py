@@ -158,7 +158,7 @@ class ProgramTicket(BaseModel):
             column = CHECKLIST_PROPERTY_TO_COLUMN[checklist_prop]
             checklist_columns[column] = _split_checkbox(props.get(checklist_prop))
             for label, info_prop in items:
-                note = props.get(info_prop)
+                note = props.get(info_prop) if info_prop else None
                 if note:
                     stage_notes[label] = note
 

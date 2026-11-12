@@ -41,7 +41,9 @@ class ChecklistIn(BaseModel):
     stage_key: str  # e.g. "onboarding"
     item: str  # the checklist item's label
     done: bool
-    expected: list[str]  # the items selected when the caller loaded the page: HubSpot wins if it differs now
+    # The items selected when the caller loaded the page. Only an internal program without a ticket uses it; a
+    # HubSpot ticket's tick starts from HubSpot's live selection instead, so a lagging page can't cause a conflict.
+    expected: list[str] = []
 
 
 class ChecklistOut(BaseModel):
@@ -74,7 +76,7 @@ async def set_checklist_item(
     session: AsyncSession = Depends(get_session),
     access: Access = Depends(require_permission(Permission.HUBSPOT_WRITE)),
 ) -> ChecklistOut:
-    """Tick or untick a checklist item on the HubSpot ticket. 409 `hubspot_conflict` (with `current`) if it changed there.
+    """Tick or untick a checklist item on the HubSpot ticket, from its live selection, and return what HubSpot then has.
     An internal hackathon with no HubSpot ticket: the change is saved in the portal instead (409 `program_conflict`)."""
     program = await session.get(Program, ticket_id)
     if program is not None and internal_programs.is_local_only(program):
@@ -87,7 +89,7 @@ async def set_checklist_item(
                 stage=body.stage_key, item=body.item, done=body.done)
     try:
         selected = await writer.set_checklist_item(
-            session, access.user, ticket_id, stage_key=body.stage_key, item=body.item, done=body.done, expected=body.expected
+            session, access.user, ticket_id, stage_key=body.stage_key, item=body.item, done=body.done
         )
     except DomainError as error:
         await _refused(session, access, ticket_id, "checklist_item_set", error, stage=body.stage_key, item=body.item, done=body.done)

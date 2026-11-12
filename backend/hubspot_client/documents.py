@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal
@@ -24,6 +25,7 @@ from core import activities, audit
 from core.config import settings
 from core.database import db_manager
 from core.orm import Program, ProgramActivity, ProgramDocument
+from hubspot_client import poa_weeks
 from hubspot_client.client import HubSpotClient
 
 logger = structlog.get_logger(__name__)
@@ -260,11 +262,45 @@ def sanitize_poa(poa: PoaDetails) -> PoaDetails:
 # Stamped into every stored `details` (key "_v"), per kind. Bump a kind when its extraction rules change so
 # documents extracted under the old rules are re-read once on the next sync, instead of
 # keeping their old (possibly invented) dates until the file is replaced in HubSpot.
-EXTRACTION_VERSIONS = {"sow": 2, "poa": 3}  # poa 3: a row's date must match the date text printed in that row
+# DO NOT bump a version while an older deployment still syncs the same database: each side then sees the other's
+# stamp as "wrong" and re-reads every document on every sync, forever (seen 2026-11-12: local at poa 3 against a
+# deployment at 2, four POAs re-read and their plans re-seeded every ~3 minutes). Bump only in the release that
+# becomes the single version running. Pending for that release: poa -> 3 (a row's date must match its printed text).
+EXTRACTION_VERSIONS = {"sow": 2, "poa": 2}
 
 # Failed extractions are retried on later syncs, but not forever (each retry
 # is a paid LLM call).
 MAX_ATTEMPTS = 5
+
+# Stamped into a POA's stored `details` (key "_weeks") once its week labels have been taken from the PDF's week cells.
+# Unlike "_v" this never triggers a re-read by the model: the stored PDF is enough, so it is safe with mixed versions.
+WEEK_CELLS = 1
+
+
+def apply_week_cells(details: dict, pdf: bytes) -> int:
+    """Set each activity's week from the week cell its row sits in in the PDF (see poa_weeks), replacing the model's
+    reading of the merged cells. A row is found by its date: the first unused table row whose printed date is the
+    activity's date. Activities whose row can't be found, and PDFs without a readable WEEK / DATE table, keep the
+    week they had. Returns how many weeks changed; always marks the details as done."""
+    details["_weeks"] = WEEK_CELLS
+    try:
+        rows = poa_weeks.row_weeks(pdf)
+    except Exception:  # noqa: BLE001 -- an unreadable layout must never fail the extraction itself
+        logger.warning("poa_week_cells_unreadable", exc_info=True)
+        return 0
+    used: set[int] = set()
+    changed = 0
+    for activity in details.get("activities") or []:
+        if not activity.get("date"):
+            continue
+        day = date.fromisoformat(activity["date"])
+        found = next((i for i, (text, _) in enumerate(rows) if i not in used and date_matches_text(day, text)), None)
+        if found is None:
+            continue
+        used.add(found)
+        if activity.get("week") != rows[found][1]:
+            activity["week"], changed = rows[found][1], changed + 1
+    return changed
 _CONCURRENCY = 4
 
 
@@ -289,7 +325,10 @@ async def parse_document(kind: str, pdf: bytes) -> dict:
     """The validated, sanitised details of a SOW / POA PDF, stamped with the extraction version. Raises on failure."""
     extracted = await extract_details(kind, pdf)
     extracted = sanitize_poa(extracted) if kind == "poa" else sanitize_sow(extracted)
-    return extracted.model_dump(mode="json") | {"_v": EXTRACTION_VERSIONS[kind]}
+    details = extracted.model_dump(mode="json") | {"_v": EXTRACTION_VERSIONS[kind]}
+    if kind == "poa":
+        apply_week_cells(details, pdf)
+    return details
 
 
 async def lock_document(session, ticket_id: str, kind: str) -> None:
@@ -470,6 +509,50 @@ async def apply_sow_deal_value(ticket_id: str | None = None) -> None:
         await session.commit()
 
 
+async def fix_stored_poa_weeks() -> int:
+    """Correct the week labels of POAs stored before weeks were read from the PDF's week cells (or re-read since by
+    an older version of this code). Uses the stored PDF only -- no model call -- and moves the existing plan rows to
+    their corrected week in place, so nothing anyone did on them is lost. Each POA is done once. Returns how many."""
+    session_factory = db_manager.session_factory()
+    async with session_factory() as session:
+        pending = (
+            await session.scalars(
+                select(ProgramDocument.ticket_id).where(
+                    ProgramDocument.kind == "poa",
+                    ProgramDocument.status == "ok",
+                    ProgramDocument.details["_weeks"].astext.is_(None),
+                )
+            )
+        ).all()
+    for ticket_id in pending:
+        try:
+            await _fix_poa_weeks(ticket_id)
+        except Exception:  # noqa: BLE001 -- one plan that can't be corrected must not stop the others or the sync
+            logger.exception("poa_weeks_correction_failed", ticket_id=ticket_id)
+    return len(pending)
+
+
+async def _fix_poa_weeks(ticket_id: str) -> None:
+    async with db_manager.session_factory()() as session:
+        await lock_document(session, ticket_id, "poa")
+        doc = await session.get(ProgramDocument, (ticket_id, "poa"), populate_existing=True)
+        if doc is None or doc.status != "ok" or not doc.details or doc.details.get("_weeks") == WEEK_CELLS:
+            return
+        corrected = copy.deepcopy(doc.details)
+        changed = apply_week_cells(corrected, doc.content)
+        if changed:
+            await activities.follow_week_changes(session, ticket_id, doc.details, corrected)
+            audit.record(
+                session, None, entity="document", entity_id="poa", ticket_id=ticket_id,
+                action="poa_weeks_corrected", new={"rows": changed},
+            )
+        doc.details = corrected
+        if changed:
+            await activities.seed_from_poa(session, ticket_id, corrected)
+        await session.commit()
+        logger.info("poa_weeks_corrected", ticket_id=ticket_id, rows=changed)
+
+
 async def seed_missing_plans() -> None:
     """Give every program with an extracted POA a marketing plan if it has none yet. A newly extracted POA
     seeds itself in _process; this covers POAs extracted before the plan existed."""
@@ -514,6 +597,11 @@ if __name__ == "__main__":
     assert sanitize_poa(poa).activities[0].date is None  # months outside the stated window
     poa = PoaDetails(title="x", window_start=date(2026, 6, 27), window_end=date(2026, 7, 15), activities=[_act(date(2026, 7, 20)), _act(date(2026, 6, 20))])
     assert [a.date for a in sanitize_poa(poa).activities] == [date(2026, 7, 20), date(2026, 6, 20)]  # stated dates just outside the window are kept
+    _rows = [("12 Nov 2026", "Week 1"), ("13 Nov 2026", "Week 1"), ("13 Nov 2026", "Week 1"), ("17 Nov 2026", "Week 2"), ("4th Nov 2026", "")]
+    _details = {"activities": [{"date": d, "week": w} for d, w in [("2026-11-12", ""), ("2026-11-13", ""), ("2026-11-13", "Week 1"), ("2026-11-17", "Week 1"), ("2026-11-04", "Week 3"), (None, "Week 9"), ("2026-12-25", "Week 5")]]}
+    poa_weeks.row_weeks = lambda pdf: _rows
+    assert apply_week_cells(_details, b"") == 4 and _details["_weeks"] == WEEK_CELLS
+    assert [a["week"] for a in _details["activities"]] == ["Week 1", "Week 1", "Week 1", "Week 2", "", "Week 9", "Week 5"]  # undated / unfound rows keep theirs
     assert date_matches_text(date(2026, 11, 4), "4th Nov 2026") and date_matches_text(date(2026, 11, 4), "04/11/2026")
     assert date_matches_text(date(2026, 6, 12), "June 12") and date_matches_text(date(2026, 6, 13), "12-13 June")
     assert not date_matches_text(date(2026, 12, 4), "4th Nov 2026")  # "corrected" to fit the timeline

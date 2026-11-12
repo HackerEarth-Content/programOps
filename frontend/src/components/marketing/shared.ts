@@ -11,7 +11,8 @@ export const STATUS_LABEL: Record<ActivityStatus, string> = {
 
 export const errText = (e: unknown) => (e instanceof Error ? e.message : "Action failed");
 export const weekKey = (a: PlanActivity) => String(a.week ?? "none");
-export const weekLabel = (k: string) => (k === "none" ? "Unscheduled" : `Week ${k}`);
+// "none": the POA puts the row in no week (or it was added by hand without one). It may still have a date.
+export const weekLabel = (k: string) => (k === "none" ? "No week" : `Week ${k}`);
 export const todayIso = () => new Date().toISOString().slice(0, 10);
 /** Go-live dates run from today to 60 days out (the backend enforces the same window). */
 export const maxGoLiveIso = () => new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10);

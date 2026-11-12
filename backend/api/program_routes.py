@@ -67,7 +67,7 @@ async def sync_status():
 
 class InternalProgramIn(BaseModel):
     name: str = Field(min_length=1)
-    campaign_type: Literal["Hackathon", "Coding Challenge"] = "Hackathon"  # "Coding Challenge" = a hiring challenge
+    campaign_type: Literal["Hackathon", "Hiring Challenge", "Coding Challenge"] = "Hackathon"  # the last two are hiring challenges
     registration_start_date: date | None = None
     event_end_date: date | None = None
 

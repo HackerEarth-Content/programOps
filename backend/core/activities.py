@@ -142,6 +142,56 @@ def summarize(activities: list[ProgramActivity]) -> ActivitySummary:
 _POA_FOLLOWED = ("planned_date", "action", "outcome")  # what a new POA may change on a row nobody edited
 
 
+async def follow_week_changes(
+    session: AsyncSession, ticket_id: str, old: Mapping[str, Any], new: Mapping[str, Any]
+) -> None:
+    """The same POA rows, re-labelled with corrected weeks: move each plan row to its new week and key in place,
+    so its approval, UTM, dates and edits stay with it (a plain re-seed would see an edited row as gone and add a
+    twin). `old` and `new` are the POA details before and after; they must list the same rows in the same order.
+
+    The corrected key may already belong to another row: the original activity, edited by someone and then flagged
+    "not in POA" when an earlier misreading of the weeks made it look gone, with an untouched twin added in its
+    place. The original is the one to keep (the re-seed that follows un-flags it), so the untouched twin is deleted;
+    a twin someone has edited as well is left where it is for a person to resolve."""
+    before, after = (list(d.get("activities") or []) for d in (old, new))
+    if len(before) != len(after):
+        return
+    seen_before: Counter[str] = Counter()
+    seen_after: Counter[str] = Counter()
+    moves: dict[str, tuple[str, int | None]] = {}
+    for was, now in zip(before, after):
+        week = _week_number(now.get("week", ""))
+        old_key = _poa_key(_week_number(was.get("week", "")), was["channel"], was["activity"], seen_before)
+        new_key = _poa_key(week, now["channel"], now["activity"], seen_after)
+        if old_key != new_key:
+            moves[old_key] = (new_key, week)
+    if not moves:
+        return
+    plan = (
+        await session.scalars(
+            select(ProgramActivity).where(
+                ProgramActivity.ticket_id == ticket_id, ProgramActivity.source == ActivitySource.POA
+            )
+        )
+    ).all()
+    staying = {row.poa_key for row in plan if row.poa_key not in moves}
+    rows = []
+    for row in plan:
+        if row.poa_key not in moves:
+            continue
+        if moves[row.poa_key][0] not in staying:
+            rows.append(row)
+        elif row.updated_by is None:
+            await session.delete(row)  # the untouched twin of an original that already holds the corrected key
+    targets = {row.id: moves[row.poa_key] for row in rows}
+    for row in rows:  # keys are unique per program: step aside first, so two rows can swap
+        row.poa_key = f"~{row.id}"
+    await session.flush()
+    for row in rows:
+        row.poa_key, row.week = targets[row.id]
+    await session.flush()
+
+
 async def seed_from_poa(session: AsyncSession, ticket_id: str, details: Mapping[str, Any] | None) -> SeedResult:
     """Make the program's plan match the extracted POA without touching anyone's work: unseen rows are
     added; rows that vanished from the POA are removed only if nobody ever edited them."""

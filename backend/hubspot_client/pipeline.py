@@ -26,7 +26,7 @@ from hubspot_client.db_writer import (
     upsert_programs,
     upsert_stage_history,
 )
-from hubspot_client.documents import apply_sow_deal_value, seed_missing_plans, sync_documents
+from hubspot_client.documents import apply_sow_deal_value, fix_stored_poa_weeks, seed_missing_plans, sync_documents
 from hubspot_client.models import ProgramNoteModel, ProgramTicket, StageHistoryEvent
 
 logger = structlog.get_logger(__name__)
@@ -120,6 +120,7 @@ async def _sync() -> dict:
     await sync_csm_emails()
     documents = await sync_documents()
     await apply_sow_deal_value()
+    await fix_stored_poa_weeks()
     await seed_missing_plans()
     deleted = await _reconcile_deleted()
 

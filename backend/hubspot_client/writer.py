@@ -1,13 +1,15 @@
 """Guarded write-back of stage and checklist changes to a HubSpot ticket.
 
-HubSpot wins on a conflict: the caller says what it last saw, the writer reads the ticket's current value first, and if
-the two differ it changes nothing and returns the current value (409 `hubspot_conflict`) so the person can look and
-retry. Everything is behind `HUBSPOT_WRITEBACK_ENABLED` (off until the token has the ticket-update scope).
+HubSpot is the reference. Every change starts from the ticket's live value (never the portal's copy, which can lag
+a sync behind), is read back afterwards to confirm HubSpot really has it (502 `hubspot_not_applied` if not), and the
+portal's row is then set to what HubSpot returned, so both ends agree. A checklist tick only touches its own item, so
+it can't conflict; a stage move or client link still refuses (409 `hubspot_conflict`) when the ticket is no longer
+where the caller saw it. Everything is behind `HUBSPOT_WRITEBACK_ENABLED`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol
 
 import aiohttp
@@ -36,14 +38,26 @@ def _require_enabled() -> None:
 
 
 def _selected(raw: str | None) -> list[str]:
-    return [part for part in (raw or "").split(";") if part]
+    return [part.strip() for part in (raw or "").split(";") if part.strip()]  # same reading as the sync
 
 
-async def _read(gateway: TicketGateway, ticket_id: str, name: str) -> str | None:
+async def _read(gateway: TicketGateway, ticket_id: str, name: str, program: Program | None = None) -> str | None:
+    """The ticket's live value of one property. Given the portal's row, it is also stamped with HubSpot's modification
+    time, so a sync that arrives carrying an older snapshot of the ticket can't undo what was just confirmed."""
     try:
-        return (await gateway.read_ticket_properties(ticket_id, [name])).get(name)
+        props = await gateway.read_ticket_properties(ticket_id, [name])
     except (aiohttp.ClientError, TimeoutError) as error:
         raise DomainError("hubspot_unavailable", f"Couldn't read the ticket from HubSpot: {error}", 502) from error
+    stamp = props.get("hs_lastmodifieddate")
+    if program is not None and stamp:
+        program.last_modified_at = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    return props.get(name)
+
+
+def _not_applied() -> DomainError:
+    return DomainError(
+        "hubspot_not_applied", "HubSpot accepted the change but the ticket doesn't show it. Check the ticket in HubSpot.", 502
+    )
 
 
 async def _write(gateway: TicketGateway, ticket_id: str, properties: dict[str, str]) -> None:
@@ -65,10 +79,10 @@ async def set_checklist_item(
     stage_key: str,
     item: str,
     done: bool,
-    expected: Sequence[str],
     gateway: TicketGateway | None = None,
 ) -> list[str]:
-    """Tick or untick one checklist item on the ticket. `expected` is the selected items the caller last saw."""
+    """Tick or untick one checklist item on the ticket and return what HubSpot then has selected. Only that item is
+    changed, starting from HubSpot's live selection, so whatever else was ticked there meanwhile is kept."""
     _require_enabled()
     spec = STAGE_CHECKLISTS.get(stage_key)
     if spec is None:
@@ -79,24 +93,22 @@ async def set_checklist_item(
         raise DomainError("unknown_checklist_item", f"'{item}' isn't an item of the {stage_key} checklist.", 422)
 
     gateway = gateway or HubSpotClient()
-    current = _selected(await _read(gateway, ticket_id, prop))
-    if sorted(current) != sorted(expected):
-        raise DomainError(
-            "hubspot_conflict", "This checklist changed in HubSpot since you opened it. Review it and try again.", 409,
-            current=current,
-        )
-    if (item in current) == done:
-        return current  # already the way the caller wants it: nothing to write
-
-    updated = [label for label in labels if (label in current) != (label == item)]  # canonical order, item toggled
-    await _write(gateway, ticket_id, {prop: ";".join(updated)})
     program = await session.get(Program, ticket_id)
+    current = _selected(await _read(gateway, ticket_id, prop, program))
+    updated = current
+    if (item in current) != done:  # otherwise HubSpot already has it the way the caller wants: nothing to write
+        wanted = [label for label in labels if (label in current) != (label == item)]  # canonical order, item toggled
+        wanted += [label for label in current if label not in labels]  # never untick an option the portal doesn't list
+        await _write(gateway, ticket_id, {prop: ";".join(wanted)})
+        updated = _selected(await _read(gateway, ticket_id, prop, program))  # read back: HubSpot's word, not ours
+        if (item in updated) != done:
+            raise _not_applied()
+        audit.record(
+            session, actor, entity="hubspot_checklist", entity_id=ticket_id, ticket_id=ticket_id,
+            action="checklist_item_set", field=item, old=current, new=updated,
+        )
     if program is not None:
-        setattr(program, CHECKLIST_PROPERTY_TO_COLUMN[prop], updated)  # shown at once; the next sync confirms it
-    audit.record(
-        session, actor, entity="hubspot_checklist", entity_id=ticket_id, ticket_id=ticket_id,
-        action="checklist_item_set", field=item, old=current, new=updated,
-    )
+        setattr(program, CHECKLIST_PROPERTY_TO_COLUMN[prop], updated)  # the portal's copy is now exactly HubSpot's
     return updated
 
 
@@ -126,6 +138,8 @@ async def move_stage(
         return stage_key
     await _write(gateway, ticket_id, {_STAGE_PROPERTY: target["stage_id"]})
     program = await session.get(Program, ticket_id)
+    if await _read(gateway, ticket_id, _STAGE_PROPERTY, program) != target["stage_id"]:  # read back
+        raise _not_applied()
     if program is not None:
         program.stage_id, program.stage_label = target["stage_id"], target["label"]
     audit.record(
@@ -167,9 +181,11 @@ async def set_company_name(
             "hubspot_conflict", "A different client was linked in HubSpot since you opened this. Review it and try again.", 409,
             current=current,
         )
+    program = await session.get(Program, ticket_id)
     if current != name:
         await _write(gateway, ticket_id, {_CLIENT_PROPERTY: name})
-    program = await session.get(Program, ticket_id)
+        if (await _read(gateway, ticket_id, _CLIENT_PROPERTY, program) or "").strip() != name:  # read back
+            raise _not_applied()
     changed = current != name or (program is not None and program.company_name != name)
     if program is not None:
         program.company_name = name  # shown at once; the next sync confirms it

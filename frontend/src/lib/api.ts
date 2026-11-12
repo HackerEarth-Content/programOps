@@ -365,9 +365,11 @@ export const joinSlackChannel = (ticketId: string) =>
 export const testSlack = (ticketId: string) =>
   sendJson<{ sent: boolean }>("POST", `${regPath(ticketId)}/slack/test`);
 
-// HubSpot's campaign_type values are "Hackathon" and "Coding Challenge"; the latter is
-// the hiring programme (role-wise registrations, "relevant" counts).
-export const HIRING_CAMPAIGN_TYPE = "Coding Challenge";
+// HubSpot's campaign_type has both "Hiring Challenge" and "Coding Challenge"; either one is a hiring
+// programme (role-wise registrations, "relevant" counts). New internal ones are created as "Hiring Challenge".
+export const HIRING_CAMPAIGN_TYPE = "Hiring Challenge";
+export const isHiringType = (campaignType: string | null) =>
+  campaignType === HIRING_CAMPAIGN_TYPE || campaignType === "Coding Challenge";
 export const previewSlackMessage = (ticketId: string, entries: Omit<RegistrationEntry, "id">[]) =>
   sendJson<{ text: string; channel_name: string | null }>(
     "POST",
