@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
@@ -105,6 +106,9 @@ class SowDetails(BaseModel):
 
 
 class PoaActivity(BaseModel):
+    # The row's date exactly as printed, asked for before `date` so the model reads the cell before it converts it.
+    # `date` is kept only when it agrees with this text (see date_matches_text); "" when the row has no date.
+    date_text: str
     date: date | None  # None when the document gives this row no date -- never guessed
     week: str
     channel: Literal["Email", "Social", "Community", "Newsletter", "Partner"]
@@ -145,12 +149,20 @@ _PROMPTS = {
     ),
     "poa": (
         "Extract this marketing plan-of-action schedule. Rules: use only what the "
-        "document states; dates as ISO YYYY-MM-DD; one activity per dated row; "
+        "document states; dates as ISO YYYY-MM-DD; one activity per table row, in the "
+        "document's order, whether or not the row has a date; "
         "channel is decided by which column holds the activity name (Email activity -> "
         "Email, Social media -> Social, Partner network -> Partner; use Community / "
         "Newsletter when the activity is a community promotion / newsletter feature); "
         "week is the row's week label (e.g. 'Week 1', empty string if none); "
-        "window_start/window_end come from the campaign window. NEVER guess or infer a "
+        "window_start/window_end come from the campaign window. Each row's date comes "
+        "ONLY from that row's own date cell: date_text is that cell copied character for "
+        "character (empty string if the cell is empty) and date is the same value in ISO "
+        "form. Rows may be out of order, repeat a date, or fall outside the campaign "
+        "window or their week: copy what is printed anyway. Never correct, reorder or "
+        "adjust a date to fit the week label, the weekday, the neighbouring rows, the "
+        "campaign window or the description, even when the printed date looks like a "
+        "mistake. NEVER guess or infer a "
         "date: if a row has no date in the document, set its date to null; if the "
         "document gives no complete day-month-year (or an unambiguous year) for a row, "
         "use null rather than assuming a year or a default such as 1 January; if the "
@@ -202,11 +214,30 @@ def sanitize_sow(sow: SowDetails) -> SowDetails:
     return sow
 
 
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+
+
+def date_matches_text(value: date, text: str) -> bool:
+    """Whether an extracted date is the one printed in its row: the day, the month (by name, or as a number when
+    the text has no month name) and the year, when written, must all be there. '4th Nov 2026' is 4 Nov, never 4 Dec."""
+    numbers = [int(n) for n in re.findall(r"\d+", text)]
+    months = {_MONTHS.index(w[:3]) + 1 for w in re.findall(r"[a-z]{3,}", text.lower()) if w[:3] in _MONTHS}
+    years = [n for n in numbers if n >= 1000]
+    if value.day not in numbers or (years and value.year not in years):
+        return False
+    return value.month in months if months else value.month in numbers
+
+
 def sanitize_poa(poa: PoaDetails) -> PoaDetails:
     """Belt and braces against the model inventing dates. A date the document states is
     kept as-is; one more than 30 days outside the stated campaign window is treated as
     invented (e.g. a default 1 Jan) and nulled. With no window, the yardstick is 120 days
     around the median of the document's own dates."""
+    mismatched = 0
+    for a in poa.activities:  # first: a date must be the one printed in its own row, not one fitted to the timeline
+        if a.date and not date_matches_text(a.date, a.date_text):
+            logger.warning("poa_date_not_in_row", activity=a.activity, date=str(a.date), date_text=a.date_text)
+            a.date, mismatched = None, mismatched + 1
     dated = sorted(a.date for a in poa.activities if a.date)
     if poa.window_start and poa.window_end:
         lo, hi = poa.window_start - timedelta(days=30), poa.window_end + timedelta(days=30)
@@ -226,10 +257,10 @@ def sanitize_poa(poa: PoaDetails) -> PoaDetails:
 
 # ---- Sync ------------------------------------------------------------------
 
-# Stamped into every stored `details` (key "_v"). Bump it when extraction rules change so
+# Stamped into every stored `details` (key "_v"), per kind. Bump a kind when its extraction rules change so
 # documents extracted under the old rules are re-read once on the next sync, instead of
 # keeping their old (possibly invented) dates until the file is replaced in HubSpot.
-EXTRACTION_VERSION = 2
+EXTRACTION_VERSIONS = {"sow": 2, "poa": 3}  # poa 3: a row's date must match the date text printed in that row
 
 # Failed extractions are retried on later syncs, but not forever (each retry
 # is a paid LLM call).
@@ -258,7 +289,7 @@ async def parse_document(kind: str, pdf: bytes) -> dict:
     """The validated, sanitised details of a SOW / POA PDF, stamped with the extraction version. Raises on failure."""
     extracted = await extract_details(kind, pdf)
     extracted = sanitize_poa(extracted) if kind == "poa" else sanitize_sow(extracted)
-    return extracted.model_dump(mode="json") | {"_v": EXTRACTION_VERSION}
+    return extracted.model_dump(mode="json") | {"_v": EXTRACTION_VERSIONS[kind]}
 
 
 async def lock_document(session, ticket_id: str, kind: str) -> None:
@@ -279,7 +310,7 @@ async def sync_documents() -> int:
         ).all()
         existing = {
             # schema_ok False = an "ok" document extracted under older rules: redo once.
-            (t, k): (fid, status, attempts, status != "ok" or (details or {}).get("_v") == EXTRACTION_VERSION)
+            (t, k): (fid, status, attempts, status != "ok" or (details or {}).get("_v") == EXTRACTION_VERSIONS[k])
             for t, k, fid, status, attempts, details in (
                 await session.execute(
                     select(
@@ -474,7 +505,8 @@ if __name__ == "__main__":
     _sow = SowDetails.model_construct(registration_window_weeks_min=3, registration_window_weeks_max=2, registration_target=-5)
     _sow = sanitize_sow(_sow)
     assert _sow.registration_window_weeks_min is None and _sow.registration_target is None
-    _act = lambda d: PoaActivity(date=d, week="", channel="Email", activity="a", objective="", description="")
+    _text = lambda d: f"{d.day} {_MONTHS[d.month - 1]} {d.year}" if d else ""
+    _act = lambda d, text=None: PoaActivity(date_text=_text(d) if text is None else text, date=d, week="", channel="Email", activity="a", objective="", description="")
     poa = PoaDetails(title="x", window_start=None, window_end=None,
                      activities=[_act(date(2026, m, d)) for m, d in [(1, 1), (6, 28), (7, 1), (7, 5)]] + [_act(None)])
     assert [a.date for a in sanitize_poa(poa).activities] == [None, date(2026, 6, 28), date(2026, 7, 1), date(2026, 7, 5), None]  # lone Jan 1 dropped
@@ -482,4 +514,12 @@ if __name__ == "__main__":
     assert sanitize_poa(poa).activities[0].date is None  # months outside the stated window
     poa = PoaDetails(title="x", window_start=date(2026, 6, 27), window_end=date(2026, 7, 15), activities=[_act(date(2026, 7, 20)), _act(date(2026, 6, 20))])
     assert [a.date for a in sanitize_poa(poa).activities] == [date(2026, 7, 20), date(2026, 6, 20)]  # stated dates just outside the window are kept
+    assert date_matches_text(date(2026, 11, 4), "4th Nov 2026") and date_matches_text(date(2026, 11, 4), "04/11/2026")
+    assert date_matches_text(date(2026, 6, 12), "June 12") and date_matches_text(date(2026, 6, 13), "12-13 June")
+    assert not date_matches_text(date(2026, 12, 4), "4th Nov 2026")  # "corrected" to fit the timeline
+    assert not date_matches_text(date(2026, 11, 5), "4th Nov 2026") and not date_matches_text(date(2027, 11, 4), "4th Nov 2026")
+    assert not date_matches_text(date(2026, 11, 4), "") and not date_matches_text(date(2026, 11, 4), "Wed")
+    poa = PoaDetails(title="x", window_start=None, window_end=None,
+                     activities=[_act(date(2026, 11, 28)), _act(date(2026, 12, 4), "4th Nov 2026"), _act(date(2026, 11, 6), "")])
+    assert [a.date for a in sanitize_poa(poa).activities] == [date(2026, 11, 28), None, None]  # only the date printed in the row
     print("ok")

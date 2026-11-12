@@ -160,3 +160,45 @@ async def test_an_internal_program_counts_in_the_directory_totals(client_for, ma
     program = await new_internal(client)
     after = (await client.get("/portfolio")).json()
     assert after["active_programs"] == before + 1 and program["ticket_id"] in {c["ticket_id"] for c in after["programs"]}
+
+
+# --- removing an internal program -------------------------------------------------------------------------------
+
+async def test_removing_an_internal_program_deletes_it_and_archives_its_ticket(client_for, make_user, db, monkeypatch):
+    from core.orm import ProgramEvent
+
+    hubspot_on(monkeypatch)
+    client = await csm_client(client_for, make_user)
+    ticket = (await new_internal(client))["ticket_id"]
+    marketing = await client_for(await make_user("m@example.com", [Role.MARKETING]))
+    assert (await marketing.delete(f"/programs/{ticket}")).status_code == 403
+    assert (await client.delete(f"/programs/{ticket}")).status_code == 204
+    assert FakeHubSpot.deleted == ["9001"] and (await client.get(f"/programs/{ticket}")).status_code == 404
+    async with db() as session:
+        event = (await session.scalars(select(ProgramEvent).where(ProgramEvent.action == "internal_program_deleted"))).one()
+        assert event.entity_id == "9001" and event.old["name"] == "Campus Hack 2026"
+
+
+async def test_a_local_internal_program_is_removed_without_hubspot_and_a_hubspot_program_is_refused(client_for, make_user, make_program):
+    await make_program("t1")
+    client = await csm_client(client_for, make_user)
+    ticket = (await new_internal(client))["ticket_id"]  # write-back off: a local INT- id, so HubSpot isn't called
+    assert (await client.delete(f"/programs/{ticket}")).status_code == 204
+    refused = await client.delete("/programs/t1")
+    assert (refused.status_code, refused.json()["code"]) == (422, "not_internal")
+    assert (await client.get("/programs/t1")).status_code == 200
+
+
+async def test_if_hubspot_wont_archive_the_ticket_the_program_stays(client_for, make_user, monkeypatch):
+    import aiohttp
+
+    hubspot_on(monkeypatch)
+    client = await csm_client(client_for, make_user)
+    ticket = (await new_internal(client))["ticket_id"]
+
+    async def refuse(self, ticket_id):
+        raise aiohttp.ClientResponseError(None, (), status=500)
+
+    monkeypatch.setattr(FakeHubSpot, "delete_ticket", refuse)
+    assert (await client.delete(f"/programs/{ticket}")).status_code == 502
+    assert (await client.get(f"/programs/{ticket}")).status_code == 200

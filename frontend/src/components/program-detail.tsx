@@ -11,6 +11,7 @@ import {
   type TabItem,
   type Tone,
 } from "@/components/kit";
+import { RemoveInternalProgram } from "@/components/new-internal-program";
 import { ProgramOverview } from "@/components/program-overview";
 import { ProgramDocuments } from "@/components/program-documents";
 import { ProgramMarketing } from "@/components/program-marketing";
@@ -182,6 +183,7 @@ function Header({ program }: { program: Program }) {
               </Link>
             </Button>
           )}
+          <RemoveInternalProgram program={program} />
         </div>
       </div>
       <StageBar
