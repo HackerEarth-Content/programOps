@@ -350,7 +350,7 @@ function SowView({ sow, today }: { sow: SowDetails; today: string }) {
                       )}
                     </td>
                     <td className="px-4 py-2">
-                      <Chip className="h-auto min-h-[20px] whitespace-normal py-0.5 text-left">
+                      <Chip className="h-auto min-h-[20px] max-w-full whitespace-normal py-0.5 text-left">
                         {m.owner}
                       </Chip>
                     </td>
@@ -378,7 +378,7 @@ function SowView({ sow, today }: { sow: SowDetails; today: string }) {
                   {sow.content.map((c) => (
                     <Chip
                       key={c}
-                      className="h-auto min-h-[20px] whitespace-normal py-0.5 text-left"
+                      className="h-auto min-h-[20px] max-w-full whitespace-normal py-0.5 text-left"
                     >
                       {c}
                     </Chip>
