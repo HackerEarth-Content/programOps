@@ -11,6 +11,7 @@ import {
   type TabItem,
   type Tone,
 } from "@/components/kit";
+import { RemoveInternalProgram } from "@/components/new-internal-program";
 import { ProgramOverview } from "@/components/program-overview";
 import { ProgramDocuments } from "@/components/program-documents";
 import { ProgramMarketing } from "@/components/program-marketing";
@@ -21,7 +22,7 @@ import {
   ApiError,
   apiFetch,
   checklistStatusQueryOptions,
-  HIRING_CAMPAIGN_TYPE,
+  isHiringType,
   peopleByName,
   programQueryOptions,
   STAGES,
@@ -80,17 +81,14 @@ export function ProgramDetail({ ticketId, tab }: { ticketId: string; tab: Progra
         {tab === "registrations" && (
           <ProgramRegistrationsTab
             ticketId={ticketId}
-            isHiring={program.campaign_type === HIRING_CAMPAIGN_TYPE}
+            isHiring={isHiringType(program.campaign_type)}
             redashEnabled={!program.platform_details?.includes("Non-HE Platform")}
           />
         )}
         {tab === "rounds" && <ProgramRounds ticketId={ticketId} />}
         {tab === "requests" && <ProgramRequests ticketId={ticketId} />}
         {tab === "documents" && (
-          <ProgramDocuments
-            ticketId={ticketId}
-            isHiring={program.campaign_type === HIRING_CAMPAIGN_TYPE}
-          />
+          <ProgramDocuments ticketId={ticketId} isHiring={isHiringType(program.campaign_type)} />
         )}
         {tab === "activity" && <ProgramActivityLog ticketId={ticketId} />}
       </div>
@@ -147,10 +145,13 @@ function Header({ program }: { program: Program }) {
         </Link>{" "}
         <span aria-hidden>/</span> {title}
       </nav>
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="t-headline-lg flex flex-wrap items-center gap-2.5">
-            {title}
+      {/* Fixed places whatever the name's length: the title takes the room it needs and wraps on its own, the
+          buttons stay top right, and the people always get their own row below (they used to share the title's
+          row, so a long name pushed them to a different spot on every program). */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <h1 className="t-headline-lg flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            <span className="min-w-0 break-words">{title}</span>
             {pill}
           </h1>
           <p className="mt-1 text-[14px] text-ink-2">
@@ -163,10 +164,22 @@ function Header({ program }: { program: Program }) {
             · Updated {formatDay(program.last_modified_at)}
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex shrink-0 items-center gap-3">
+          {canPost && (
+            <Button asChild variant="outline">
+              <Link to="/programs/$ticketId" params={{ ticketId }} search={{ tab: "requests" }}>
+                Post update
+              </Link>
+            </Button>
+          )}
+          <RemoveInternalProgram program={program} />
+        </div>
+      </div>
+      {people.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
           {people.map((p) => (
             <span key={p.name} className="flex items-center gap-2 text-[13px] text-ink-2">
-              <Avatar name={p.name} className="size-6 text-[11px]" />
+              <Avatar name={p.name} className="size-6 shrink-0 text-[11px]" />
               {p.name}
               {p.roles.map((r) => (
                 <Chip key={r} tone={roleLabelTone(r)}>
@@ -175,15 +188,8 @@ function Header({ program }: { program: Program }) {
               ))}
             </span>
           ))}
-          {canPost && (
-            <Button asChild variant="outline">
-              <Link to="/programs/$ticketId" params={{ ticketId }} search={{ tab: "requests" }}>
-                Post update
-              </Link>
-            </Button>
-          )}
         </div>
-      </div>
+      )}
       <StageBar
         current={stageIndex(program.stage)}
         progress={stages}

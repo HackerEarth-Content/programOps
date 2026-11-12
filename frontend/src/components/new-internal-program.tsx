@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { Loader2, Plus } from "lucide-react";
+import { Loader2, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -122,6 +122,71 @@ export function NewInternalProgram() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+/**
+ * Remove an internal program for good: everything recorded on it goes, and its HubSpot ticket (if it has one) is
+ * archived. Only for internal programs; one that came from HubSpot follows its ticket.
+ */
+export function RemoveInternalProgram({ program }: { program: Program }) {
+  const canRemove = useCan("program.create");
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const remove = useMutation({
+    mutationFn: () => sendJson<void>("DELETE", `/programs/${program.ticket_id}`),
+    onSuccess: async () => {
+      setOpen(false);
+      await navigate({ to: "/" });
+      await Promise.all(
+        ["programs", "portfolio", "queues"].map((key) => qc.invalidateQueries({ queryKey: [key] })),
+      );
+    },
+  });
+  if (!canRemove || program.origin !== "internal") return null;
+  const ticketed = !program.ticket_id.startsWith("INT-");
+  return (
+    <>
+      <Button variant="outline" onClick={() => setOpen(true)}>
+        <Trash2 /> Remove
+      </Button>
+      <Dialog open={open} onOpenChange={(v) => !remove.isPending && setOpen(v)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove {program.display_name}?</DialogTitle>
+            <DialogDescription>
+              This deletes the program and everything recorded on it: registrations, rounds, the
+              marketing plan, requests, updates and documents.
+              {ticketed && " Its [Internal] ticket in HubSpot is archived."} It can't be undone.
+            </DialogDescription>
+          </DialogHeader>
+          {remove.isError && (
+            <p className="mt-3 text-[13px] text-danger">
+              {remove.error instanceof Error ? remove.error.message : "Couldn't remove it."}
+            </p>
+          )}
+          <DialogFooter className="mt-5">
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={remove.isPending}
+              onClick={() => setOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={remove.isPending}
+              onClick={() => remove.mutate()}
+            >
+              {remove.isPending && <Loader2 className="animate-spin" />}
+              Remove program
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </>

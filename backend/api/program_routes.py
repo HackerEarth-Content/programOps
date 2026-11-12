@@ -67,7 +67,7 @@ async def sync_status():
 
 class InternalProgramIn(BaseModel):
     name: str = Field(min_length=1)
-    campaign_type: Literal["Hackathon", "Coding Challenge"] = "Hackathon"  # "Coding Challenge" = a hiring challenge
+    campaign_type: Literal["Hackathon", "Hiring Challenge", "Coding Challenge"] = "Hackathon"  # the last two are hiring challenges
     registration_start_date: date | None = None
     event_end_date: date | None = None
 
@@ -85,6 +85,17 @@ async def create_internal_program(
         registration_start_date=body.registration_start_date, event_end_date=body.event_end_date,
     )
     return _serialize(program)
+
+
+@router.delete("/{ticket_id}", status_code=204)
+async def delete_internal_program(
+    program: Program = Depends(program_or_404),
+    session: AsyncSession = Depends(get_session),
+    access: Access = Depends(require_permission(Permission.PROGRAM_CREATE)),
+):
+    """Remove an internal program with everything recorded on it, and archive its HubSpot ticket if it has one.
+    422 `not_internal` for a program that came from HubSpot."""
+    await internal_programs.delete_internal(session, access.user, program)
 
 
 @router.post("/redash/sync", status_code=202, dependencies=[Depends(require_permission(Permission.INTEGRATIONS_LINK))])

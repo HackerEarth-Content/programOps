@@ -10,8 +10,8 @@ from datetime import date, datetime, timezone
 
 import structlog
 
-from sqlalchemy import delete, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import delete, literal, or_, select
+from sqlalchemy.dialects.postgresql import JSONB, insert
 
 from core.database import db_manager
 from core.orm import Program, ProgramNote, ProgramStageHistory
@@ -76,6 +76,14 @@ async def upsert_programs(programs: list[ProgramTicket]) -> None:
             stmt = stmt.on_conflict_do_update(
                 index_elements=["ticket_id"],
                 set_={c: getattr(stmt.excluded, c) for c in update_cols},
+                # HubSpot's search index lags edits by up to a few minutes, so a sync can carry an older snapshot of
+                # a ticket than the portal already has (a write-back stamps the row with HubSpot's own modification
+                # time). Never let the older one win. A row the sync has never filled is always taken.
+                where=or_(
+                    Program.last_modified_at.is_(None),
+                    Program.raw_properties == literal({}, JSONB),
+                    stmt.excluded.last_modified_at >= Program.last_modified_at,
+                ),
             )
             await session.execute(stmt)
         await session.commit()

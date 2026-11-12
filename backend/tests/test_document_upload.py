@@ -25,7 +25,7 @@ COMMENT = "Client revised the scope, new version signed"
 def poa(*rows: tuple[str, str, str | None], title: str = "POA") -> dict:
     """(channel, activity, date) rows, all in week 1."""
     return {
-        "title": title, "window_start": None, "window_end": None, "_v": documents.EXTRACTION_VERSION,
+        "title": title, "window_start": None, "window_end": None, "_v": documents.EXTRACTION_VERSIONS["poa"],
         "activities": [
             {"date": d, "week": "Week 1", "channel": c, "activity": a, "objective": "o", "description": "d"} for c, a, d in rows
         ],
@@ -33,7 +33,7 @@ def poa(*rows: tuple[str, str, str | None], title: str = "POA") -> dict:
 
 
 def sow(fee: int = 500000) -> dict:
-    return {"title": "SOW", "customer": "Acme", "fee_amount_inr": fee, "_v": documents.EXTRACTION_VERSION}
+    return {"title": "SOW", "customer": "Acme", "fee_amount_inr": fee, "_v": documents.EXTRACTION_VERSIONS["sow"]}
 
 
 class FakeHub:

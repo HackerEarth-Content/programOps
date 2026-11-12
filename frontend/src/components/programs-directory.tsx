@@ -27,7 +27,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { HIRING_CAMPAIGN_TYPE, programsQueryOptions, STAGES, type Program } from "@/lib/api";
+import { isHiringType, programsQueryOptions, STAGES, type Program } from "@/lib/api";
 import { csmQueueQuery, HEALTH_REASONS, type Health } from "@/lib/ops-api";
 import { portfolioFullQuery, type Portfolio, type PortfolioProgram } from "@/lib/portfolio-api";
 import type { ProgramTab } from "@/lib/program-tabs";
@@ -50,7 +50,7 @@ const stageOf = (r: Row) => r.program.stage;
 const kindOf = (r: Row): "hackathon" | "hiring" | "other" =>
   r.program.campaign_type === "Hackathon"
     ? "hackathon"
-    : r.program.campaign_type === HIRING_CAMPAIGN_TYPE
+    : isHiringType(r.program.campaign_type)
       ? "hiring"
       : "other";
 const inTab = (r: Row, k: Kind) =>
@@ -338,26 +338,36 @@ function ProgramCard({ row, index }: { row: Row; index: number }) {
       </div>
       <div className="flex flex-1 flex-col gap-3 px-[18px] pb-3 pt-3">
         <div className="flex items-start justify-between gap-3">
-          <h3 className="text-[16px] font-semibold leading-[22px] tracking-[-0.01em]">
+          {/* Every card keeps two title lines, so a long name never pushes the rows below out of line. */}
+          <h3
+            className="line-clamp-2 min-h-[44px] min-w-0 break-words text-[16px] font-semibold leading-[22px] tracking-[-0.01em]"
+            title={nameOf(row)}
+          >
             {nameOf(row)}
           </h3>
-          <HealthChip card={card} />
+          <span className="shrink-0">
+            <HealthChip card={card} />
+          </span>
         </div>
         <div className="flex items-center gap-2 text-[13px]">
           <i aria-hidden className={`size-1.5 rounded-full ${card ? "bg-primary" : "bg-ink-3"}`} />
-          {stageOf(row)}
+          <span className="shrink-0">{stageOf(row)}</span>
           {p.campaign_type && (
             <span className="ml-auto truncate text-muted-foreground">{p.campaign_type}</span>
           )}
         </div>
-        {reason && (
-          <p
-            className={`flex items-start gap-1.5 text-[13px] ${critical ? "text-danger" : "text-warn"}`}
-          >
-            <i aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-current" />
-            {reason}
-          </p>
-        )}
+        {/* One reserved line whether or not there is a reason, so the rows below sit at the same height. */}
+        <p
+          className={`flex min-h-5 items-start gap-1.5 text-[13px] leading-5 ${critical ? "text-danger" : "text-warn"}`}
+          title={reason ?? undefined}
+        >
+          {reason && (
+            <>
+              <i aria-hidden className="mt-[7px] size-1.5 shrink-0 rounded-full bg-current" />
+              <span className="line-clamp-1">{reason}</span>
+            </>
+          )}
+        </p>
         <div>
           <div className="flex justify-between text-[13px]">
             <span className="text-muted-foreground">Registrations</span>
@@ -373,17 +383,21 @@ function ProgramCard({ row, index }: { row: Row; index: number }) {
             index={index}
           />
         </div>
-        {card && (
-          <div className="text-[13px]">
-            <span className="text-ink-2">Marketing</span>
-            <div className="mt-0.5">
-              {card.marketing_live} / {card.marketing_total} channels live
-              {awaiting > 0 && (
-                <span className="text-muted-foreground"> · {awaiting} awaiting approval</span>
-              )}
-            </div>
+        <div className="text-[13px]">
+          <span className="text-ink-2">Marketing</span>
+          <div className="mt-0.5 truncate">
+            {card ? (
+              <>
+                {card.marketing_live} / {card.marketing_total} channels live
+                {awaiting > 0 && (
+                  <span className="text-muted-foreground"> · {awaiting} awaiting approval</span>
+                )}
+              </>
+            ) : (
+              <span className="text-muted-foreground">–</span>
+            )}
           </div>
-        )}
+        </div>
         <div className="mt-auto flex items-center justify-between gap-2 pt-1 text-[13px] text-secondary-foreground">
           <span className="flex min-w-0 items-center gap-1.5">
             <Avatar name={p.csm_name} />

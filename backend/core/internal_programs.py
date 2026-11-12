@@ -15,6 +15,7 @@ from typing import Any, Protocol
 
 import aiohttp
 import structlog
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import audit
@@ -127,6 +128,33 @@ async def create_internal(
                 logger.error("internal_ticket_orphaned", ticket_id=ticket_id)
         raise
     return program
+
+
+async def delete_internal(session: AsyncSession, actor: User, program: Program, gateway: TicketCreator | None = None) -> None:
+    """Remove an internal program and everything recorded on it (child rows cascade). Its HubSpot ticket, if it has
+    one, is archived first, so a failure there leaves the program in place and the removal can simply be retried."""
+    if not is_internal(program):
+        raise DomainError("not_internal", "Only an internal program can be removed here. Others follow their HubSpot ticket.", 422)
+    ticket_id, ticketed = program.ticket_id, not is_local_only(program)
+    if ticketed:
+        if not settings.HUBSPOT_WRITEBACK_ENABLED:
+            raise DomainError("hubspot_writeback_off", "This program has a HubSpot ticket and writing to HubSpot is turned off.", 409)
+        try:
+            await (gateway or HubSpotClient()).delete_ticket(ticket_id)
+        except aiohttp.ClientResponseError as error:
+            if error.status in (401, 403):
+                raise DomainError("hubspot_scope_missing", "The HubSpot token isn't allowed to archive tickets.", 502) from error
+            if error.status != 404:  # 404: already gone from HubSpot, nothing left to archive
+                raise DomainError("hubspot_unavailable", f"HubSpot refused to archive the ticket ({error.status}).", 502) from error
+        except (aiohttp.ClientError, TimeoutError) as error:
+            raise DomainError("hubspot_unavailable", f"Couldn't reach HubSpot: {error}", 502) from error
+    # ticket_id stays off the event: the program row it would point at is going away (the id is kept in entity_id)
+    audit.record(
+        session, actor, entity="program", entity_id=ticket_id, action="internal_program_deleted",
+        old={"name": program.event_name, "campaign_type": program.campaign_type, "stage": program.stage_label, "hubspot_ticket": ticketed},
+    )
+    await session.execute(delete(Program).where(Program.ticket_id == ticket_id))
+    await session.commit()
 
 
 def _selected(program: Program, prop: str) -> list[str]:

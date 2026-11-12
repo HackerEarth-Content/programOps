@@ -101,9 +101,10 @@ function ActivityHover({
 }
 
 /**
- * Go-live calendar: one lane per channel over the weeks the plan's own dates cover (it starts on the earliest
- * date, so week columns are real 7-day spans, never guessed). Dated activities are bars, undated ones wait in
- * the dashed "Not scheduled" tray.
+ * Go-live calendar: one lane per channel over every day the plan's own dates cover, from the earliest to the
+ * latest. The columns are the schedule's own weeks (each from its first to its last dated activity, as the POA
+ * groups them), not calendar weeks; a plan without week numbers falls back to 7-day spans from its first date.
+ * Dated activities are bars, undated ones wait in the dashed "Not scheduled" tray.
  */
 export function GoLiveCalendar({
   rows,
@@ -134,8 +135,33 @@ export function GoLiveCalendar({
     rows.length < allRows.length && picked.length
       ? { from: Math.min(...picked) - start, to: Math.max(...picked) - start + 1 }
       : null;
-  const weeks = Math.min(8, Math.max(3, Math.ceil((end - start + 1) / 7)));
-  const days = weeks * 7;
+  // The schedule's weeks: each column runs from a week's first dated activity to its last.
+  const spans = new Map<number, [number, number]>();
+  for (const a of allRows) {
+    if (a.week == null || !dayOf(a)) continue;
+    const d = dayNum(dayOf(a)!) - start;
+    const s = spans.get(a.week);
+    spans.set(a.week, s ? [Math.min(s[0], d), Math.max(s[1], d)] : [d, d]);
+  }
+  const scheduleCols = [...spans.entries()]
+    .sort((x, y) => x[0] - y[0])
+    .map(([w, [from, to]]) => ({ label: `Week ${w}`, from, to: to + 1 }));
+  // only when the weeks follow one another; a plan whose weeks overlap in time keeps plain 7-day columns
+  const bySchedule =
+    scheduleCols.length > 0 &&
+    scheduleCols.every((c, i) => i === 0 || c.from >= scheduleCols[i - 1]!.to);
+  const days = bySchedule ? end - start + 1 : Math.max(3, Math.ceil((end - start + 1) / 7)) * 7;
+  const cols = bySchedule
+    ? scheduleCols
+    : Array.from({ length: days / 7 }, (_, i) => ({
+        label: formatDay(isoOf(start + i * 7)),
+        from: i * 7,
+        to: i * 7 + 7,
+      }));
+  const colStyle = (c: { from: number; to: number }) => ({
+    left: `${(c.from / days) * 100}%`,
+    width: `${((c.to - c.from) / days) * 100}%`,
+  });
   const todayPct = ((dayNum(today) - start) / days) * 100;
   // lanes come from the whole plan, ordered by when each channel first goes live, so they never jump around
   const first = new Map<string, number>();
@@ -222,13 +248,15 @@ export function GoLiveCalendar({
             <div className="min-w-[560px]">
               <div className="grid grid-cols-[96px_minmax(0,1fr)]">
                 <div />
-                <div className="flex text-[12px] text-ink-2">
-                  {Array.from({ length: weeks }, (_, i) => (
+                <div className="relative h-7 text-[12px] text-ink-2">
+                  {cols.map((c) => (
                     <span
-                      key={i}
-                      className="flex-1 border-l border-border px-2 py-1 first:border-l-0"
+                      key={c.from}
+                      className="absolute inset-y-0 truncate border-l border-border px-1.5 py-1"
+                      style={colStyle(c)}
+                      title={`${c.label}: ${formatDay(isoOf(start + c.from))} – ${formatDay(isoOf(start + c.to - 1))}`}
                     >
-                      {formatDay(isoOf(start + i * 7))}
+                      {c.label}
                     </span>
                   ))}
                 </div>
@@ -281,12 +309,12 @@ export function GoLiveCalendar({
                       {ch}
                     </div>
                     <div className="relative" style={{ height: rowsN * 28 + 6 }}>
-                      {Array.from({ length: weeks }, (_, i) => (
+                      {cols.map((c, i) => (
                         <div
-                          key={i}
+                          key={c.from}
                           aria-hidden
                           className={cn("absolute inset-y-0", i % 2 === 0 && "bg-raised")}
-                          style={{ left: `${(i / weeks) * 100}%`, width: `${100 / weeks}%` }}
+                          style={colStyle(c)}
                         />
                       ))}
                       {band && (

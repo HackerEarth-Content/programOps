@@ -1,6 +1,8 @@
 """Stage identity and per-stage checklist config for the Programs Feasibility
 Support pipeline (id 934067746). Verified live against this portal's pipeline
-and ticket-property schema on 2026-09-25.
+and ticket-property schema on 2026-09-25; checklist options re-checked on 2026-11-12
+(HubSpot had moved SOW Shared / SOW Signed from Pre Sales to Onboarding and added items).
+The items below must be exactly HubSpot's options: HubSpot rejects a tick for any other label.
 
 Every non-terminal stage after "New" has its own HubSpot multi-checkbox
 property (e.g. `pre_sales_status`) whose options are the parameters required
@@ -22,17 +24,19 @@ PROGRAM_STAGES: dict[str, dict[str, str]] = {
     "closed": {"stage_id": "1445425466", "label": "Closed"},
 }
 
-# stage_key -> (checklist property, [(option label, paired info property), ...]).
+# stage_key -> (checklist property, [(option label, paired info property or None if HubSpot has none), ...]),
+# in HubSpot's own option order.
 # "New" and "Closed" have no checklist -- New is pre-qualification, Closed is terminal.
-STAGE_CHECKLISTS: dict[str, tuple[str, list[tuple[str, str]]]] = {
+STAGE_CHECKLISTS: dict[str, tuple[str, list[tuple[str, str | None]]]] = {
     "pre_sales": (
         "pre_sales_status",
         [
             ("Requirement Gathering", "requirement_gathering_info"),
+            ("Marketing Feasibility", "marketing_feasibility_info"),
+            ("Content Feasibility", "content_feasibility_info"),
             ("Proposal Shared", "proposal_shared_info"),
+            ("Client Review", None),
             ("PO Closed", "po_closed_info"),
-            ("SOW Shared", "sow_shared_info"),
-            ("SOW Signed", "sow_signed_info"),
         ],
     ),
     "onboarding": (
@@ -47,6 +51,9 @@ STAGE_CHECKLISTS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("Client Review on Content", "client_review_on_content___info"),
             ("Changes in Progress Page", "changes_in_progress_page"),
             ("Go-Live Approved", "golive_approved__info"),
+            ("CSM Assigned", None),
+            ("SOW Shared", "sow_shared_info"),
+            ("SOW Signed", "sow_signed_info"),
         ],
     ),
     "ongoing": (
@@ -84,7 +91,7 @@ CHECKLIST_PROPERTY_TO_COLUMN: dict[str, str] = {
 CHECKLIST_PROPERTIES: list[str] = [
     prop
     for _, (checklist_prop, items) in STAGE_CHECKLISTS.items()
-    for prop in [checklist_prop] + [info for _, info in items]
+    for prop in [checklist_prop] + [info for _, info in items if info]
 ]
 
 
